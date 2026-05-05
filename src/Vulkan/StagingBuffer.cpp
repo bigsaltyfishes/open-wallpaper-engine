@@ -141,6 +141,11 @@ void StagingBuffer::destroy() {
 
 bool StagingBuffer::allocateSubRef(VkDeviceSize size, StagingBufferRef& ref,
                                    VkDeviceSize alignment) {
+    if (size == 0) {
+        ref = {};
+        return true;
+    }
+
     VkResult                       result;
     VmaVirtualAllocationCreateInfo allocCreateInfo = {};
     allocCreateInfo.size                           = size;
@@ -210,9 +215,14 @@ bool StagingBuffer::writeToBuf(const StagingBufferRef& ref, std::span<uint8_t> d
     if (m_stage_raw == nullptr) {
         mapStageBuf();
     }
-    VkDeviceSize size = std::min(ref.size - offset, data.size());
-    uint8_t*     raw  = (uint8_t*)m_stage_raw;
-    std::copy(data.begin(), data.begin() + size, raw + ref.offset + offset);
+    const VkDeviceSize size = std::min<VkDeviceSize>(
+        ref.size - static_cast<VkDeviceSize>(offset),
+        static_cast<VkDeviceSize>(data.size()));
+    uint8_t* const raw = static_cast<uint8_t*>(m_stage_raw);
+    std::copy(
+        data.begin(),
+        data.begin() + static_cast<std::ptrdiff_t>(size),
+        raw + ref.offset + offset);
     return true;
 }
 
@@ -222,9 +232,11 @@ bool StagingBuffer::fillBuf(const StagingBufferRef& ref, size_t offset, size_t s
     if (m_stage_raw == nullptr) {
         mapStageBuf();
     }
-    VkDeviceSize size_     = std::min(ref.size - offset, size);
-    uint8_t*     raw       = (uint8_t*)m_stage_raw;
-    uint8_t*     raw_begin = raw + ref.offset + offset;
+    const VkDeviceSize size_ = std::min<VkDeviceSize>(
+        ref.size - static_cast<VkDeviceSize>(offset),
+        static_cast<VkDeviceSize>(size));
+    uint8_t* const raw       = static_cast<uint8_t*>(m_stage_raw);
+    uint8_t* const raw_begin = raw + ref.offset + offset;
     std::fill(raw_begin, raw_begin + size_, c);
     return true;
 }

@@ -1,5 +1,6 @@
 #include "Shader.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <glslang/Include/Types.h>
 #include <glslang/MachineIndependent/localintermediate.h>
@@ -94,7 +95,7 @@ inline bool parse(const ShaderCompUnit& unit, const ShaderCompOpt& opt, EShMessa
     auto  client = getClient(opt.client_ver);
     shader.setStrings(&data, 1);
     shader.setEnvInput(opt.hlsl ? glslang::EShSourceHlsl : glslang::EShSourceGlsl,
-                       EShLanguage::EShLangVertex,
+                       unit.stage,
                        client,
                        ClientInputSemanticsVersion);
     shader.setEnvClient(client, opt.client_ver);
@@ -366,9 +367,18 @@ bool wallpaper::vulkan::GenReflect(std::span<const std::vector<uint>> codes,
                     auto&                           unif = block.members[i];
                     ShaderReflected::BlockedUniform bunif {};
                     {
-                        // bunif.num = GetTypeNum(type);
-                        bunif.size   = unif.size;
-                        bunif.offset = unif.offset;
+                        bunif.size         = unif.size;
+                        bunif.offset       = unif.offset;
+                        bunif.array_stride = unif.array.stride;
+                        if (unif.array.dims_count > 0) {
+                            bunif.array_count = 1;
+                            for (uint32_t dim = 0; dim < unif.array.dims_count; ++dim) {
+                                bunif.array_count *= unif.array.dims[dim];
+                            }
+                            bunif.num = bunif.array_count;
+                        } else {
+                            bunif.num = std::max<size_t>(1, unif.size / sizeof(float));
+                        }
                     }
                     ref_block.member_map[unif.name] = bunif;
                 }

@@ -42,6 +42,10 @@ GraphicsPipeline::GraphicsPipeline() { toDefault(); }
 GraphicsPipeline::~GraphicsPipeline() {}
 
 void GraphicsPipeline::toDefault() {
+    m_input_bind_descriptions.clear();
+    m_input_attr_descriptions.clear();
+    m_descriptor_set_infos.clear();
+    m_stage_spv_map.clear();
     m_view = VkPipelineViewportStateCreateInfo {
         .sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
         .pNext         = nullptr,
@@ -168,7 +172,7 @@ bool GraphicsPipeline::create(const Device& device, vvk::RenderPass& pass,
         if (info.push_descriptor) flags |= VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
 
         create_info.bindingCount = (u32)info.bindings.size();
-        create_info.pBindings    = info.bindings.data();
+        create_info.pBindings    = info.bindings.empty() ? nullptr : info.bindings.data();
         create_info.flags        = flags;
         vvk::DescriptorSetLayout layout;
         VVK_CHECK(device.handle().CreateDescriptorSetLayout(create_info, layout));
@@ -182,7 +186,7 @@ bool GraphicsPipeline::create(const Device& device, vvk::RenderPass& pass,
             .sType          = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
             .pNext          = nullptr,
             .setLayoutCount = (uint32_t)layouts.size(),
-            .pSetLayouts    = layouts.data(),
+            .pSetLayouts    = layouts.empty() ? nullptr : layouts.data(),
         };
         VVK_CHECK(device.handle().CreatePipelineLayout(ci, pipeline.layout));
     }
@@ -216,16 +220,18 @@ bool GraphicsPipeline::create(const Device& device, vvk::RenderPass& pass,
         .sType                         = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         .pNext                         = nullptr,
         .vertexBindingDescriptionCount = (uint32_t)m_input_bind_descriptions.size(),
-        .pVertexBindingDescriptions    = m_input_bind_descriptions.data(),
+        .pVertexBindingDescriptions =
+            m_input_bind_descriptions.empty() ? nullptr : m_input_bind_descriptions.data(),
         .vertexAttributeDescriptionCount = (uint32_t)m_input_attr_descriptions.size(),
-        .pVertexAttributeDescriptions    = m_input_attr_descriptions.data()
+        .pVertexAttributeDescriptions =
+            m_input_attr_descriptions.empty() ? nullptr : m_input_attr_descriptions.data()
     };
 
     VkGraphicsPipelineCreateInfo create {
         .sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
         .pNext               = nullptr,
         .stageCount          = (uint32_t)shaderStages.size(),
-        .pStages             = shaderStages.data(),
+        .pStages             = shaderStages.empty() ? nullptr : shaderStages.data(),
         .pVertexInputState   = &input,
         .pInputAssemblyState = &m_input_assembly,
         .pViewportState      = &m_view,

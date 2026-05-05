@@ -22,12 +22,14 @@ VmaImageParameters::VmaImageParameters(VmaImageParameters&& o) noexcept
       view(std::move(o.view)),
       sampler(std::move(o.sampler)),
       extent(o.extent),
+      layout(o.layout),
       mipmap_level(o.mipmap_level) {}
 VmaImageParameters& VmaImageParameters::operator=(VmaImageParameters&& o) noexcept {
     handle       = std::move(o.handle);
     view         = std::move(o.view);
     sampler      = std::move(o.sampler);
     extent       = o.extent;
+    layout       = o.layout;
     mipmap_level = o.mipmap_level;
     return *this;
 }
@@ -41,6 +43,7 @@ ExImageParameters::ExImageParameters(ExImageParameters&& o) noexcept
       view(std::move(o.view)),
       sampler(std::move(o.sampler)),
       extent(o.extent),
+      layout(o.layout),
       mipmap_level(o.mipmap_level),
       fd(std::exchange(o.fd, 0)),
       drm_fourcc(o.drm_fourcc),
@@ -54,6 +57,7 @@ ExImageParameters& ExImageParameters::operator=(ExImageParameters&& o) noexcept 
     view          = std::move(o.view);
     sampler       = std::move(o.sampler);
     extent        = o.extent;
+    layout        = o.layout;
     mipmap_level  = o.mipmap_level;
     fd            = std::exchange(o.fd, 0);
     drm_fourcc    = o.drm_fourcc;
