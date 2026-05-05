@@ -3,6 +3,8 @@
 #include "Fs/IBinaryStream.h"
 #include "Utils/Logging.h"
 #include "WPJson.hpp"
+#include "Shader/SceneShaderLegalizer.hpp"
+#include "Shader/ShaderPreprocessor.hpp"
 
 #include "wpscene/WPUniform.h"
 #include "Fs/VFS.h"
@@ -12,10 +14,14 @@
 
 #include "Vulkan/ShaderComp.hpp"
 
+#include <nlohmann/json.hpp>
+
+#include <chrono>
 #include <regex>
 #include <stack>
 #include <charconv>
 #include <string>
+#include <unordered_set>
 
 static constexpr std::string_view SHADER_PLACEHOLD { "__SHADER_PLACEHOLD__" };
 
@@ -26,6 +32,14 @@ using namespace wallpaper;
 
 namespace
 {
+ShaderStartupMetrics g_shader_startup_metrics;
+
+double MeasureElapsedMs(const std::chrono::steady_clock::time_point started)
+{
+    return std::chrono::duration<double, std::milli>(
+               std::chrono::steady_clock::now() - started)
+        .count();
+}
 
 static constexpr const char* pre_shader_code = R"(#version 150
 #define GLSL 1
@@ -98,6 +112,14 @@ inline std::string LoadGlslInclude(fs::VFS& vfs, const std::string& input) {
 
 inline void ParseWPShader(const std::string& src, WPShaderInfo* pWPShaderInfo,
                           const std::vector<WPShaderTexInfo>& texinfos) {
+    const auto try_parse_inline_json = [](std::string_view source, nlohmann::json* result) {
+        auto parsed = nlohmann::json::parse(source, nullptr, false);
+        if (parsed.is_discarded()) {
+            return false;
+        }
+        *result = std::move(parsed);
+        return true;
+    };
     auto& combos       = pWPShaderInfo->combos;
     auto& wpAliasDict  = pWPShaderInfo->alias;
     auto& shadervalues = pWPShaderInfo->svs;
@@ -117,7 +139,7 @@ inline void ParseWPShader(const std::string& src, WPShaderInfo* pWPShaderInfo,
         */
         if (line.find("// [COMBO]") != std::string::npos) {
             nlohmann::json combo_json;
-            if (PARSE_JSON(line.substr(line.find_first_of('{')), combo_json)) {
+            if (try_parse_inline_json(line.substr(line.find_first_of('{')), &combo_json)) {
                 if (combo_json.contains("combo")) {
                     std::string name;
                     int32_t     value = 0;
@@ -129,7 +151,7 @@ inline void ParseWPShader(const std::string& src, WPShaderInfo* pWPShaderInfo,
         } else if (line.find("uniform ") != std::string::npos) {
             if (line.find("// {") != std::string::npos) {
                 nlohmann::json sv_json;
-                if (PARSE_JSON(line.substr(line.find_first_of('{')), sv_json)) {
+                if (try_parse_inline_json(line.substr(line.find_first_of('{')), &sv_json)) {
                     std::vector<std::string> defines =
                         utils::SpliteString(line.substr(0, line.find_first_of(';')), ' ');
 
@@ -269,6 +291,330 @@ inline usize FindIncludeInsertPos(const std::string& src, usize startPos) {
     return NposToZero(pos);
 }
 
+inline usize FindMatchingParen(std::string_view source, usize open_paren_pos) {
+    int depth = 0;
+    for (usize pos = open_paren_pos; pos < source.size(); pos++) {
+        if (source[pos] == '(') {
+            depth++;
+        } else if (source[pos] == ')') {
+            depth--;
+            if (depth == 0) return pos;
+        }
+    }
+    return std::string::npos;
+}
+
+inline std::string RewriteTextureInitializerCast(std::string source, std::string_view vector_type) {
+    const std::string declaration = std::string(vector_type) + " ";
+    const std::string cast_prefix = std::string(vector_type) + "(";
+    usize             search_pos  = 0;
+
+    while ((search_pos = source.find(declaration, search_pos)) != std::string::npos) {
+        usize line_start = source.rfind('\n', search_pos);
+        line_start       = line_start == std::string::npos ? 0 : line_start + 1;
+
+        const usize line_end = source.find(';', search_pos);
+        if (line_end == std::string::npos) break;
+
+        std::string line = source.substr(line_start, line_end - line_start + 1);
+        const usize equal_pos = line.find('=');
+        if (equal_pos == std::string::npos) {
+            search_pos = line_end + 1;
+            continue;
+        }
+
+        usize call_pos = line.find("texture(", equal_pos);
+        if (call_pos == std::string::npos) {
+            call_pos = line.find("texSample2D(", equal_pos);
+        }
+        if (call_pos == std::string::npos) {
+            search_pos = line_end + 1;
+            continue;
+        }
+
+        if (call_pos >= cast_prefix.size() &&
+            line.substr(call_pos - cast_prefix.size(), cast_prefix.size()) == cast_prefix) {
+            search_pos = line_end + 1;
+            continue;
+        }
+
+        const usize open_paren = line.find('(', call_pos);
+        const usize close_paren = FindMatchingParen(line, open_paren);
+        if (close_paren == std::string::npos) {
+            search_pos = line_end + 1;
+            continue;
+        }
+        if (close_paren + 1 < line.size() && line[close_paren + 1] == '.') {
+            search_pos = line_end + 1;
+            continue;
+        }
+
+        line.insert(close_paren + 1, ")");
+        line.insert(call_pos, cast_prefix);
+
+        source.replace(line_start, line_end - line_start + 1, line);
+        search_pos = line_start + line.size();
+    }
+
+    return source;
+}
+
+inline std::unordered_set<std::string> CollectVec3Identifiers(const std::string& source) {
+    std::unordered_set<std::string> identifiers;
+    const std::regex vec3_re(
+        R"((?:^|\n)\s*(?:in|out|uniform)?\s*vec3\s+([A-Za-z_]\w*)\s*(?:[;=]))",
+        std::regex::ECMAScript);
+    for (auto it = std::sregex_iterator(source.begin(), source.end(), vec3_re);
+         it != std::sregex_iterator();
+         ++it) {
+        identifiers.insert((*it)[1].str());
+    }
+    return identifiers;
+}
+
+inline std::unordered_set<std::string> CollectVec2Identifiers(const std::string& source) {
+    std::unordered_set<std::string> identifiers;
+    const std::regex vec2_re(
+        R"((?:^|\n)\s*(?:in|out|uniform)?\s*vec2\s+([A-Za-z_]\w*)\s*(?:[;=]))",
+        std::regex::ECMAScript);
+    for (auto it = std::sregex_iterator(source.begin(), source.end(), vec2_re);
+         it != std::sregex_iterator();
+         ++it) {
+        identifiers.insert((*it)[1].str());
+    }
+    return identifiers;
+}
+
+inline std::unordered_set<std::string> CollectScalarFunctionIdentifiers(const std::string& source) {
+    std::unordered_set<std::string> identifiers;
+    const std::regex scalar_function_re(
+        R"((?:^|\n)\s*(?:float|int|bool)\s+([A-Za-z_]\w*)\s*\()",
+        std::regex::ECMAScript);
+    for (auto it = std::sregex_iterator(source.begin(), source.end(), scalar_function_re);
+         it != std::sregex_iterator();
+         ++it) {
+        identifiers.insert((*it)[1].str());
+    }
+    return identifiers;
+}
+
+inline std::string MaskScalarFunctionCalls(
+    std::string source,
+    const std::unordered_set<std::string>& scalar_functions) {
+    const std::regex function_call_re(R"(\b([A-Za-z_]\w*)\s*\()", std::regex::ECMAScript);
+    usize            search_pos = 0;
+
+    while (search_pos < source.size()) {
+        std::smatch match;
+        auto        begin = source.cbegin() + static_cast<isize>(search_pos);
+        if (! std::regex_search(begin, source.cend(), match, function_call_re)) {
+            break;
+        }
+
+        const usize       match_pos     = search_pos + (usize)match.position(0);
+        const usize       name_pos      = search_pos + (usize)match.position(1);
+        const std::string function_name = match[1].str();
+        const usize       open_paren    = source.find('(', match_pos);
+        if (open_paren == std::string::npos) break;
+
+        if (scalar_functions.count(function_name) == 0) {
+            search_pos = open_paren + 1;
+            continue;
+        }
+
+        const usize close_paren = FindMatchingParen(source, open_paren);
+        if (close_paren == std::string::npos) break;
+
+        source.replace(name_pos, close_paren - name_pos + 1, "0.0");
+        search_pos = name_pos + 3;
+    }
+
+    return source;
+}
+
+inline std::string RewriteVec3Vec2BinaryOps(std::string source) {
+    const auto vec3_identifiers = CollectVec3Identifiers(source);
+    if (vec3_identifiers.empty()) return source;
+
+    const std::regex rhs_vec2_re(R"((\b[A-Za-z_]\w*\b)\s*([+\-])\s*\(?vec2\()");
+    usize            search_pos = 0;
+    while (search_pos < source.size()) {
+        const usize line_end  = source.find('\n', search_pos);
+        const usize slice_end = line_end == std::string::npos ? source.size() : line_end;
+        std::string line      = source.substr(search_pos, slice_end - search_pos);
+        std::smatch match;
+        if (std::regex_search(line, match, rhs_vec2_re)) {
+            const std::string identifier = match[1].str();
+            if (vec3_identifiers.count(identifier) != 0) {
+                const usize vec2_pos    = line.find("vec2(", (usize)match.position());
+                const usize open_paren  = line.find('(', vec2_pos);
+                const usize close_paren = FindMatchingParen(line, open_paren);
+                if (vec2_pos != std::string::npos && close_paren != std::string::npos) {
+                    const std::string operand = line.substr(vec2_pos, close_paren - vec2_pos + 1);
+                    line.replace(
+                        vec2_pos, close_paren - vec2_pos + 1, "vec3(" + operand + ", 0.0)");
+                    source.replace(search_pos, slice_end - search_pos, line);
+                    search_pos += line.size();
+                    continue;
+                }
+            }
+        }
+        search_pos = line_end == std::string::npos ? source.size() : line_end + 1;
+    }
+
+    return source;
+}
+
+inline std::string RewriteFloatVectorInitializers(std::string source) {
+    const auto vec2_identifiers  = CollectVec2Identifiers(source);
+    const auto vec3_identifiers  = CollectVec3Identifiers(source);
+    const auto scalar_functions  = CollectScalarFunctionIdentifiers(source);
+    if (vec2_identifiers.empty() && vec3_identifiers.empty()) return source;
+
+    const std::regex float_init_re(R"(^\s*float\s+[A-Za-z_]\w*\s*=\s*(.+);$)");
+    auto contains_unswizzled_identifier = [](std::string_view expression,
+                                             const std::unordered_set<std::string>& identifiers) {
+        for (const auto& identifier : identifiers) {
+            const std::regex identifier_re(
+                "\\b" + identifier + R"(\b(?!\s*\.))", std::regex::ECMAScript);
+            if (std::regex_search(expression.begin(), expression.end(), identifier_re)) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    usize search_pos = 0;
+    while (search_pos < source.size()) {
+        const usize line_end  = source.find('\n', search_pos);
+        const usize slice_end = line_end == std::string::npos ? source.size() : line_end;
+        std::string line      = source.substr(search_pos, slice_end - search_pos);
+        std::smatch match;
+        if (std::regex_match(line, match, float_init_re)) {
+            const std::string rhs        = match[1].str();
+            const std::string masked_rhs = MaskScalarFunctionCalls(rhs, scalar_functions);
+            const bool has_scalar_swizzle =
+                std::regex_search(masked_rhs, std::regex(R"(\.\s*[xyzwrgba]\b)", std::regex::ECMAScript));
+            if (! has_scalar_swizzle && masked_rhs.find("dot(") == std::string::npos &&
+                masked_rhs.find("length(") == std::string::npos) {
+                const bool uses_vec3 = contains_unswizzled_identifier(masked_rhs, vec3_identifiers);
+
+                bool uses_vec2 = masked_rhs.find("vec2(") != std::string::npos;
+                if (! uses_vec2) {
+                    uses_vec2 = contains_unswizzled_identifier(masked_rhs, vec2_identifiers);
+                }
+
+                if (uses_vec3 || uses_vec2) {
+                    std::string scalarized_rhs;
+                    if (uses_vec3) {
+                        scalarized_rhs =
+                            "max(max((" + rhs + ").x, (" + rhs + ").y), (" + rhs + ").z)";
+                    } else {
+                        scalarized_rhs = "max((" + rhs + ").x, (" + rhs + ").y)";
+                    }
+
+                    const usize equal_pos = line.find('=');
+                    line.replace(equal_pos + 1, std::string::npos, " " + scalarized_rhs + ";");
+                    source.replace(search_pos, slice_end - search_pos, line);
+                    search_pos += line.size();
+                    continue;
+                }
+            }
+        }
+
+        search_pos = line_end == std::string::npos ? source.size() : line_end + 1;
+    }
+
+    return source;
+}
+
+inline std::string RewriteAudioBarsUintModulo(std::string source) {
+    source = std::regex_replace(
+        source,
+        std::regex(
+            R"(\buint\s+barFreq1\s*=\s*frequency\s*%\s*([0-9]+)\s*;)",
+            std::regex::ECMAScript),
+        "uint barFreq1 = uint(frequency) % $1u;");
+    source = std::regex_replace(
+        source,
+        std::regex(
+            R"(\buint\s+barFreq2\s*=\s*\(barFreq1\s*\+\s*1\s*\)\s*%\s*([0-9]+)\s*;)",
+            std::regex::ECMAScript),
+        "uint barFreq2 = (barFreq1 + 1u) % $1u;");
+    source = std::regex_replace(
+        source,
+        std::regex(
+            R"(\buint\s+barFreq1\s*=\s*frequency\s*%\s*RESOLUTION\s*;)",
+            std::regex::ECMAScript),
+        "uint barFreq1 = uint(frequency) % uint(RESOLUTION);");
+    source = std::regex_replace(
+        source,
+        std::regex(
+            R"(\(barFreq1\s*\+\s*1\s*\)\s*%\s*RESOLUTION)",
+            std::regex::ECMAScript),
+        "(barFreq1 + 1u) % uint(RESOLUTION)");
+    return source;
+}
+
+inline std::string RewriteStepToFloatAssignments(std::string source) {
+    return std::regex_replace(
+        source,
+        std::regex(
+            R"STEP(\bint(\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*step\s*\([^;\n]*\);))STEP",
+            std::regex::ECMAScript),
+        "float$1");
+}
+
+inline std::string RewriteMutableVertexInputs(std::string source) {
+    struct MutableInput {
+        std::string type;
+        std::string name;
+        std::string renamed;
+    };
+
+    std::vector<MutableInput> mutable_inputs;
+    const std::regex          input_re(
+        R"((^|\n)(\s*)in\s+([A-Za-z_]\w*)\s+([A-Za-z_]\w*)\s*;)",
+        std::regex::ECMAScript);
+
+    for (auto it = std::sregex_iterator(source.begin(), source.end(), input_re);
+         it != std::sregex_iterator();
+         ++it) {
+        const std::string type = (*it)[3].str();
+        const std::string name = (*it)[4].str();
+        const std::regex  assign_re("\\b" + name + R"(\b\s*(?:[+\-*/]?=))", std::regex::ECMAScript);
+        if (std::regex_search(source.begin(), source.end(), assign_re)) {
+            mutable_inputs.push_back(MutableInput {
+                .type = type,
+                .name = name,
+                .renamed = name + "_Input",
+            });
+        }
+    }
+
+    if (mutable_inputs.empty()) return source;
+
+    for (const auto& input : mutable_inputs) {
+        const std::regex declaration_re(
+            R"((^|\n)(\s*)in\s+)" + input.type + R"(\s+)" + input.name + R"(\s*;)",
+            std::regex::ECMAScript);
+        source = std::regex_replace(
+            source, declaration_re, "$1$2in " + input.type + " " + input.renamed + ";");
+    }
+
+    const usize main_pos = source.find("void main()");
+    if (main_pos == std::string::npos) return source;
+    const usize brace_pos = source.find('{', main_pos);
+    if (brace_pos == std::string::npos) return source;
+
+    std::string local_copies;
+    for (const auto& input : mutable_inputs) {
+        local_copies += "\n " + input.type + " " + input.name + " = " + input.renamed + ";\n";
+    }
+    source.insert(brace_pos + 1, local_copies);
+    return source;
+}
+
 inline EShLanguage ToGLSL(ShaderType type) {
     switch (type) {
     case ShaderType::VERTEX: return EShLangVertex;
@@ -279,90 +625,46 @@ inline EShLanguage ToGLSL(ShaderType type) {
 
 inline std::string Preprocessor(const std::string& in_src, ShaderType type, const Combos& combos,
                                 WPPreprocessorInfo& process_info) {
-    std::string res;
+    const auto preprocess_started = std::chrono::steady_clock::now();
+    std::string preprocessed =
+        wallpaper::shader::PreprocessStageSource(in_src, type, combos, process_info);
+    g_shader_startup_metrics.preprocess_ms += MeasureElapsedMs(preprocess_started);
 
-    std::string src = wallpaper::WPShaderParser::PreShaderHeader(in_src, combos, type);
-
-    // workaround #require directive
-    {
-        std::regex re_require("(^|\r?\n)#require (.+)(\r?\n)");
-        src = std::regex_replace(src, re_require, "$1//#require $2$3");
-    }
-
-    glslang::TShader::ForbidIncluder includer;
-    glslang::TShader                 shader(ToGLSL(type));
-    const EShMessages emsg { (EShMessages)(EShMsgDefault | EShMsgSpvRules | EShMsgRelaxedErrors |
-                                           EShMsgSuppressWarnings | EShMsgVulkanRules) };
-
-    auto* data = src.c_str();
-    shader.setStrings(&data, 1);
-    shader.preprocess(&vulkan::DefaultTBuiltInResource,
-                      110,
-                      EProfile::ECoreProfile,
-                      false,
-                      false,
-                      emsg,
-                      &res,
-                      includer);
-
-    std::regex re_io(R"(.+\s(in|out)\s[\s\w]+\s(\w+)\s*;)", std::regex::ECMAScript);
-    for (auto it = std::sregex_iterator(res.begin(), res.end(), re_io);
-         it != std::sregex_iterator();
-         it++) {
-        std::smatch mc = *it;
-        if (mc[1] == "in") {
-            process_info.input[mc[2]] = mc[0].str();
-        } else {
-            process_info.output[mc[2]] = mc[0].str();
-        }
-    }
-
-    std::regex re_tex(R"(uniform\s+sampler2D\s+g_Texture(\d+))", std::regex::ECMAScript);
-    for (auto it = std::sregex_iterator(res.begin(), res.end(), re_tex);
-         it != std::sregex_iterator();
-         it++) {
-        std::smatch mc  = *it;
-        auto        str = mc[1].str();
-        uint        slot;
-        auto [ptr, ec] { std::from_chars(str.c_str(), str.c_str() + str.size(), slot) };
-        if (ec != std::errc()) continue;
-        process_info.active_tex_slots.insert(slot);
-    }
-    return res;
+    const auto legalize_started = std::chrono::steady_clock::now();
+    auto legalized = wallpaper::shader::LegalizeStageSource(preprocessed, type);
+    g_shader_startup_metrics.legalize_ms += MeasureElapsedMs(legalize_started);
+    process_info = std::move(legalized.preprocess_info);
+    return std::move(legalized.source);
 }
 
 inline std::string Finalprocessor(const WPShaderUnit& unit, const WPPreprocessorInfo* pre,
                                   const WPPreprocessorInfo* next) {
-    std::string insert_str {};
-    auto&       cur = unit.preprocess_info;
-    if (pre != nullptr) {
-        for (auto& [k, v] : pre->output) {
-            if (! exists(cur.input, k)) {
-                auto n = std::regex_replace(v, std::regex(R"(\s*out\s)"), " in ");
-                insert_str += n + '\n';
-            }
-        }
-    }
-    if (next != nullptr) {
-        for (auto& [k, v] : next->input) {
-            if (! exists(cur.output, k)) {
-                auto n = std::regex_replace(v, std::regex(R"(\s*in\s)"), " out ");
-                insert_str += n + '\n';
-            }
-        }
-    }
-    std::regex re_hold(SHADER_PLACEHOLD.data());
-
-    // LOG_INFO("insert: %s", insert_str.c_str());
-    // return std::regex_replace(
-    //    std::regex_replace(cur.result, re_hold, insert_str), std::regex(R"(\s+\n)"), "\n");
-    return std::regex_replace(unit.src, re_hold, insert_str);
+    const auto finalize_started = std::chrono::steady_clock::now();
+    auto finalized = wallpaper::shader::FinalizeStageSource(unit, pre, next);
+    g_shader_startup_metrics.final_assembly_ms += MeasureElapsedMs(finalize_started);
+    return finalized;
 }
 
-inline std::string GenSha1(std::span<const WPShaderUnit> units) {
+inline std::string GenSha1(std::span<const WPShaderUnit> units, const WPShaderInfo* shader_info) {
     std::string shas;
+    shas += "rev:";
+    shas += std::to_string(WPShaderParser::kShaderPipelineRevision);
+    shas.push_back('\n');
+    if (shader_info != nullptr) {
+        for (const auto& [name, value] : shader_info->combos) {
+            shas += "combo:";
+            shas += name;
+            shas.push_back('=');
+            shas += value;
+            shas.push_back('\n');
+        }
+    }
     for (auto& unit : units) {
+        shas += "stage:";
+        shas += std::to_string(static_cast<int>(unit.stage));
+        shas.push_back('\n');
         shas += utils::genSha1(unit.src);
+        shas.push_back('\n');
     }
     return utils::genSha1(shas);
 }
@@ -411,53 +713,32 @@ inline void SaveShaderToFile(std::span<const ShaderCode> codes, fs::IBinaryStrea
 std::string WPShaderParser::PreShaderSrc(fs::VFS& vfs, const std::string& src,
                                          WPShaderInfo*                       pWPShaderInfo,
                                          const std::vector<WPShaderTexInfo>& texinfos) {
-    std::string            newsrc(src);
-    std::string::size_type pos = 0;
-    std::string            include;
-    while (pos = src.find("#include", pos), pos != std::string::npos) {
-        auto begin = pos;
-        pos        = src.find_first_of('\n', pos);
-        newsrc.replace(begin, pos - begin, pos - begin, ' ');
-        include.append(src.substr(begin, pos - begin) + "\n");
-    }
-    include = LoadGlslInclude(vfs, include);
+    const auto include_started = std::chrono::steady_clock::now();
+    auto expansion = wallpaper::shader::ExpandIncludes(vfs, src);
+    g_shader_startup_metrics.include_expand_ms += MeasureElapsedMs(include_started);
 
-    ParseWPShader(include, pWPShaderInfo, texinfos);
-    ParseWPShader(newsrc, pWPShaderInfo, texinfos);
-
-    newsrc.insert(FindIncludeInsertPos(newsrc, 0), include);
-    return newsrc;
+    const auto metadata_started = std::chrono::steady_clock::now();
+    wallpaper::shader::ExtractMetadata(expansion.expanded_includes, pWPShaderInfo, texinfos);
+    wallpaper::shader::ExtractMetadata(expansion.source_without_includes, pWPShaderInfo, texinfos);
+    g_shader_startup_metrics.metadata_extract_ms += MeasureElapsedMs(metadata_started);
+    return wallpaper::shader::MergeExpandedIncludes(std::move(expansion));
 }
 
 std::string WPShaderParser::PreShaderHeader(const std::string& src, const Combos& combos,
                                             ShaderType type) {
-    std::string pre(pre_shader_code);
-    if (type == ShaderType::VERTEX) pre += pre_shader_code_vert;
-    if (type == ShaderType::FRAGMENT) pre += pre_shader_code_frag;
-    std::string header(pre);
-    for (const auto& c : combos) {
-        std::string cup(c.first);
-        std::transform(c.first.begin(), c.first.end(), cup.begin(), ::toupper);
-        if (c.second.empty()) {
-            LOG_ERROR("combo '%s' can't be empty", cup.c_str());
-            continue;
-        }
-        header.append("#define " + cup + " " + c.second + "\n");
-    }
-    return header + src;
+    return wallpaper::shader::BuildShaderHeader(src, combos, type);
 }
 
 void WPShaderParser::InitGlslang() { glslang::InitializeProcess(); }
 void WPShaderParser::FinalGlslang() { glslang::FinalizeProcess(); }
 
+void WPShaderParser::ResetStartupMetrics() { g_shader_startup_metrics = {}; }
+ShaderStartupMetrics WPShaderParser::GetStartupMetrics() { return g_shader_startup_metrics; }
+
 bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderUnit> units,
                                   std::vector<ShaderCode>& codes, fs::VFS& vfs,
                                   WPShaderInfo* shader_info, std::span<const WPShaderTexInfo> texs) {
     (void)texs;
-
-    std::for_each(units.begin(), units.end(), [shader_info](auto& unit) {
-        unit.src = Preprocessor(unit.src, unit.stage, shader_info->combos, unit.preprocess_info);
-    });
 
     auto compile = [](std::span<WPShaderUnit> units, std::vector<ShaderCode>& codes) {
         std::vector<vulkan::ShaderCompUnit> vunits(units.size());
@@ -484,9 +765,12 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
 
         std::vector<vulkan::Uni_ShaderSpv> spvs(units.size());
 
+        const auto compile_started = std::chrono::steady_clock::now();
         if (! vulkan::CompileAndLinkShaderUnits(vunits, opt, spvs)) {
+            g_shader_startup_metrics.compile_ms += MeasureElapsedMs(compile_started);
             return false;
         }
+        g_shader_startup_metrics.compile_ms += MeasureElapsedMs(compile_started);
 
         codes.clear();
         for (auto& spv : spvs) {
@@ -498,24 +782,41 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
     bool has_cache_dir = vfs.IsMounted("cache");
 
     if (has_cache_dir) {
-        std::string sha1            = GenSha1(units);
+        std::string sha1            = GenSha1(units, shader_info);
         std::string cache_file_path = GetCachePath(scene_id, sha1);
 
         if (vfs.Contains(cache_file_path)) {
+            g_shader_startup_metrics.cache_hits++;
+            const auto cache_read_started = std::chrono::steady_clock::now();
             auto cache_file = vfs.Open(cache_file_path);
-            if (! cache_file || ! ::LoadShaderFromFile(codes, *cache_file)) {
+            const bool loaded = cache_file && ::LoadShaderFromFile(codes, *cache_file);
+            g_shader_startup_metrics.cache_read_ms += MeasureElapsedMs(cache_read_started);
+            if (!loaded) {
                 LOG_ERROR("load shader from \'%s\' failed", cache_file_path.c_str());
                 return false;
             }
         } else {
+            g_shader_startup_metrics.cache_misses++;
+            std::for_each(units.begin(), units.end(), [shader_info](auto& unit) {
+                const Combos empty_combos {};
+                const auto& combos = shader_info != nullptr ? shader_info->combos : empty_combos;
+                unit.src = Preprocessor(unit.src, unit.stage, combos, unit.preprocess_info);
+            });
             if (! compile(units, codes)) return false;
+            const auto cache_write_started = std::chrono::steady_clock::now();
             if (auto cache_file = vfs.OpenW(cache_file_path); cache_file) {
                 ::SaveShaderToFile(codes, *cache_file);
             }
+            g_shader_startup_metrics.cache_write_ms += MeasureElapsedMs(cache_write_started);
         }
         return true;
 
     } else {
+        std::for_each(units.begin(), units.end(), [shader_info](auto& unit) {
+            const Combos empty_combos {};
+            const auto& combos = shader_info != nullptr ? shader_info->combos : empty_combos;
+            unit.src = Preprocessor(unit.src, unit.stage, combos, unit.preprocess_info);
+        });
         return compile(units, codes);
     }
 }
