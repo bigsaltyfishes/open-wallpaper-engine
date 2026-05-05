@@ -8,6 +8,9 @@
 
 #include "VulkanRender/AllPasses.hpp"
 
+#include <cstdlib>
+#include <sstream>
+
 using namespace wallpaper;
 namespace wallpaper::rg
 {
@@ -64,9 +67,108 @@ static TexNode::Desc createTexDesc(std::string path) {
 }
 } // namespace wallpaper::rg
 
-static void TraverseNode(const std::function<void(SceneNode*)>& func, SceneNode* node) {
+static bool EnvFlagEnabled(const char* name)
+{
+    const char* value = std::getenv(name);
+    if (value == nullptr || value[0] == '\0') return false;
+    const std::string_view view(value);
+    return view != "0" && view != "false" && view != "FALSE";
+}
+
+static bool EnvMatches(const char* name, std::string_view expected)
+{
+    const char* value = std::getenv(name);
+    return value != nullptr && expected == value;
+}
+
+static bool IsComposeEffectCamera(
+    Scene& scene,
+    const std::shared_ptr<SceneCamera>& camera,
+    const SceneNode* owner)
+{
+    if (camera == nullptr || scene.activeCamera == nullptr) return false;
+    if (!camera->HasImgEffect() || !camera->IsComposeLayer()) return false;
+
+    const auto effect_anchor = camera->GetAttachedNode();
+    if (effect_anchor == nullptr) return false;
+    if (owner != nullptr && effect_anchor.get() == owner) return true;
+
+    const auto active_anchor = scene.activeCamera->GetAttachedNode();
+    return active_anchor != nullptr && effect_anchor.get() == active_anchor.get();
+}
+
+static bool IsComposeEffectNode(Scene& scene, const SceneNode* node)
+{
+    if (node == nullptr || node->Camera().empty()) return false;
+    auto camera_iterator = scene.cameras.find(node->Camera());
+    if (camera_iterator == scene.cameras.end() || camera_iterator->second == nullptr) return false;
+    return IsComposeEffectCamera(scene, camera_iterator->second, node);
+}
+
+static std::string ActiveCameraName(Scene& scene)
+{
+    for (const auto& [name, camera] : scene.cameras) {
+        if (camera != nullptr && camera.get() == scene.activeCamera) return name;
+    }
+    return {};
+}
+
+static bool IsResolvedImageEffectFinalNode(
+    Scene& scene,
+    const SceneNode* effect_node,
+    const SceneNode* owner)
+{
+    if (effect_node == nullptr || owner == nullptr || owner->Camera().empty()) return false;
+    auto camera_iterator = scene.cameras.find(owner->Camera());
+    if (camera_iterator == scene.cameras.end() || camera_iterator->second == nullptr) return false;
+    if (!camera_iterator->second->HasImgEffect()) return false;
+    return camera_iterator->second->GetImgEffect()->ResolvedFinalRenderNode() == effect_node;
+}
+
+static bool ShouldDebugSkipGraphPass(const SceneNode* node, std::string_view material_name)
+{
+    if (node != nullptr && EnvMatches("WE_DEBUG_SKIP_NODE", node->Name())) return true;
+    if (EnvMatches("WE_DEBUG_SKIP_MATERIAL", material_name)) return true;
+    if (material_name == "passthrough" && EnvFlagEnabled("WE_DEBUG_SKIP_PASSTHROUGH")) return true;
+    return false;
+}
+
+struct ComposeTarget
+{
+    std::string target;
+    std::string camera;
+};
+
+static ComposeTarget ResolveNearestComposeTarget(Scene& scene, SceneNode* node)
+{
+    for (auto* current = node; current != nullptr; current = current->Parent()) {
+        if (current->Camera().empty()) continue;
+        auto camera_iterator = scene.cameras.find(current->Camera());
+        if (camera_iterator == scene.cameras.end() || camera_iterator->second == nullptr) continue;
+        if (!IsComposeEffectCamera(scene, camera_iterator->second, current)) continue;
+        return {
+            .target = camera_iterator->second->GetImgEffect()->FirstTarget(),
+            .camera = current->Camera(),
+        };
+    }
+    return {};
+}
+
+enum class GraphPassMode
+{
+    All,
+    BaseOnly,
+    EffectsOnly,
+};
+
+static void TraverseNode(
+    const std::function<void(SceneNode*)>& func,
+    SceneNode* node) {
+    if (node == nullptr) return;
     func(node);
-    for (auto& child : node->GetChildren()) TraverseNode(func, child.get());
+    for (auto& child : node->GetChildren()) {
+        TraverseNode(func, child.get());
+    }
 }
 
 static void CheckAndSetSprite(Scene& scene, vulkan::CustomShaderPass::Desc& desc,
@@ -96,7 +198,13 @@ struct ExtraInfo {
     bool                       use_mipmap_framebuffer { false };
 };
 
-static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, ExtraInfo& extra) {
+static void ToGraphPass(
+    SceneNode* node,
+    std::string output,
+    i32 imgId,
+    ExtraInfo& extra,
+    SceneNode* visibility_node = nullptr,
+    GraphPassMode mode = GraphPassMode::All) {
     auto& rgraph = *extra.rgraph;
     auto& scene  = *extra.scene;
 
@@ -115,7 +223,7 @@ static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, Ext
                     cmdItor++;
                 }
                 auto& name = n.output;
-                ToGraphPass(n.sceneNode.get(), name, node->ID(), extra);
+                ToGraphPass(n.sceneNode.get(), name, node->ID(), extra, node);
                 nodePos++;
             }
         }
@@ -126,6 +234,7 @@ static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, Ext
     if (mesh->Material() == nullptr) return;
     auto* material   = mesh->Material();
     auto* mshaderPtr = material->customShader.shader.get();
+    (void)mshaderPtr;
 
     SceneImageEffectLayer* imgeff = nullptr;
     if (! node->Camera().empty()) {
@@ -136,73 +245,132 @@ static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, Ext
         }
     }
 
+    std::string camera_override;
+    if (mode == GraphPassMode::BaseOnly && IsComposeEffectNode(scene, node)) {
+        camera_override = ActiveCameraName(scene);
+    }
+    const bool route_effect_final_to_compose =
+        IsResolvedImageEffectFinalNode(scene, node, visibility_node);
+    if (!output.empty() && (output == SpecTex_Default || route_effect_final_to_compose)) {
+        SceneNode* compose_anchor = node->Parent();
+        if (compose_anchor == nullptr && visibility_node != nullptr) {
+            compose_anchor = visibility_node->Parent();
+        }
+        const auto compose_target = ResolveNearestComposeTarget(scene, compose_anchor);
+        if (!compose_target.target.empty()) output = compose_target.target;
+        if (!compose_target.camera.empty()) camera_override = compose_target.camera;
+    }
+
     std::string passName = material->name;
 
-    rgraph.addPass<vulkan::CustomShaderPass>(
-        passName,
-        rg::PassNode::Type::CustomShader,
-        [material, node, &output, &imgId, &rgraph, &scene, &extra](
-            rg::RenderGraphBuilder& builder, vulkan::CustomShaderPass::Desc& pdesc) {
-            const auto& pass = builder.workPassNode();
-            pdesc.node       = node;
-            pdesc.output     = output;
-            CheckAndSetSprite(scene, pdesc, material->textures);
-            for (usize i = 0; i < material->textures.size(); i++) {
-                const auto&  url = material->textures[i];
-                rg::TexNode* input { nullptr };
-                if (url.empty()) {
-                    pdesc.textures.emplace_back("");
-                    continue;
-                } else if (IsSpecLinkTex(url)) {
-                    auto id = ParseLinkTex(url);
-                    extra.link_info.push_back(
-                        DelayLinkInfo { .id = pass.ID(), .link_id = id, .tex_index = (i32)i });
-                    pdesc.textures.emplace_back("");
-                    continue;
-                } else {
-                    rg::TexNode::Desc desc;
-                    desc.key  = url;
-                    desc.name = url;
-                    desc.type = ! IsSpecTex(url) ? rg::TexNode::TexType::Imported
-                                                 : rg::TexNode::TexType::Temp;
-                    input     = builder.createTexNode(desc);
-                    if (IsSpecTex(url)) builder.markVirtualWrite(input);
-                    if (sstart_with(url, WE_MIP_MAPPED_FRAME_BUFFER))
-                        extra.use_mipmap_framebuffer = true;
+    if (ShouldDebugSkipGraphPass(node, passName)) {
+        return;
+    }
+
+    if (mode != GraphPassMode::EffectsOnly && !node->SkipRenderPass()) {
+        rgraph.addPass<vulkan::CustomShaderPass>(
+            passName,
+            rg::PassNode::Type::CustomShader,
+            [material, node, visibility_node, &output, &imgId, &rgraph, &scene, &extra, camera_override](
+                rg::RenderGraphBuilder& builder, vulkan::CustomShaderPass::Desc& pdesc) {
+                const auto& pass = builder.workPassNode();
+                const auto  resolved_output = scene.ResolveRenderTargetName(output);
+                pdesc.node            = node;
+                pdesc.visibility_node = visibility_node != nullptr ? visibility_node : node;
+                pdesc.output          = resolved_output;
+                pdesc.camera_override = camera_override;
+                CheckAndSetSprite(scene, pdesc, material->textures);
+                for (usize i = 0; i < material->textures.size(); i++) {
+                    const auto& texture_name = material->textures[i];
+                    const auto  url = IsSpecTex(texture_name)
+                        ? scene.ResolveRenderTargetName(texture_name)
+                        : texture_name;
+                    rg::TexNode* input { nullptr };
+                    if (url.empty()) {
+                        pdesc.textures.emplace_back("");
+                        continue;
+                    } else if (IsSpecLinkTex(url)) {
+                        auto id = ParseLinkTex(url);
+                        extra.link_info.push_back(
+                            DelayLinkInfo { .id = pass.ID(), .link_id = id, .tex_index = (i32)i });
+                        pdesc.textures.emplace_back("");
+                        continue;
+                    } else {
+                        rg::TexNode::Desc desc;
+                        desc.key  = url;
+                        desc.name = url;
+                        desc.type = ! IsSpecTex(url) ? rg::TexNode::TexType::Imported
+                                                     : rg::TexNode::TexType::Temp;
+                        input     = builder.createTexNode(desc);
+                        if (IsSpecTex(url)) builder.markVirtualWrite(input);
+                        if (sstart_with(url, WE_MIP_MAPPED_FRAME_BUFFER))
+                            extra.use_mipmap_framebuffer = true;
+                    }
+
+                    if (url == output) {
+                        builder.markSelfWrite(input);
+                        input = rg::addCopyPass(rgraph, input);
+                    }
+                    builder.read(input);
+                    pdesc.textures.emplace_back(input->key());
                 }
 
-                if (url == output) {
-                    builder.markSelfWrite(input);
-                    input = rg::addCopyPass(rgraph, input);
+                rg::TexNode* output_node { nullptr };
+                output_node =
+                    builder.createTexNode(rg::TexNode::Desc { .name = resolved_output,
+                                                              .key  = resolved_output,
+                                                              .type = rg::TexNode::TexType::Temp },
+                                          true);
+                builder.write(output_node);
+                if (resolved_output == SpecTex_Default) {
+                    extra.id_link_map[(usize)imgId] = output_node;
                 }
-                builder.read(input);
-                pdesc.textures.emplace_back(input->key());
-            }
-
-            rg::TexNode* output_node { nullptr };
-            output_node =
-                builder.createTexNode(rg::TexNode::Desc { .name = output.data(),
-                                                          .key  = output.data(),
-                                                          .type = rg::TexNode::TexType::Temp },
-                                      true);
-            builder.write(output_node);
-            if (output == SpecTex_Default) {
-                extra.id_link_map[(usize)imgId] = output_node;
-            }
-        });
+            });
+    }
 
     // load effect
-    if (imgeff != nullptr) loadEffect(imgeff);
+    if (mode != GraphPassMode::BaseOnly && imgeff != nullptr) loadEffect(imgeff);
 }
 
 std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
     std::unique_ptr<rg::RenderGraph> rgraph = std::make_unique<rg::RenderGraph>();
     ExtraInfo                        extra { .rgraph = rgraph.get(), .scene = &scene };
-    TraverseNode(
-        [&extra](SceneNode* node) {
-            ToGraphPass(node, SpecTex_Default, node->ID(), extra);
-        },
-        scene.sceneGraph.get());
+    std::function<void(SceneNode*)> build_graph = [&extra, &build_graph](SceneNode* node) {
+        if (node == nullptr) return;
+
+        const bool is_compose_effect_node = IsComposeEffectNode(*extra.scene, node);
+
+        if (is_compose_effect_node) {
+            if (!node->SkipRenderPass()) {
+                ToGraphPass(
+                    node,
+                    std::string(SpecTex_Default),
+                    node->ID(),
+                    extra,
+                    nullptr,
+                    GraphPassMode::BaseOnly);
+            }
+        } else if (!node->SkipRenderPass()) {
+            ToGraphPass(node, std::string(SpecTex_Default), node->ID(), extra);
+        }
+
+        for (auto& child : node->GetChildren()) {
+            build_graph(child.get());
+        }
+
+        if (is_compose_effect_node) {
+            ToGraphPass(
+                node,
+                std::string(SpecTex_Default),
+                node->ID(),
+                extra,
+                nullptr,
+                GraphPassMode::EffectsOnly);
+        } else if (node->SkipRenderPass()) {
+            ToGraphPass(node, std::string(SpecTex_Default), node->ID(), extra);
+        }
+    };
+    build_graph(scene.sceneGraph.get());
 
     for (auto& info : extra.link_info) {
         if (! exists(extra.id_link_map, info.link_id)) {
@@ -233,6 +401,40 @@ std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
                         rg::TexNode::Desc { .name = WE_MIP_MAPPED_FRAME_BUFFER.data(),
                                             .key  = WE_MIP_MAPPED_FRAME_BUFFER.data(),
                                             .type = rg::TexNode::TexType::Temp });
+    }
+
+    Set<std::string> written_targets {};
+    for (const auto node_id : rgraph->topologicalOrder()) {
+        if (auto* copy_pass = dynamic_cast<vulkan::CopyPass*>(rgraph->getPass(node_id));
+            copy_pass != nullptr) {
+            if (!copy_pass->desc().dst.empty()) {
+                written_targets.insert(copy_pass->desc().dst);
+            }
+            continue;
+        }
+
+        auto* custom_pass = dynamic_cast<vulkan::CustomShaderPass*>(rgraph->getPass(node_id));
+        if (custom_pass == nullptr) continue;
+
+        auto& desc = custom_pass->desc();
+        desc.write_alpha = desc.output != SpecTex_Default;
+
+        const bool first_writer =
+            !desc.output.empty() && written_targets.insert(desc.output).second;
+        if (!first_writer) {
+            desc.clear_on_first_use = false;
+            desc.preserve_target_contents = true;
+            continue;
+        }
+
+        desc.preserve_target_contents = false;
+        if (desc.output == SpecTex_Default) {
+            desc.clear_on_first_use = scene.clearEnabled;
+            continue;
+        }
+
+        const auto render_target = scene.FindRenderTarget(desc.output);
+        desc.clear_on_first_use = render_target != nullptr && render_target->allowReuse;
     }
 
     return rgraph;

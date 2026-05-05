@@ -21,6 +21,7 @@ constexpr std::array WE_GLTEX_MIPMAPINFO_NAMES { BASE_GLTEX_NAMES(MipMapInfo) };
 #undef BASE_GLTEX_NAMES
 
 constexpr std::string_view WE_SPEC_PREFIX { "_rt_" };
+constexpr std::string_view WE_ALIAS_PREFIX { "_alias_" };
 constexpr std::string_view WE_IMAGE_LAYER_COMPOSITE_PREFIX { "_rt_imageLayerComposite_" };
 constexpr std::string_view WE_HALF_COMPO_BUFFER_PREFIX { "_rt_HalfCompoBuffer" };
 constexpr std::string_view WE_QUARTER_COMPO_BUFFER_PREFIX { "_rt_QuarterCompoBuffer" };
@@ -74,7 +75,18 @@ constexpr std::string_view G_PARALLAXPOSITION { "g_ParallaxPosition" };
 constexpr std::string_view SpecTex_Default { "_rt_default" };
 constexpr std::string_view SpecTex_Link { "_rt_link_" };
 
-inline bool IsSpecTex(const std::string_view name) { return sstart_with(name, WE_SPEC_PREFIX); }
+inline bool IsImplicitSpecTex(const std::string_view name) {
+    return !name.empty() && name.front() == '_' && name.find('/') == std::string_view::npos &&
+           name.find('.') == std::string_view::npos;
+}
+inline bool IsSpecTex(const std::string_view name) {
+    return sstart_with(name, WE_SPEC_PREFIX) || sstart_with(name, WE_ALIAS_PREFIX) ||
+           IsImplicitSpecTex(name);
+}
+inline std::string EnsureSpecTexName(const std::string_view name) {
+    if (name.empty() || IsSpecTex(name)) return std::string(name);
+    return std::string(WE_SPEC_PREFIX) + std::string(name);
+}
 inline bool IsSpecLinkTex(const std::string_view name) { return sstart_with(name, SpecTex_Link); }
 inline uint32_t ParseLinkTex(const std::string_view name) {
     std::string sid { name };

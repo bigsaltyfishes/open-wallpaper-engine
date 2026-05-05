@@ -152,12 +152,21 @@ class WPParticleObject {
 public:
     bool                     FromJson(const nlohmann::json&, fs::VFS&);
     int32_t                  id;
+    int32_t                  parent_id { -1 };
     std::string              name;
     std::array<float, 3>     origin { 0.0f, 0.0f, 0.0f };
     std::array<float, 3>     scale { 1.0f, 1.0f, 1.0f };
     std::array<float, 3>     angles { 0.0f, 0.0f, 0.0f };
     std::array<float, 2>     parallaxDepth { 0.0f, 0.0f };
     bool                     visible { true };
+    bool                     dynamic_origin { false };
+    bool                     dynamic_scale { false };
+    bool                     dynamic_angles { false };
+    bool                     dynamic_visible { false };
+    nlohmann::json           origin_setting;
+    nlohmann::json           scale_setting;
+    nlohmann::json           angles_setting;
+    nlohmann::json           visible_setting;
     std::string              particle;
     Particle                 particleObj;
     ParticleInstanceoverride instanceoverride;

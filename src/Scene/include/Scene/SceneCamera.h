@@ -51,6 +51,8 @@ public:
     void  AttatchImgEffect(std::shared_ptr<SceneImageEffectLayer> eff) { m_imgEffect = eff; }
     bool  HasImgEffect() const { return (bool)m_imgEffect; }
     auto& GetImgEffect() { return m_imgEffect; }
+    void  SetComposeLayer(bool compose) { m_isComposeLayer = compose; }
+    bool  IsComposeLayer() const { return m_isComposeLayer; }
 
     Eigen::Vector3d GetPosition() const;
     Eigen::Vector3d GetDirection() const;
@@ -67,6 +69,7 @@ public:
         m_nearClip    = cam.m_nearClip;
         m_farClip     = cam.m_farClip;
         m_perspective = cam.m_perspective;
+        m_isComposeLayer = cam.m_isComposeLayer;
     }
 
 private:
@@ -85,5 +88,6 @@ private:
 
     std::shared_ptr<SceneNode>             m_node;
     std::shared_ptr<SceneImageEffectLayer> m_imgEffect { nullptr };
+    bool                                   m_isComposeLayer { false };
 };
 } // namespace wallpaper

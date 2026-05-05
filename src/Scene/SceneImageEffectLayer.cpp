@@ -17,6 +17,7 @@ SceneImageEffectLayer::SceneImageEffectLayer(SceneNode* node, float w, float h,
 
 void SceneImageEffectLayer::ResolveEffect(const SceneMesh& default_mesh,
                                           std::string_view effect_cam) {
+    m_resolved_final_render_node = nullptr;
     std::string_view ppong_a = m_pingpong_a, ppong_b = m_pingpong_b;
     auto             swap_pp = [&ppong_a, &ppong_b]() {
         std::swap(ppong_a, ppong_b);
@@ -60,6 +61,7 @@ void SceneImageEffectLayer::ResolveEffect(const SceneMesh& default_mesh,
     }
     if (last_output != nullptr) {
         last_output->output = SpecTex_Default;
+        m_resolved_final_render_node = last_output->sceneNode.get();
         auto& mesh          = *(last_output->sceneNode->Mesh());
         auto& material      = *mesh.Material();
         {

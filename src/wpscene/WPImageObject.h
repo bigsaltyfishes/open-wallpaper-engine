@@ -60,21 +60,35 @@ public:
     };
     bool                       FromJson(const nlohmann::json&, fs::VFS&);
     int32_t                    id { 0 };
+    int32_t                    parent_id { -1 };
     std::string                name;
     std::array<float, 3>       origin { 0.0f, 0.0f, 0.0f };
     std::array<float, 3>       scale { 1.0f, 1.0f, 1.0f };
     std::array<float, 3>       angles { 0.0f, 0.0f, 0.0f };
     std::array<float, 2>       size { 2.0f, 2.0f };
     std::array<float, 2>       parallaxDepth { 0.0f, 0.0f };
+    std::array<float, 2>       cropoffset { 0.0f, 0.0f };
     std::array<float, 3>       color { 1.0f, 1.0f, 1.0f };
     int32_t                    colorBlendMode { 0 };
+    bool                       copybackground { true };
     float                      alpha { 1.0f };
     float                      brightness { 1.0f };
     bool                       fullscreen { false };
     bool                       nopadding { false };
     bool                       visible { true };
+    bool                       autosize { false };
+    bool                       dynamic_origin { false };
+    bool                       dynamic_scale { false };
+    bool                       dynamic_angles { false };
+    bool                       dynamic_visible { false };
+    bool                       dynamic_alpha { false };
     std::string                image;
     std::string                alignment { "center" };
+    nlohmann::json             origin_setting;
+    nlohmann::json             scale_setting;
+    nlohmann::json             angles_setting;
+    nlohmann::json             visible_setting;
+    nlohmann::json             alpha_setting;
     WPMaterial                 material;
     std::vector<WPImageEffect> effects;
     Config                     config;
@@ -86,7 +100,7 @@ public:
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPEffectFbo, name, scale);
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPImageEffect, name, visible, passes, fbos, materials);
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPImageObject, name, origin, angles, scale, size, visible,
-                                   material, effects);
+                                   material, effects, autosize, cropoffset);
 
 } // namespace wpscene
 } // namespace wallpaper

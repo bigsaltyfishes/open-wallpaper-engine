@@ -31,6 +31,7 @@ class WPSceneGeneral {
 public:
     bool                 FromJson(const nlohmann::json&);
     std::array<float, 3> clearcolor { 0.0f, 0.0f, 0.0f };
+    bool                 clearenabled { true };
     bool                 cameraparallax { false };
     float                cameraparallaxamount;
     float                cameraparallaxdelay;
@@ -54,7 +55,12 @@ public:
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Orthogonalprojection, width, height);
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPSceneCamera, center, eye, up);
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPSceneGeneral, clearcolor, orthogonalprojection, zoom);
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(
+    WPSceneGeneral,
+    clearcolor,
+    clearenabled,
+    orthogonalprojection,
+    zoom);
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPScene, camera, general);
 } // namespace wpscene
 } // namespace wallpaper

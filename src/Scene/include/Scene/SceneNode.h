@@ -2,6 +2,8 @@
 #include <list>
 #include <vector>
 #include <memory>
+#include <optional>
+#include <utility>
 #include <Eigen/Dense>
 #include "SceneMesh.h"
 #include "SceneCamera.h"
@@ -38,14 +40,46 @@ public:
     Eigen::Matrix4d GetLocalTrans() const;
 
     const auto& Translate() const { return m_translate; }
+    const auto& Scale() const { return m_scale; }
     const auto& Rotation() const { return m_rotation; }
-    void        SetRotation(Eigen::Vector3f v) { m_rotation = v; }
-    void        SetTranslate(Eigen::Vector3f v) { m_translate = v; }
+    const auto& Name() const { return m_name; }
+    bool        Visible() const { return m_visible; }
+    bool        SkipRenderPass() const { return m_skipRenderPass; }
+    bool        EffectiveVisible() const {
+        return m_visible && (m_parent == nullptr || m_parent->EffectiveVisible());
+    }
+    void        SetRotation(Eigen::Vector3f v) {
+        if (m_rotation.isApprox(v, 1.0e-6f)) return;
+        m_rotation = v;
+        MarkTransDirty();
+    }
+    void        SetTranslate(Eigen::Vector3f v) {
+        if (m_translate.isApprox(v, 1.0e-6f)) return;
+        m_translate = v;
+        MarkTransDirty();
+    }
+    void        SetScale(Eigen::Vector3f v) {
+        if (m_scale.isApprox(v, 1.0e-6f)) return;
+        m_scale = v;
+        MarkTransDirty();
+    }
+    void        SetVisible(bool visible) { m_visible = visible; }
+    void        SetSkipRenderPass(bool skip) { m_skipRenderPass = skip; }
 
     void CopyTrans(const SceneNode& node) {
         m_translate = node.m_translate;
         m_scale     = node.m_scale;
         m_rotation  = node.m_rotation;
+        m_renderTransformOverride = node.m_renderTransformOverride;
+    }
+
+    void SetRenderTransformOverride(Eigen::Matrix4d transform) {
+        m_renderTransformOverride = std::move(transform);
+    }
+    void ClearRenderTransformOverride() { m_renderTransformOverride.reset(); }
+    bool HasRenderTransformOverride() const { return m_renderTransformOverride.has_value(); }
+    Eigen::Matrix4d RenderTrans() const {
+        return m_renderTransformOverride.value_or(m_trans);
     }
 
     // update self modle trans (will update parent before)
@@ -57,6 +91,8 @@ public:
 
     const auto& GetChildren() const { return m_children; }
     auto&       GetChildren() { return m_children; }
+    SceneNode*  Parent() const { return m_parent; }
+    bool        NodeHasParent() const { return m_parent != nullptr; }
 
     i32& ID() { return m_id; }
 
@@ -66,6 +102,8 @@ private:
 
     i32         m_id;
     std::string m_name;
+    bool        m_visible { true };
+    bool        m_skipRenderPass { false };
 
     bool            m_dirty;
     Eigen::Matrix4d m_trans;
@@ -73,6 +111,7 @@ private:
     Eigen::Vector3f m_translate { 0.0f, 0.0f, 0.0f };
     Eigen::Vector3f m_scale { 1.0f, 1.0f, 1.0f };
     Eigen::Vector3f m_rotation { 0.0f, 0.0f, 0.0f };
+    std::optional<Eigen::Matrix4d> m_renderTransformOverride {};
 
     std::shared_ptr<SceneMesh> m_mesh;
 

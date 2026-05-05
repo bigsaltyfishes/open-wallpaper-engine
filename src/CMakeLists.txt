@@ -61,6 +61,7 @@ add_library(
   WPPuppet.cpp
   Project/ProjectManifest.cpp
   Project/ProjectProperties.cpp
+  Runtime/VirtualAssetRegistry.cpp
   SceneSourceResolver.cpp
   SceneWallpaper.cpp)
 

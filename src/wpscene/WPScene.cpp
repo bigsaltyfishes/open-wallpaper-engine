@@ -25,6 +25,7 @@ bool WPSceneGeneral::FromJson(const nlohmann::json& json) {
     GET_JSON_NAME_VALUE(json, "ambientcolor", ambientcolor);
     GET_JSON_NAME_VALUE(json, "skylightcolor", skylightcolor);
 	GET_JSON_NAME_VALUE(json, "clearcolor", clearcolor);
+	GET_JSON_NAME_VALUE_NOWARN(json, "clearenabled", clearenabled);
 	GET_JSON_NAME_VALUE(json, "cameraparallax", cameraparallax);
 	GET_JSON_NAME_VALUE(json, "cameraparallaxamount", cameraparallaxamount);
 	GET_JSON_NAME_VALUE(json, "cameraparallaxdelay", cameraparallaxdelay);

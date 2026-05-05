@@ -1,5 +1,6 @@
 #pragma once
 #include <unordered_map>
+#include <string_view>
 
 #include "SceneTexture.h"
 #include "SceneRenderTarget.h"
@@ -26,6 +27,7 @@ public:
 
     std::unordered_map<std::string, SceneTexture>      textures;
     std::unordered_map<std::string, SceneRenderTarget> renderTargets;
+    std::unordered_map<std::string, std::string>       renderTargetAliases;
 
     std::unordered_map<std::string, std::shared_ptr<SceneCamera>> cameras;
     std::unordered_map<std::string, std::vector<std::string>>     linkedCameras;
@@ -50,6 +52,7 @@ public:
 
     i32                  ortho[2] { 1920, 1080 }; // w, h
     std::array<float, 3> clearColor { 1.0f, 1.0f, 1.0f };
+    bool                 clearEnabled { true };
 
     double elapsingTime { 0.0f }, frameTime { 0.0f };
     void   PassFrameTime(double t) {
@@ -67,6 +70,30 @@ public:
                 }
             }
         }
+    }
+
+    std::string ResolveRenderTargetName(std::string_view name) const {
+        auto alias = renderTargetAliases.find(std::string(name));
+        if (alias != renderTargetAliases.end()) return alias->second;
+        return std::string(name);
+    }
+
+    bool HasRenderTarget(std::string_view name) const {
+        return FindRenderTarget(name) != nullptr;
+    }
+
+    SceneRenderTarget* FindRenderTarget(std::string_view name) {
+        const std::string resolved = ResolveRenderTargetName(name);
+        auto it = renderTargets.find(resolved);
+        if (it == renderTargets.end()) return nullptr;
+        return &it->second;
+    }
+
+    const SceneRenderTarget* FindRenderTarget(std::string_view name) const {
+        const std::string resolved = ResolveRenderTargetName(name);
+        auto it = renderTargets.find(resolved);
+        if (it == renderTargets.end()) return nullptr;
+        return &it->second;
     }
 };
 } // namespace wallpaper

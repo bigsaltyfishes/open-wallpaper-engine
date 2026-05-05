@@ -2,7 +2,55 @@
 #include "Utils/Logging.h"
 #include "Fs/VFS.h"
 
+#include <sstream>
+
 using namespace wallpaper::wpscene;
+
+namespace
+{
+
+const nlohmann::json& unwrap_setting(const nlohmann::json& value)
+{
+    if (value.is_object() && value.contains("value")) return value.at("value");
+    return value;
+}
+
+bool has_dynamic_setting(const nlohmann::json& value)
+{
+    return value.is_object() && (value.contains("script") || value.contains("user"));
+}
+
+void read_vec3_setting(
+    const nlohmann::json&  json,
+    const char*            key,
+    std::array<float, 3>*  destination,
+    nlohmann::json*        setting,
+    bool*                  dynamic)
+{
+    if (!json.contains(key) || destination == nullptr || setting == nullptr || dynamic == nullptr) return;
+
+    *setting = json.at(key);
+    *dynamic = has_dynamic_setting(*setting);
+
+    const auto& source = unwrap_setting(*setting);
+    if (source.is_array() && source.size() >= 3) {
+        (*destination)[0] = source.at(0).get<float>();
+        (*destination)[1] = source.at(1).get<float>();
+        (*destination)[2] = source.at(2).get<float>();
+        return;
+    }
+    if (source.is_number()) {
+        const float scalar = source.get<float>();
+        *destination = { scalar, scalar, scalar };
+        return;
+    }
+    if (source.is_string()) {
+        std::istringstream stream(source.get<std::string>());
+        stream >> (*destination)[0] >> (*destination)[1] >> (*destination)[2];
+    }
+}
+
+} // namespace
 
 
 bool WPEffectCommand::FromJson(const nlohmann::json& json) {
@@ -137,6 +185,11 @@ bool WPImageEffect::FromFileJson(const nlohmann::json& json, fs::VFS& vfs) {
 bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
     GET_JSON_NAME_VALUE(json, "image", image);
     GET_JSON_NAME_VALUE_NOWARN(json, "visible", visible);
+    if (json.contains("visible")) {
+        visible_setting  = json.at("visible");
+        dynamic_visible = visible_setting.is_object() &&
+                          (visible_setting.contains("script") || visible_setting.contains("user"));
+    }
     GET_JSON_NAME_VALUE_NOWARN(json, "alignment", alignment);
     nlohmann::json jImage;
     if(!PARSE_JSON(fs::GetFileContent(vfs, "/assets/" + image), jImage)) {
@@ -144,13 +197,16 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
         return false;
     }
     GET_JSON_NAME_VALUE_NOWARN(jImage, "fullscreen", fullscreen);
+    GET_JSON_NAME_VALUE_NOWARN(jImage, "passthrough", config.passthrough);
 	GET_JSON_NAME_VALUE_NOWARN(json, "name", name);
 	GET_JSON_NAME_VALUE_NOWARN(json, "id", id);
+	GET_JSON_NAME_VALUE_NOWARN(json, "parent", parent_id);
 	GET_JSON_NAME_VALUE_NOWARN(json, "colorBlendMode", colorBlendMode);
+    GET_JSON_NAME_VALUE_NOWARN(json, "copybackground", copybackground);
+    read_vec3_setting(json, "origin", &origin, &origin_setting, &dynamic_origin);
+    read_vec3_setting(json, "scale", &scale, &scale_setting, &dynamic_scale);
+    read_vec3_setting(json, "angles", &angles, &angles_setting, &dynamic_angles);
 	if(!fullscreen) {
-		GET_JSON_NAME_VALUE(json, "origin", origin);	
-		GET_JSON_NAME_VALUE(json, "angles", angles);	
-		GET_JSON_NAME_VALUE(json, "scale", scale);	
 		GET_JSON_NAME_VALUE_NOWARN(json, "parallaxDepth", parallaxDepth);
 		if(jImage.contains("width")) {
 			int32_t w,h;
@@ -165,6 +221,10 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
     }
     GET_JSON_NAME_VALUE_NOWARN(jImage, "nopadding", nopadding);
     GET_JSON_NAME_VALUE_NOWARN(json, "color", color);
+    if (json.contains("alpha")) {
+        alpha_setting = json.at("alpha");
+        dynamic_alpha = alpha_setting.is_object() && alpha_setting.contains("animation");
+    }
     GET_JSON_NAME_VALUE_NOWARN(json, "alpha", alpha);
     GET_JSON_NAME_VALUE_NOWARN(json, "brightness", brightness);
 
