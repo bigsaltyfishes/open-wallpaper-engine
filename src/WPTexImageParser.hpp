@@ -2,6 +2,8 @@
 #include "Interface/IImageParser.h"
 #include "Fs/VFS.h"
 
+#include <string>
+
 namespace wallpaper
 {
 
@@ -14,6 +16,9 @@ public:
     ImageHeader            ParseHeader(const std::string&) override;
 
 private:
+    std::shared_ptr<Image> ParseLooseAsset(const std::string& name);
+    ImageHeader            ParseLooseAssetHeader(const std::string& name);
+
     fs::VFS* m_vfs;
 };
 } // namespace wallpaper

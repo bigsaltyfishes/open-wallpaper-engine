@@ -1,6 +1,7 @@
 #include "CustomShaderPass.hpp"
 #include "Scene/Scene.h"
 #include "Scene/SceneShader.h"
+#include "Runtime/SceneRuntimeContext.hpp"
 
 #include "SpecTexs.hpp"
 #include "Vulkan/Shader.hpp"
@@ -13,14 +14,26 @@
 #include "Core/ArrayHelper.hpp"
 
 #include <cassert>
+#include <algorithm>
+#include <array>
+#include <limits>
 
 using namespace wallpaper::vulkan;
 
+namespace
+{
+using wallpaper::usize;
+
+} // namespace
+
 CustomShaderPass::CustomShaderPass(const Desc& desc) {
-    m_desc.node        = desc.node;
-    m_desc.textures    = desc.textures;
-    m_desc.output      = desc.output;
-    m_desc.sprites_map = desc.sprites_map;
+    m_desc.node            = desc.node;
+    m_desc.visibility_node = desc.visibility_node;
+    m_desc.textures        = desc.textures;
+    m_desc.output          = desc.output;
+    m_desc.camera_override = desc.camera_override;
+    m_desc.sprites_map     = desc.sprites_map;
+    m_desc.video_textures = desc.video_textures;
 };
 CustomShaderPass::~CustomShaderPass() {}
 
@@ -94,6 +107,19 @@ static void UpdateUniform(StagingBuffer* buf, const StagingBufferRef& bufref,
 
     size_t offset    = uni->second.offset;
     size_t type_size = sizeof(float) * uni->second.num;
+    if (uni->second.array_count > 0 && uni->second.array_stride > 0 &&
+        value_u8.size() % uni->second.array_count == 0) {
+        const size_t element_size = value_u8.size() / uni->second.array_count;
+        if (element_size > 0 && element_size <= uni->second.array_stride) {
+            for (size_t index = 0; index < uni->second.array_count; ++index) {
+                buf->writeToBuf(
+                    bufref,
+                    value_u8.subspan(index * element_size, element_size),
+                    offset + index * uni->second.array_stride);
+            }
+            return;
+        }
+    }
     if (type_size != value_u8.size()) {
         // assert(type_size == value_u8.size());
         ; // to do
@@ -103,20 +129,23 @@ static void UpdateUniform(StagingBuffer* buf, const StagingBufferRef& bufref,
 
 void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingResources& rr) {
     m_desc.vk_textures.resize(m_desc.textures.size());
+    m_desc.video_textures.resize(m_desc.textures.size(), false);
     for (usize i = 0; i < m_desc.textures.size(); i++) {
         auto& tex_name = m_desc.textures[i];
         if (tex_name.empty()) continue;
 
         ImageSlotsRef img_slots;
         if (IsSpecTex(tex_name)) {
-            if (scene.renderTargets.count(tex_name) == 0) continue;
-            auto& rt  = scene.renderTargets.at(tex_name);
+            tex_name = scene.ResolveRenderTargetName(tex_name);
+            if (!scene.HasRenderTarget(tex_name)) continue;
+            auto& rt  = *scene.FindRenderTarget(tex_name);
             auto  opt = device.tex_cache().Query(tex_name, ToTexKey(rt), ! rt.allowReuse);
             if (! opt.has_value()) continue;
             img_slots.slots = { opt.value() };
         } else {
             auto image = scene.imageParser->Parse(tex_name);
             if (image) {
+                m_desc.video_textures[i] = image->header.isVideo;
                 img_slots = device.tex_cache().CreateTex(*image);
             } else {
                 LOG_ERROR("parse tex \"%s\" failed", tex_name.c_str());
@@ -126,9 +155,16 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
     }
     {
         auto& tex_name = m_desc.output;
-        assert(IsSpecTex(tex_name));
-        assert(scene.renderTargets.count(tex_name) > 0);
-        auto& rt = scene.renderTargets.at(tex_name);
+        if (!IsSpecTex(tex_name)) {
+            LOG_ERROR("custom shader output is not a spec texture: %s", tex_name.c_str());
+            return;
+        }
+        tex_name = scene.ResolveRenderTargetName(tex_name);
+        if (!scene.HasRenderTarget(tex_name)) {
+            LOG_ERROR("custom shader output render target is not registered: %s", tex_name.c_str());
+            return;
+        }
+        auto& rt = *scene.FindRenderTarget(tex_name);
         if (auto opt = device.tex_cache().Query(tex_name, ToTexKey(rt), ! rt.allowReuse);
             opt.has_value()) {
             m_desc.vk_output = opt.value();
@@ -239,17 +275,17 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         {
             VkColorComponentFlags colorMask =
                 VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT;
-            bool alpha =
-                ! (m_desc.node->Camera().empty() || sstart_with(m_desc.node->Camera(), "global"));
-
-            if (alpha) colorMask |= VK_COLOR_COMPONENT_A_BIT;
+            if (m_desc.write_alpha) colorMask |= VK_COLOR_COMPONENT_A_BIT;
             color_blend.colorWriteMask = colorMask;
 
             auto blendmode = mesh.Material()->blenmode;
             SetBlend(blendmode, color_blend);
             m_desc.blending = color_blend.blendEnable;
+            m_desc.alpha_to_coverage = blendmode == BlendMode::AlphaToCoverage;
 
-            SetAttachmentLoadOp(blendmode, loadOp);
+            loadOp = ResolveAttachmentLoadOp(
+                m_desc.preserve_target_contents,
+                m_desc.clear_on_first_use);
         }
         auto opt = CreateRenderPass(device.handle(),
                                     VK_FORMAT_R8G8B8A8_UNORM,
@@ -261,6 +297,9 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         descriptor_info.push_descriptor = true;
         GraphicsPipeline pipeline;
         pipeline.toDefault();
+        if (m_desc.alpha_to_coverage) {
+            pipeline.multisample.alphaToCoverageEnable = VK_TRUE;
+        }
         pipeline.addDescriptorSetInfo(spanone { descriptor_info })
             .setColorBlendStates(spanone { color_blend })
             .setTopology(m_desc.index_buf ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
@@ -286,80 +325,133 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         VVK_CHECK_VOID_RE(device.handle().CreateFramebuffer(info, m_desc.fb));
     }
 
+    m_desc.uniform_block.reset();
+    const ShaderReflected::Block* uniform_block = nullptr;
     if (! ref.blocks.empty()) {
-        auto& block = ref.blocks.front();
+        m_desc.uniform_block = ref.blocks.front();
+        uniform_block = &m_desc.uniform_block.value();
         rr.dyn_buf->allocateSubRef(
-            block.size, m_desc.ubo_buf, device.limits().minUniformBufferOffsetAlignment);
+            uniform_block->size, m_desc.ubo_buf, device.limits().minUniformBufferOffsetAlignment);
     }
 
-    if (! ref.blocks.empty()) {
-        std::function<void()> update_dyn_buf_op;
-        if (m_desc.dyn_vertex) {
-            auto& mesh        = *m_desc.node->Mesh();
-            auto* dyn_buf     = rr.dyn_buf;
-            auto& vertex_bufs = m_desc.vertex_bufs;
-            auto& draw_count  = m_desc.draw_count;
-            auto& index_buf   = m_desc.index_buf;
-            update_dyn_buf_op = [&mesh, &vertex_bufs, &draw_count, &index_buf, dyn_buf]() {
-                if (mesh.Dirty().exchange(false)) {
-                    for (usize i = 0; i < mesh.VertexCount(); i++) {
-                        const auto& vertex = mesh.GetVertexArray(i);
-                        auto&       buf    = vertex_bufs[i];
-                        if (! dyn_buf->writeToBuf(buf,
-                                                  { (uint8_t*)vertex.Data(), vertex.DataSizeOf() }))
-                            return;
-                    }
-                    if (mesh.IndexCount() > 0) {
-                        auto& indice = mesh.GetIndexArray(0);
-                        u32   count  = (u32)((indice.RenderDataCount() * 2) / 3);
-                        draw_count   = count * 3;
-                        auto& buf = index_buf;
-                        if (! dyn_buf->writeToBuf(buf,
-                                                  { (uint8_t*)indice.Data(), indice.DataSizeOf() }))
-                            return;
-                    }
+    std::function<void()> update_dyn_buf_op;
+    if (m_desc.dyn_vertex) {
+        auto& mesh        = *m_desc.node->Mesh();
+        auto* dyn_buf     = rr.dyn_buf;
+        auto& vertex_bufs = m_desc.vertex_bufs;
+        auto& draw_count  = m_desc.draw_count;
+        auto& index_buf   = m_desc.index_buf;
+        update_dyn_buf_op = [&mesh, &vertex_bufs, &draw_count, &index_buf, dyn_buf]() {
+            if (mesh.Dirty().exchange(false)) {
+                for (usize i = 0; i < mesh.VertexCount(); i++) {
+                    const auto& vertex = mesh.GetVertexArray(i);
+                    auto&       buf    = vertex_bufs[i];
+                    if (! dyn_buf->writeToBuf(buf,
+                                              { (uint8_t*)vertex.Data(), vertex.DataSizeOf() }))
+                        return;
                 }
-            };
-        }
-
-        auto  block  = ref.blocks.front();
-        auto* buf    = rr.dyn_buf;
-        auto* bufref = &m_desc.ubo_buf;
-
-        auto* node           = m_desc.node;
-        auto* shader_updater = scene.shaderValueUpdater.get();
-        auto& sprites        = m_desc.sprites_map;
-        auto& vk_textures    = m_desc.vk_textures;
-
-        m_desc.update_op = [shader_updater,
-                            block,
-                            buf,
-                            bufref,
-                            node,
-                            &sprites,
-                            &vk_textures,
-                            update_dyn_buf_op]() {
-            auto update_unf_op = [&block, buf, bufref](std::string_view       name,
-                                                       wallpaper::ShaderValue value) {
-                UpdateUniform(buf, *bufref, block, name, value);
-            };
-            shader_updater->UpdateUniforms(node, sprites, update_unf_op);
-            // update image slot for sprites
-            {
-                for (auto& [i, sp] : sprites) {
-                    if (i >= vk_textures.size()) continue;
-                    vk_textures.at(i).active = sp.GetCurFrame().imageId;
+                if (mesh.IndexCount() > 0) {
+                    auto& indice = mesh.GetIndexArray(0);
+                    u32   count  = (u32)((indice.RenderDataCount() * 2) / 3);
+                    draw_count   = count * 3;
+                    auto& buf = index_buf;
+                    if (! dyn_buf->writeToBuf(buf,
+                                              { (uint8_t*)indice.Data(), indice.DataSizeOf() }))
+                        return;
                 }
             }
-            if (update_dyn_buf_op) update_dyn_buf_op();
         };
+    }
 
-        auto exists_unf_op = [&block](std::string_view name) {
-            return exists(block.member_map, name);
+    auto* buf    = rr.dyn_buf;
+    auto* bufref = &m_desc.ubo_buf;
+
+    auto* node           = m_desc.node;
+    auto* scene_ptr      = &scene;
+    auto* device_ptr     = &device;
+    auto* shader_updater = scene.shaderValueUpdater.get();
+    auto& sprites        = m_desc.sprites_map;
+    auto& textures       = m_desc.textures;
+    auto& video_textures = m_desc.video_textures;
+    auto& vk_textures    = m_desc.vk_textures;
+    auto camera_override = m_desc.camera_override;
+
+    m_desc.update_op = [shader_updater,
+                        uniform_block,
+                        buf,
+                        bufref,
+                        node,
+                        scene_ptr,
+                        device_ptr,
+                        &textures,
+                        &video_textures,
+                        &sprites,
+                        &vk_textures,
+                        camera_override,
+                        update_dyn_buf_op]() {
+        auto update_unf_op = [uniform_block, buf, bufref](std::string_view       name,
+                                                          wallpaper::ShaderValue value) {
+            if (uniform_block == nullptr || buf == nullptr || bufref == nullptr || !(*bufref)) return;
+            UpdateUniform(buf, *bufref, *uniform_block, name, value);
         };
-        shader_updater->InitUniforms(node, exists_unf_op);
+        std::string original_camera;
+        bool restore_camera = false;
+        if (!camera_override.empty() && node != nullptr && node->Camera() != camera_override) {
+            original_camera = node->Camera();
+            node->SetCamera(camera_override);
+            restore_camera = true;
+        }
+        shader_updater->UpdateUniforms(node, sprites, update_unf_op);
+        if (restore_camera) {
+            node->SetCamera(original_camera);
+        }
+        if (uniform_block != nullptr && node != nullptr && node->Mesh() != nullptr &&
+            node->Mesh()->Material() != nullptr) {
+            const auto& const_values = node->Mesh()->Material()->customShader.constValues;
+            for (const auto& [name, value] : const_values) {
+                UpdateUniform(buf, *bufref, *uniform_block, name, value);
+            }
+        }
+        {
+            for (auto& [i, sp] : sprites) {
+                if (i >= vk_textures.size()) continue;
+                vk_textures.at(i).active = sp.GetCurFrame().imageId;
+            }
+        }
+        for (usize i = 0; i < video_textures.size(); ++i) {
+            if (!video_textures[i]) continue;
+            if (i >= textures.size() || i >= vk_textures.size()) continue;
 
-        // memset uniform buf
+            std::string error;
+            wallpaper::video::VideoPlaybackState playback_state =
+                scene_ptr->runtime != nullptr
+                ? scene_ptr->runtime->ResolveVideoPlaybackState(textures[i], scene_ptr->elapsingTime)
+                : wallpaper::video::VideoPlaybackState {};
+            if (scene_ptr->runtime == nullptr) {
+                playback_state.scene_elapsed_seconds = scene_ptr->elapsingTime;
+            }
+            if (!device_ptr->tex_cache().UpdateVideoFrame(
+                    textures[i], playback_state, &vk_textures[i], &error)) {
+                LOG_ERROR("failed to update video texture \"%s\": %s",
+                          textures[i].c_str(),
+                          error.c_str());
+            } else {
+                if (scene_ptr->runtime != nullptr) {
+                    scene_ptr->runtime->SetVideoTextureDuration(
+                        textures[i],
+                        device_ptr->tex_cache().GetVideoDuration(textures[i]));
+                }
+            }
+        }
+        if (update_dyn_buf_op) update_dyn_buf_op();
+    };
+
+    auto exists_unf_op = [uniform_block](std::string_view name) {
+        return uniform_block != nullptr && exists(uniform_block->member_map, name);
+    };
+    shader_updater->InitUniforms(node, exists_unf_op);
+
+    if (uniform_block != nullptr) {
         buf->fillBuf(*bufref, 0, bufref->size, 0);
         {
             auto&      default_values = mesh.Material()->customShader.shader->default_uniforms;
@@ -367,20 +459,19 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             std::array values_array   = { &default_values, &const_values };
             for (auto& values : values_array) {
                 for (auto& v : *values) {
-                    if (exists(block.member_map, v.first)) {
-                        UpdateUniform(buf, *bufref, block, v.first, v.second);
+                    if (exists(uniform_block->member_map, v.first)) {
+                        UpdateUniform(buf, *bufref, *uniform_block, v.first, v.second);
                     }
                 }
             }
         }
-        m_desc.update_op();
     }
+    m_desc.update_op();
 
     {
-        auto& sc           = scene.clearColor;
-        m_desc.clear_value = VkClearValue {
-            .color = { sc[0], sc[1], sc[2], 1.0f },
-        };
+        m_desc.clear_value = ResolveAttachmentClearValue(
+            m_desc.output == SpecTex_Default,
+            scene.clearColor);
     }
     for (auto& tex : releaseTexs()) {
         device.tex_cache().MarkShareReady(tex);
@@ -389,6 +480,33 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
 }
 
 void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
+    const bool visible = m_desc.visibility_node == nullptr ||
+                         m_desc.visibility_node->EffectiveVisible();
+    if (!visible && !m_desc.clear_on_first_use) {
+        return;
+    }
+
+    if (!visible) {
+        auto&                   cmd    = rr.command;
+        auto&                   outext = m_desc.vk_output.extent;
+        VkRenderPassBeginInfo pass_begin_info {
+            .sType       = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+            .pNext       = nullptr,
+            .renderPass  = *m_desc.pipeline.pass,
+            .framebuffer = *m_desc.fb,
+            .renderArea =
+                VkRect2D {
+                    .offset = { 0, 0 },
+                    .extent = { outext.width, outext.height },
+                },
+            .clearValueCount = 1,
+            .pClearValues    = &m_desc.clear_value,
+        };
+        cmd.BeginRenderPass(pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+        cmd.EndRenderPass();
+        return;
+    }
+
     if (m_desc.update_op) m_desc.update_op();
 
     auto&                   cmd    = rr.command;
@@ -408,7 +526,7 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
         auto&                 img = slot.getActive();
         VkDescriptorImageInfo desc_img { img.sampler,
                                          img.view,
-                                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+                                         img.layout };
         VkWriteDescriptorSet  wset {
              .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
              .pNext           = nullptr,
@@ -425,8 +543,8 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
             .pNext            = nullptr,
             .srcAccessMask    = VK_ACCESS_MEMORY_READ_BIT,
             .dstAccessMask    = VK_ACCESS_SHADER_READ_BIT,
-            .oldLayout        = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            .newLayout        = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .oldLayout        = img.layout,
+            .newLayout        = img.layout,
             .image            = img.handle,
             .subresourceRange = base_srang,
         };

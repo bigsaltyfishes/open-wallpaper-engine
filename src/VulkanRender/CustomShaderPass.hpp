@@ -7,8 +7,11 @@
 #include "Scene/Scene.h"
 #include "Vulkan/StagingBuffer.hpp"
 #include "Vulkan/GraphicsPipeline.hpp"
+#include "Vulkan/Shader.hpp"
 #include "SpriteAnimation.hpp"
 #include "Interface/IShaderValueUpdater.h"
+
+#include <optional>
 
 namespace wallpaper
 {
@@ -21,14 +24,21 @@ public:
     struct Desc {
         // in
         SceneNode*               node { nullptr };
+        SceneNode*               visibility_node { nullptr };
         std::vector<std::string> textures;
         std::string              output;
+        std::string              camera_override;
+        bool                     clear_on_first_use { false };
+        bool                     preserve_target_contents { false };
+        bool                     write_alpha { true };
+        bool                     alpha_to_coverage { false };
         sprite_map_t             sprites_map;
 
         // -----prepared
         // vulkan texs
         std::vector<ImageSlotsRef> vk_textures;
         std::vector<i32>           vk_tex_binding;
+        std::vector<bool>          video_textures;
         ImageParameters            vk_output;
 
         // bufs
@@ -45,6 +55,7 @@ public:
         u32                draw_count { 0 };
 
         // uniforms
+        std::optional<ShaderReflected::Block> uniform_block;
         std::function<void()> update_op;
     };
 
@@ -52,6 +63,8 @@ public:
     virtual ~CustomShaderPass();
 
     void setDescTex(u32 index, std::string_view tex_key);
+    Desc&       desc() { return m_desc; }
+    const Desc& desc() const { return m_desc; }
 
     void prepare(Scene&, const Device&, RenderingResources&) override;
     void execute(const Device&, RenderingResources&) override;

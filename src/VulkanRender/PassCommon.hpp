@@ -20,6 +20,12 @@ inline void SetBlend(BlendMode bm, VkPipelineColorBlendAttachmentState& state) {
         state.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
         state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
         break;
+    case BlendMode::AlphaToCoverage:
+        state.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        state.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        state.srcAlphaBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        break;
     case BlendMode::Translucent:
         state.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
         state.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
@@ -34,10 +40,26 @@ inline void SetBlend(BlendMode bm, VkPipelineColorBlendAttachmentState& state) {
         break;
     }
 }
+inline VkAttachmentLoadOp ResolveAttachmentLoadOp(bool preserve_target_contents,
+                                                  bool clear_on_first_use) {
+    if (clear_on_first_use) return VK_ATTACHMENT_LOAD_OP_CLEAR;
+    if (preserve_target_contents) return VK_ATTACHMENT_LOAD_OP_LOAD;
+    return VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+}
+
+inline VkClearValue ResolveAttachmentClearValue(bool scene_output,
+                                                const std::array<float, 3>& clear_color) {
+    if (scene_output) {
+        return VkClearValue { .color = { clear_color[0], clear_color[1], clear_color[2], 1.0f } };
+    }
+    return VkClearValue { .color = { 0.0f, 0.0f, 0.0f, 0.0f } };
+}
+
 inline void SetAttachmentLoadOp(BlendMode bm, VkAttachmentLoadOp& load_op) {
     switch (bm) {
     case BlendMode::Disable:
-    case BlendMode::Normal: load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE; break;
+    case BlendMode::Normal:
+    case BlendMode::AlphaToCoverage: load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE; break;
     case BlendMode::Additive:
     case BlendMode::Translucent: load_op = VK_ATTACHMENT_LOAD_OP_LOAD; break;
     }

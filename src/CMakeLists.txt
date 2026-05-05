@@ -1,6 +1,10 @@
 find_package(OpenGL REQUIRED)
 find_package(Threads REQUIRED)
 pkg_check_modules(LZ4 REQUIRED liblz4)
+pkg_check_modules(AVFORMAT REQUIRED IMPORTED_TARGET libavformat)
+pkg_check_modules(AVCODEC REQUIRED IMPORTED_TARGET libavcodec)
+pkg_check_modules(AVUTIL REQUIRED IMPORTED_TARGET libavutil)
+pkg_check_modules(SWRESAMPLE REQUIRED IMPORTED_TARGET libswresample)
 
 option(ENABLE_RENDERDOC "Build with renderdoc api" OFF)
 
@@ -73,6 +77,7 @@ add_library(
   Project/ProjectManifest.cpp
   Project/ProjectProperties.cpp
   Runtime/VirtualAssetRegistry.cpp
+  Video/FfmpegVideoTextureSource.cpp
   Platform/Apple/FfmpegVideoInterop.mm
   SceneSourceResolver.cpp
   SceneWallpaper.cpp)
@@ -94,6 +99,10 @@ target_link_libraries(
   ${PROJECT_NAME}
   PUBLIC wpUtils
   PRIVATE ${InteralLib} nlohmann_json quickjs::quickjs ${LZ4_LIBRARIES}
+          PkgConfig::AVFORMAT
+          PkgConfig::AVCODEC
+          PkgConfig::AVUTIL
+          PkgConfig::SWRESAMPLE
           ${CMAKE_THREAD_LIBS_INIT} ${CMAKE_DL_LIBS})
 
 if(APPLE)

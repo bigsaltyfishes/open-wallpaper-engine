@@ -10,6 +10,7 @@ namespace wallpaper
 struct SceneTexture {
     std::string     url;
     TextureSample   sample;
+    bool            isVideo { false };
     bool            isSprite { false };
     SpriteAnimation spriteAnim;
 };

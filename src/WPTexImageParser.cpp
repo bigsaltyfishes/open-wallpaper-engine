@@ -1,6 +1,9 @@
 #include "WPTexImageParser.hpp"
 
 #include "Type.hpp"
+#include "Utils/Sha.hpp"
+#include "Video/VideoMetadata.hpp"
+#include "Video/VideoTextureSource.hpp"
 #include "WPCommon.hpp"
 #include <cstdint>
 #include <lz4.h>
@@ -14,7 +17,12 @@
 #include <stb_image.h>
 
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <optional>
+#include <span>
+#include <string_view>
 
 using namespace wallpaper;
 
@@ -25,6 +33,7 @@ enum class WPTexFlagEnum : uint32_t
     // true for no repeat
     clampUVs = 1,
     sprite   = 2,
+    video    = 5,
 
     compo1 = 20,
     compo2 = 21,
@@ -34,6 +43,13 @@ using WPTexFlags = BitFlags<WPTexFlagEnum>;
 
 namespace
 {
+struct LooseAssetCandidate
+{
+    std::string path;
+    bool        isVideo { false };
+    ImageType   imageType { ImageType::UNKNOWN };
+};
+
 char* Lz4Decompress(const char* src, int size, int decompressed_size) {
     char* dst       = new char[(usize)decompressed_size];
     int   load_size = LZ4_decompress_safe(src, dst, size, decompressed_size);
@@ -75,6 +91,7 @@ void LoadHeader(fs::IBinaryStream& file, ImageHeader& header) {
     WPTexFlags flags(file.ReadUint32());
     {
         header.isSprite     = flags[WPTexFlagEnum::sprite];
+        header.isVideo      = flags[WPTexFlagEnum::video];
         header.sample.wrapS = header.sample.wrapT =
             flags[WPTexFlagEnum::clampUVs] ? TextureWrap::CLAMP_TO_EDGE : TextureWrap::REPEAT;
         header.sample.minFilter = header.sample.magFilter =
@@ -110,12 +127,218 @@ void LoadHeader(fs::IBinaryStream& file, ImageHeader& header) {
 
     header.count = file.ReadInt32();
 
-    if (header.extraHeader["texb"].val == 3) header.type = static_cast<ImageType>(file.ReadInt32());
+    if (header.extraHeader["texb"].val == 3) {
+        header.type = static_cast<ImageType>(file.ReadInt32());
+    } else if (header.extraHeader["texb"].val == 4) {
+        const i32 image_format_hint = file.ReadInt32();
+        header.type = image_format_hint >= 0 ? static_cast<ImageType>(image_format_hint)
+                                             : ImageType::UNKNOWN;
+        header.extraHeader["video_mp4"].val = file.ReadInt32();
+        if (header.extraHeader["video_mp4"].val != 0) {
+            header.isVideo = true;
+        }
+    }
 }
 
 void SetHeaderPow2(ImageHeader& header, i32 mip_0_w, i32 mip_0_h) {
     header.mipmap_pow2   = algorism::IsPowOfTwo((u32)mip_0_w) || algorism::IsPowOfTwo((u32)mip_0_h);
     header.mipmap_larger = mip_0_w * mip_0_h > header.mapWidth * header.mapHeight;
+}
+
+std::string Lowercase(std::string value)
+{
+    std::transform(
+        value.begin(),
+        value.end(),
+        value.begin(),
+        [](const unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+    return value;
+}
+
+ImageType GuessImageTypeFromExtension(std::string_view extension)
+{
+    const std::string ext = Lowercase(std::string(extension));
+    if (ext == ".png") return ImageType::PNG;
+    if (ext == ".jpg" || ext == ".jpeg" || ext == ".jpe") return ImageType::JPEG;
+    if (ext == ".bmp") return ImageType::BMP;
+    if (ext == ".gif") return ImageType::GIF;
+    if (ext == ".tga" || ext == ".targa") return ImageType::TARGA;
+    if (ext == ".webp") return ImageType::UNKNOWN;
+    return ImageType::UNKNOWN;
+}
+
+bool IsLooseImageExtension(std::string_view extension)
+{
+    const std::string ext = Lowercase(std::string(extension));
+    return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".jpe" ||
+           ext == ".bmp" || ext == ".gif" || ext == ".tga" || ext == ".targa" ||
+           ext == ".webp";
+}
+
+bool IsLooseVideoExtension(std::string_view extension)
+{
+    const std::string ext = Lowercase(std::string(extension));
+    return ext == ".mp4" || ext == ".m4v" || ext == ".mov" || ext == ".webm" ||
+           ext == ".avi" || ext == ".mkv";
+}
+
+std::optional<LooseAssetCandidate> ResolveLooseAsset(fs::VFS& vfs, std::string_view name)
+{
+    const std::array prefixes {
+        std::string("/assets/materials/") + std::string(name),
+        std::string("/assets/") + std::string(name),
+    };
+
+    for (const auto& prefix : prefixes) {
+        const std::filesystem::path prefix_path(prefix);
+        if (vfs.Contains(prefix)) {
+            const std::string extension = prefix_path.extension().string();
+            if (IsLooseImageExtension(extension)) {
+                return LooseAssetCandidate {
+                    .path = prefix,
+                    .isVideo = false,
+                    .imageType = GuessImageTypeFromExtension(extension),
+                };
+            }
+            if (IsLooseVideoExtension(extension)) {
+                return LooseAssetCandidate {
+                    .path = prefix,
+                    .isVideo = true,
+                    .imageType = ImageType::UNKNOWN,
+                };
+            }
+        }
+
+        if (prefix_path.has_extension()) continue;
+
+        for (const auto& extension : {
+                 ".png",
+                 ".jpg",
+                 ".jpeg",
+                 ".jpe",
+                 ".bmp",
+                 ".gif",
+                 ".tga",
+                 ".targa",
+                 ".webp",
+                 ".mp4",
+                 ".m4v",
+                 ".mov",
+                 ".webm",
+                 ".avi",
+                 ".mkv",
+             }) {
+            const std::string candidate = prefix + extension;
+            if (!vfs.Contains(candidate)) continue;
+            if (IsLooseImageExtension(extension)) {
+                return LooseAssetCandidate {
+                    .path = candidate,
+                    .isVideo = false,
+                    .imageType = GuessImageTypeFromExtension(extension),
+                };
+            }
+            return LooseAssetCandidate {
+                .path = candidate,
+                .isVideo = true,
+                .imageType = ImageType::UNKNOWN,
+            };
+        }
+    }
+
+    return std::nullopt;
+}
+
+std::optional<std::vector<char>> LoadLooseAssetPayload(fs::VFS& vfs, std::string_view path)
+{
+    auto stream = vfs.Open(path);
+    if (!stream) return std::nullopt;
+
+    const std::string payload = stream->ReadAllStr();
+    return std::vector<char>(payload.begin(), payload.end());
+}
+
+std::filesystem::path WriteVideoPayloadToTemp(
+    std::string_view         debug_label,
+    std::string_view         extension,
+    std::span<const char>    payload)
+{
+    if (payload.empty()) return {};
+
+    std::error_code ec;
+    const auto temp_dir = std::filesystem::temp_directory_path(ec) / "wallpaper-engine-video";
+    if (ec) return {};
+    std::filesystem::create_directories(temp_dir, ec);
+    if (ec) return {};
+
+    const std::string ext = extension.empty() ? ".mp4" : std::string(extension);
+    const auto temp_path =
+        temp_dir / (utils::genSha1(payload) + ext);
+    if (std::filesystem::exists(temp_path, ec) &&
+        !ec &&
+        std::filesystem::file_size(temp_path, ec) == static_cast<uintmax_t>(payload.size())) {
+        return temp_path;
+    }
+
+    std::ofstream output(temp_path, std::ios::binary | std::ios::trunc);
+    if (!output.good()) return {};
+    output.write(payload.data(), static_cast<std::streamsize>(payload.size()));
+    output.close();
+    if (!output.good()) return {};
+
+    LOG_INFO("prepared FFmpeg video payload cache for \"%s\": %s",
+             std::string(debug_label).c_str(),
+             temp_path.string().c_str());
+    return temp_path;
+}
+
+std::optional<video::VideoMetadata> ProbeVideoMetadataFromPayload(
+    std::string_view      debug_label,
+    std::string_view      extension,
+    std::span<const char> payload)
+{
+    const auto temp_path = WriteVideoPayloadToTemp(debug_label, extension, payload);
+    if (temp_path.empty()) return std::nullopt;
+
+    video::VideoMetadata metadata;
+    std::string          error;
+    if (!video::ProbeVideoFileMetadata(temp_path.string(), &metadata, &error)) {
+        LOG_ERROR("failed to probe video metadata for \"%s\": %s",
+                  std::string(debug_label).c_str(),
+                  error.c_str());
+        return std::nullopt;
+    }
+    return metadata;
+}
+
+ImageHeader BuildLooseAssetHeader(
+    int32_t width,
+    int32_t height,
+    bool    is_video,
+    ImageType image_type,
+    double duration_seconds = 0.0)
+{
+    ImageHeader header;
+    header.width = width;
+    header.height = height;
+    header.mapWidth = width;
+    header.mapHeight = height;
+    header.count = 1;
+    header.isVideo = is_video;
+    header.videoAudioEnabled = false;
+    header.durationSeconds = duration_seconds;
+    header.type = image_type;
+    header.format = TextureFormat::RGBA8;
+    header.sample.wrapS = TextureWrap::CLAMP_TO_EDGE;
+    header.sample.wrapT = TextureWrap::CLAMP_TO_EDGE;
+    header.sample.minFilter = TextureFilter::LINEAR;
+    header.sample.magFilter = TextureFilter::LINEAR;
+    header.extraHeader["compo1"].val = 1;
+    header.extraHeader["compo2"].val = 1;
+    header.extraHeader["compo3"].val = 1;
+    SetHeaderPow2(header, width, height);
+    return header;
 }
 
 } // namespace
@@ -127,7 +350,7 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
     img.key                        = name;
     // std::ifstream file = fs::GetFileFstream(vfs, path);
     auto pfile = m_vfs->Open(path);
-    if (! pfile) return nullptr;
+    if (! pfile) return ParseLooseAsset(name);
     auto& file     = *pfile;
     auto  startpos = file.Tell();
     LoadHeader(file, img.header);
@@ -185,19 +408,42 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
                 }
             }
             // is image container
-            if (img.header.extraHeader["texb"].val == 3 && img.header.type != ImageType::UNKNOWN) {
+            if (img.header.extraHeader["texb"].val >= 3 && !img.header.isVideo &&
+                img.header.type != ImageType::UNKNOWN) {
                 int32_t w, h, n;
                 auto*   data =
                     stbi_load_from_memory((const unsigned char*)result, src_size, &w, &h, &n, 4);
+                if (data == nullptr || w <= 0 || h <= 0) {
+                    LOG_ERROR("stbi decode failed");
+                    delete[] result;
+                    return nullptr;
+                }
                 mipmap.data = ImageDataPtr((uint8_t*)data, [](uint8_t* data) {
                     stbi_image_free((unsigned char*)data);
                 });
+                mipmap.width  = w;
+                mipmap.height = h;
+                if (i_mipmap == 0) {
+                    img_slot.width  = w;
+                    img_slot.height = h;
+                    SetHeaderPow2(img.header, w, h);
+                }
+                img.header.format = TextureFormat::RGBA8;
                 src_size    = w * h * 4;
             } else {
                 mipmap.data = ImageDataPtr(new uint8_t[(usize)src_size], [](uint8_t* data) {
                     delete[] data;
                 });
                 std::copy(result, result + src_size, mipmap.data.get());
+                if (img.header.isVideo && i_image == 0 && i_mipmap == 0) {
+                    const auto metadata = ProbeVideoMetadataFromPayload(
+                        name,
+                        ".mp4",
+                        std::span(result, static_cast<std::size_t>(src_size)));
+                    if (metadata.has_value()) {
+                        img.header.durationSeconds = metadata->duration_seconds;
+                    }
+                }
             }
             mipmap.size = src_size * (i32)sizeof(uint8_t);
             delete[] result;
@@ -210,7 +456,7 @@ ImageHeader WPTexImageParser::ParseHeader(const std::string& name) {
     ImageHeader header;
     std::string path  = "/assets/materials/" + name + ".tex";
     auto        pfile = m_vfs->Open(path);
-    if (! pfile) return header;
+    if (! pfile) return ParseLooseAssetHeader(name);
     auto& file = *pfile;
 
     LoadHeader(file, header);
@@ -294,6 +540,151 @@ ImageHeader WPTexImageParser::ParseHeader(const std::string& name) {
         i32 width  = file.ReadInt32();
         i32 height = file.ReadInt32();
         SetHeaderPow2(header, width, height);
+        if (header.isVideo && mipmap_count > 0) {
+            bool    lz4_compressed = false;
+            int32_t decompressed_size = 0;
+            if (header.extraHeader["texb"].val > 1) {
+                lz4_compressed = file.ReadInt32() == 1;
+                decompressed_size = file.ReadInt32();
+            }
+            i32 src_size = file.ReadInt32();
+            if (src_size > 0) {
+                std::vector<char> payload(static_cast<std::size_t>(src_size));
+                file.Read(payload.data(), static_cast<usize>(src_size));
+                std::span<const char> video_bytes(payload.data(), payload.size());
+                std::unique_ptr<char[]> decompressed_storage;
+                if (lz4_compressed && decompressed_size > 0) {
+                    char* decompressed = Lz4Decompress(payload.data(), src_size, decompressed_size);
+                    if (decompressed != nullptr) {
+                        decompressed_storage.reset(decompressed);
+                        video_bytes = std::span<const char>(decompressed_storage.get(),
+                                                            static_cast<std::size_t>(decompressed_size));
+                    }
+                }
+                const auto metadata = ProbeVideoMetadataFromPayload(name, ".mp4", video_bytes);
+                if (metadata.has_value()) {
+                    header.durationSeconds = metadata->duration_seconds;
+                }
+            }
+        }
     }
     return header;
+}
+
+std::shared_ptr<Image> WPTexImageParser::ParseLooseAsset(const std::string& name)
+{
+    const auto candidate = ResolveLooseAsset(*m_vfs, name);
+    if (!candidate.has_value()) return nullptr;
+
+    const auto payload = LoadLooseAssetPayload(*m_vfs, candidate->path);
+    if (!payload.has_value() || payload->empty()) return nullptr;
+
+    auto image = std::make_shared<Image>();
+    image->key = name;
+
+    if (candidate->isVideo) {
+        const auto metadata = ProbeVideoMetadataFromPayload(
+            name,
+            std::filesystem::path(candidate->path).extension().string(),
+            std::span(payload->data(), payload->size()));
+        if (!metadata.has_value()) return nullptr;
+
+        image->header = BuildLooseAssetHeader(
+            static_cast<int32_t>(metadata->width),
+            static_cast<int32_t>(metadata->height),
+            true,
+            ImageType::UNKNOWN,
+            metadata->duration_seconds);
+
+        Image::Slot slot;
+        slot.width = static_cast<int32_t>(metadata->width);
+        slot.height = static_cast<int32_t>(metadata->height);
+
+        ImageData mip;
+        mip.width = slot.width;
+        mip.height = slot.height;
+        mip.size = static_cast<isize>(payload->size());
+        mip.data = ImageDataPtr(new uint8_t[payload->size()], [](uint8_t* data) {
+            delete[] data;
+        });
+        std::copy(payload->begin(), payload->end(), reinterpret_cast<char*>(mip.data.get()));
+        slot.mipmaps.push_back(std::move(mip));
+        image->slots.push_back(std::move(slot));
+        return image;
+    }
+
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    unsigned char* decoded = stbi_load_from_memory(
+        reinterpret_cast<const unsigned char*>(payload->data()),
+        static_cast<int>(payload->size()),
+        &width,
+        &height,
+        &channels,
+        4);
+    if (decoded == nullptr || width <= 0 || height <= 0) {
+        if (decoded != nullptr) stbi_image_free(decoded);
+        return nullptr;
+    }
+
+    image->header = BuildLooseAssetHeader(
+        width,
+        height,
+        false,
+        candidate->imageType);
+
+    Image::Slot slot;
+    slot.width = width;
+    slot.height = height;
+
+    ImageData mip;
+    mip.width = width;
+    mip.height = height;
+    mip.size = static_cast<isize>(width * height * 4);
+    mip.data = ImageDataPtr(reinterpret_cast<uint8_t*>(decoded), [](uint8_t* data) {
+        stbi_image_free(data);
+    });
+    slot.mipmaps.push_back(std::move(mip));
+    image->slots.push_back(std::move(slot));
+    return image;
+}
+
+ImageHeader WPTexImageParser::ParseLooseAssetHeader(const std::string& name)
+{
+    const auto candidate = ResolveLooseAsset(*m_vfs, name);
+    if (!candidate.has_value()) return {};
+
+    const auto payload = LoadLooseAssetPayload(*m_vfs, candidate->path);
+    if (!payload.has_value() || payload->empty()) return {};
+
+    if (candidate->isVideo) {
+        const auto metadata = ProbeVideoMetadataFromPayload(
+            name,
+            std::filesystem::path(candidate->path).extension().string(),
+            std::span(payload->data(), payload->size()));
+        if (!metadata.has_value()) return {};
+        return BuildLooseAssetHeader(
+            static_cast<int32_t>(metadata->width),
+            static_cast<int32_t>(metadata->height),
+            true,
+            ImageType::UNKNOWN,
+            metadata->duration_seconds);
+    }
+
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    if (stbi_info_from_memory(
+            reinterpret_cast<const unsigned char*>(payload->data()),
+            static_cast<int>(payload->size()),
+            &width,
+            &height,
+            &channels) == 0 ||
+        width <= 0 ||
+        height <= 0) {
+        return {};
+    }
+
+    return BuildLooseAssetHeader(width, height, false, candidate->imageType);
 }

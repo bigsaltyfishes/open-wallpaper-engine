@@ -6,6 +6,7 @@
 #include "Util.hpp"
 
 #include "Image.hpp"
+#include "Platform/Apple/FfmpegVideoInterop.hpp"
 #include "Core/MapSet.hpp"
 #include "Core/ArrayHelper.hpp"
 #include "Utils/AutoDeletor.hpp"
@@ -13,7 +14,12 @@
 #include "include/Vulkan/Parameters.hpp"
 #include "vvk/vulkan_wrapper.hpp"
 
+#include <vulkan/vulkan_metal.h>
+
+#include <cmath>
+#include <chrono>
 #include <cstdio>
+#include <memory>
 #include <optional>
 
 using namespace wallpaper;
@@ -52,11 +58,63 @@ VkFilter ToVkType(wallpaper::TextureFilter sam) {
     default: return VK_FILTER_NEAREST;
     }
 }
+
+VkSamplerCreateInfo GenRenderTargetSamplerInfo() {
+    return VkSamplerCreateInfo {
+        .sType                   = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .pNext                   = nullptr,
+        .magFilter               = VK_FILTER_NEAREST,
+        .minFilter               = VK_FILTER_NEAREST,
+        .mipmapMode              = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+        .addressModeU            = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeV            = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeW            = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .anisotropyEnable        = false,
+        .maxAnisotropy           = 1.0f,
+        .compareEnable           = false,
+        .compareOp               = VK_COMPARE_OP_NEVER,
+        .minLod                  = 0.0f,
+        .maxLod                  = 1.0f,
+        .borderColor             = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+        .unnormalizedCoordinates = false,
+    };
+}
 } // namespace vulkan
 } // namespace wallpaper
 
 namespace
 {
+bool SetError(std::string* error, std::string message) {
+    if (error != nullptr) *error = std::move(message);
+    return false;
+}
+
+void* ExportMetalDeviceHandle(const Device& device, std::string* error) {
+    auto export_metal_objects =
+        reinterpret_cast<PFN_vkExportMetalObjectsEXT>(
+            device.handle().Dispatch().vkGetDeviceProcAddr(*device.handle(), "vkExportMetalObjectsEXT"));
+    if (export_metal_objects == nullptr) {
+        SetError(error, "vkExportMetalObjectsEXT is not available on this Vulkan device");
+        return nullptr;
+    }
+
+    VkExportMetalDeviceInfoEXT device_info {
+        .sType = VK_STRUCTURE_TYPE_EXPORT_METAL_DEVICE_INFO_EXT,
+        .pNext = nullptr,
+    };
+    VkExportMetalObjectsInfoEXT export_info {
+        .sType = VK_STRUCTURE_TYPE_EXPORT_METAL_OBJECTS_INFO_EXT,
+        .pNext = &device_info,
+    };
+    export_metal_objects(*device.handle(), &export_info);
+    if (device_info.mtlDevice == nullptr) {
+        SetError(error, "vkExportMetalObjectsEXT returned a null Metal device");
+        return nullptr;
+    }
+
+    return device_info.mtlDevice;
+}
+
 VkSamplerCreateInfo GenSamplerInfo(TextureKey key) {
     auto& sam = key.sample;
 
@@ -66,7 +124,7 @@ VkSamplerCreateInfo GenSamplerInfo(TextureKey key) {
                                        .minFilter        = (ToVkType(sam.minFilter)),
                                        .mipmapMode       = VK_SAMPLER_MIPMAP_MODE_LINEAR,
                                        .addressModeU     = (ToVkType(sam.wrapS)),
-                                       .addressModeV     = (ToVkType(sam.wrapS)),
+                                       .addressModeV     = (ToVkType(sam.wrapT)),
                                        .addressModeW     = (ToVkType(sam.wrapT)),
                                        .anisotropyEnable = (false),
                                        .maxAnisotropy    = (1.0f),
@@ -80,7 +138,8 @@ VkSamplerCreateInfo GenSamplerInfo(TextureKey key) {
 }
 
 VkResult TransImgLayout(const vvk::Queue& queue, vvk::CommandBuffer& cmd,
-                        const ImageParameters& image, VkImageLayout layout) {
+                        const ImageParameters& image, VkImageLayout layout,
+                        VkFence fence = VK_NULL_HANDLE) {
     VkResult result;
     do {
         result = cmd.Begin(VkCommandBufferBeginInfo {
@@ -101,14 +160,14 @@ VkResult TransImgLayout(const vvk::Queue& queue, vvk::CommandBuffer& cmd,
             VkImageMemoryBarrier out_bar {
                 .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                 .pNext            = nullptr,
-                .srcAccessMask    = VK_ACCESS_MEMORY_WRITE_BIT,
+                .srcAccessMask    = 0,
                 .dstAccessMask    = VK_ACCESS_MEMORY_READ_BIT,
                 .oldLayout        = VK_IMAGE_LAYOUT_UNDEFINED,
                 .newLayout        = layout,
                 .image            = image.handle,
                 .subresourceRange = subresourceRange,
             };
-            cmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
+            cmd.PipelineBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                                 VK_DEPENDENCY_BY_REGION_BIT,
                                 out_bar);
@@ -122,7 +181,7 @@ VkResult TransImgLayout(const vvk::Queue& queue, vvk::CommandBuffer& cmd,
             .commandBufferCount = 1,
             .pCommandBuffers    = cmd.address(),
         };
-        result = queue.Submit(sub_info);
+        result = queue.Submit(sub_info, fence);
     } while (false);
     return result;
 }
@@ -151,6 +210,92 @@ std::optional<vvk::DeviceMemory> AllocateMemory(const vvk::Device& device, vvk::
     }
     LOG_ERROR("vulkan allocate memory failed, no memory match requires");
     return std::nullopt;
+}
+
+std::optional<ExImageParameters> CreateImportedMetalTextureImage(const Device&        device,
+                                                                 void*                metal_texture,
+                                                                 TextureSample        sample,
+                                                                 uint32_t             width,
+                                                                 uint32_t             height,
+                                                                 std::string*         error) {
+    if (metal_texture == nullptr) {
+        SetError(error, "cannot import a null Metal texture");
+        return std::nullopt;
+    }
+
+    ExImageParameters image;
+
+    VkImportMetalTextureInfoEXT import_texture_info {
+        .sType      = VK_STRUCTURE_TYPE_IMPORT_METAL_TEXTURE_INFO_EXT,
+        .pNext      = nullptr,
+        .plane      = VK_IMAGE_ASPECT_COLOR_BIT,
+        .mtlTexture = reinterpret_cast<MTLTexture_id>(metal_texture),
+    };
+    VkImageCreateInfo image_info {
+        .sType                 = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .pNext                 = &import_texture_info,
+        .imageType             = VK_IMAGE_TYPE_2D,
+        .format                = VK_FORMAT_B8G8R8A8_UNORM,
+        .extent                = VkExtent3D { .width = width, .height = height, .depth = 1 },
+        .mipLevels             = 1,
+        .arrayLayers           = 1,
+        .samples               = VK_SAMPLE_COUNT_1_BIT,
+        .tiling                = VK_IMAGE_TILING_OPTIMAL,
+        .usage                 = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+        .sharingMode           = VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = 0,
+        .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    image.extent = image_info.extent;
+    image.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    if (const VkResult result = device.handle().CreateImage(image_info, image.handle);
+        result != VK_SUCCESS) {
+        VVK_CHECK(result);
+        SetError(error, "failed to create Vulkan image for imported video frame");
+        return std::nullopt;
+    }
+
+    {
+        VkImageViewCreateInfo view_info {
+            .sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .pNext    = nullptr,
+            .image    = *image.handle,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format   = VK_FORMAT_B8G8R8A8_UNORM,
+            .subresourceRange =
+                VkImageSubresourceRange {
+                    .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .baseMipLevel   = 0,
+                    .levelCount     = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount     = 1,
+                },
+        };
+        if (const VkResult result = device.handle().CreateImageView(view_info, image.view);
+            result != VK_SUCCESS) {
+            VVK_CHECK(result);
+            SetError(error, "failed to create Vulkan image view for imported video frame");
+            return std::nullopt;
+        }
+    }
+
+    TextureKey tex_key {
+        .width        = static_cast<i32>(width),
+        .height       = static_cast<i32>(height),
+        .usage        = TexUsage::COLOR,
+        .format       = TextureFormat::RGBA8,
+        .sample       = sample,
+        .mipmap_level = 1,
+    };
+    if (const VkResult result = device.handle().CreateSampler(GenSamplerInfo(tex_key), image.sampler);
+        result != VK_SUCCESS) {
+        VVK_CHECK(result);
+        SetError(error, "failed to create Vulkan sampler for imported video frame");
+        return std::nullopt;
+    }
+
+    return image;
 }
 
 // DRM fourcc codes we emit. We currently only render R8G8B8A8_UNORM and
@@ -212,6 +357,7 @@ std::optional<ExImageParameters> CreateExImage(uint32_t width, uint32_t height, 
             .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
         };
         image.extent = info.extent;
+        image.layout = VK_IMAGE_LAYOUT_GENERAL;
 
         VVK_CHECK_ACT(break, device.CreateImage(info, image.handle));
 
@@ -404,6 +550,169 @@ inline VkResult CopyImageData(std::span<const BufferParameters> in_bufs,
 }
 } // namespace
 
+bool TextureCache::ReadbackImageSample(const ImageParameters&    image,
+                                       uint32_t                  x,
+                                       uint32_t                  y,
+                                       uint32_t                  width,
+                                       uint32_t                  height,
+                                       std::vector<std::uint8_t>* out,
+                                       std::string*              error) {
+    if (out == nullptr) {
+        return SetError(error, "readback output buffer must not be null");
+    }
+    if (width == 0 || height == 0) {
+        return SetError(error, "readback sample dimensions must be non-zero");
+    }
+    if (image.handle == VK_NULL_HANDLE) {
+        return SetError(error, "readback source image handle must not be null");
+    }
+    if (x >= image.extent.width || y >= image.extent.height) {
+        return SetError(error, "readback sample origin is outside the image extent");
+    }
+
+    const uint32_t sample_width = std::min(width, image.extent.width - x);
+    const uint32_t sample_height = std::min(height, image.extent.height - y);
+    const size_t   byte_count =
+        static_cast<size_t>(sample_width) * static_cast<size_t>(sample_height) * 4u;
+    if (byte_count == 0) {
+        return SetError(error, "readback sample region resolved to zero bytes");
+    }
+
+    VmaBufferParameters readback_buffer;
+    if (!CreateReadbackBuffer(m_device.vma_allocator(), byte_count, readback_buffer)) {
+        return SetError(error, "failed to allocate a Vulkan readback buffer");
+    }
+
+    if (!m_tex_cmd) allocateCmd();
+
+    const VkImageLayout original_layout = image.layout;
+    const VkImageSubresourceRange subresource_range {
+        .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+        .baseMipLevel   = 0,
+        .levelCount     = 1,
+        .baseArrayLayer = 0,
+        .layerCount     = 1,
+    };
+    const VkImageMemoryBarrier to_transfer_src {
+        .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .pNext            = nullptr,
+        .srcAccessMask    = VK_ACCESS_MEMORY_READ_BIT,
+        .dstAccessMask    = VK_ACCESS_TRANSFER_READ_BIT,
+        .oldLayout        = original_layout,
+        .newLayout        = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image            = image.handle,
+        .subresourceRange = subresource_range,
+    };
+    const VkImageMemoryBarrier restore_layout {
+        .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .pNext            = nullptr,
+        .srcAccessMask    = VK_ACCESS_TRANSFER_READ_BIT,
+        .dstAccessMask    = VK_ACCESS_MEMORY_READ_BIT,
+        .oldLayout        = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .newLayout        = original_layout,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image            = image.handle,
+        .subresourceRange = subresource_range,
+    };
+    const VkBufferImageCopy copy_region {
+        .bufferOffset      = 0,
+        .bufferRowLength   = 0,
+        .bufferImageHeight = 0,
+        .imageSubresource =
+            VkImageSubresourceLayers {
+                .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                .mipLevel       = 0,
+                .baseArrayLayer = 0,
+                .layerCount     = 1,
+            },
+        .imageOffset = VkOffset3D { static_cast<int32_t>(x), static_cast<int32_t>(y), 0 },
+        .imageExtent = VkExtent3D { sample_width, sample_height, 1 },
+    };
+    std::array copy_regions { copy_region };
+    const VkBufferMemoryBarrier host_barrier {
+        .sType               = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+        .pNext               = nullptr,
+        .srcAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask       = VK_ACCESS_HOST_READ_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer              = *readback_buffer.handle,
+        .offset              = 0,
+        .size                = byte_count,
+    };
+
+    VkResult result = m_tex_cmd.Begin(VkCommandBufferBeginInfo {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .pNext = nullptr,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    });
+    if (result != VK_SUCCESS) {
+        VVK_CHECK(result);
+        return SetError(error, "failed to begin command buffer for video readback");
+    }
+
+    m_tex_cmd.PipelineBarrier(
+        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0,
+        to_transfer_src);
+    m_tex_cmd.CopyImageToBuffer(
+        image.handle,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        *readback_buffer.handle,
+        copy_regions);
+    m_tex_cmd.PipelineBarrier(
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_HOST_BIT,
+        0,
+        host_barrier);
+    m_tex_cmd.PipelineBarrier(
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+        0,
+        restore_layout);
+
+    result = m_tex_cmd.End();
+    if (result != VK_SUCCESS) {
+        VVK_CHECK(result);
+        return SetError(error, "failed to end command buffer for video readback");
+    }
+
+    const VkSubmitInfo submit_info {
+        .sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .pNext              = nullptr,
+        .commandBufferCount = 1,
+        .pCommandBuffers    = m_tex_cmd.address(),
+    };
+    std::array submit_infos { submit_info };
+    result = m_device.graphics_queue().handle.Submit(submit_infos);
+    if (result != VK_SUCCESS) {
+        VVK_CHECK(result);
+        return SetError(error, "failed to submit Vulkan readback command buffer");
+    }
+
+    result = m_device.handle().WaitIdle();
+    if (result != VK_SUCCESS) {
+        VVK_CHECK(result);
+        return SetError(error, "failed to idle Vulkan device after video readback");
+    }
+
+    void* mapped_bytes = nullptr;
+    result = readback_buffer.handle.MapMemory(&mapped_bytes);
+    if (result != VK_SUCCESS || mapped_bytes == nullptr) {
+        if (result != VK_SUCCESS) VVK_CHECK(result);
+        return SetError(error, "failed to map Vulkan readback buffer");
+    }
+
+    out->resize(byte_count);
+    memcpy(out->data(), mapped_bytes, byte_count);
+    readback_buffer.handle.UnMapMemory();
+    return true;
+}
+
 std::size_t TextureKey::HashValue(const TextureKey& k) {
     std::size_t seed { 0 };
     utils::hash_combine(seed, k.width);
@@ -420,24 +729,7 @@ std::size_t TextureKey::HashValue(const TextureKey& k) {
 
 std::optional<ExImageParameters> TextureCache::CreateExTex(uint32_t width, uint32_t height,
                                                            VkFormat format, VkImageTiling tiling) {
-    VkSamplerCreateInfo sampler_info {
-        .sType                   = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-        .pNext                   = nullptr,
-        .magFilter               = VK_FILTER_NEAREST,
-        .minFilter               = VK_FILTER_NEAREST,
-        .mipmapMode              = VK_SAMPLER_MIPMAP_MODE_LINEAR,
-        .addressModeU            = VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT,
-        .addressModeV            = VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT,
-        .addressModeW            = VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT,
-        .anisotropyEnable        = false,
-        .maxAnisotropy           = 1.0f,
-        .compareEnable           = false,
-        .compareOp               = VK_COMPARE_OP_NEVER,
-        .minLod                  = 0.0f,
-        .maxLod                  = 1.0f,
-        .borderColor             = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
-        .unnormalizedCoordinates = false,
-    };
+    VkSamplerCreateInfo sampler_info = GenRenderTargetSamplerInfo();
 
     auto opt = CreateExImage(width,
                              height,
@@ -459,6 +751,47 @@ std::optional<ExImageParameters> TextureCache::CreateExTex(uint32_t width, uint3
 }
 
 ImageSlotsRef TextureCache::CreateTex(Image& image) {
+    if (image.header.isVideo) {
+        if (exists(m_video_tex_map, image.key)) {
+            ImageSlotsRef ref;
+            if (auto* current = m_video_tex_map.at(image.key)->current_frame.get(); current != nullptr) {
+                ref.slots = { ImageParameters(current->image) };
+                ref.active = 0;
+            }
+            return ref;
+        }
+
+        std::string error;
+        auto        source = video::CreateVideoTextureSource(image, &error);
+        if (!source) {
+            LOG_ERROR("failed to create FFmpeg video texture source for \"%s\": %s",
+                      image.key.c_str(),
+                      error.c_str());
+            return {};
+        }
+        if (!source->prime(&error)) {
+            LOG_ERROR("failed to prime FFmpeg video texture source for \"%s\": %s",
+                      image.key.c_str(),
+                      error.c_str());
+            return {};
+        }
+
+        auto video_tex   = std::make_unique<VideoTex>();
+        video_tex->sample = image.header.sample;
+        video_tex->source = std::move(source);
+        m_video_tex_map[image.key] = std::move(video_tex);
+
+        ImageSlotsRef ref;
+        if (!UpdateVideoFrame(image.key, video::VideoPlaybackState {}, &ref, &error)) {
+            LOG_ERROR("failed to import initial video frame for \"%s\": %s",
+                      image.key.c_str(),
+                      error.c_str());
+            m_video_tex_map.erase(image.key);
+            return {};
+        }
+        return ref;
+    }
+
     if (exists(m_tex_map, image.key)) {
         return m_tex_map.at(image.key);
     }
@@ -485,7 +818,7 @@ ImageSlotsRef TextureCache::CreateTex(Image& image) {
             .minFilter               = (ToVkType(sam.minFilter)),
             .mipmapMode              = VK_SAMPLER_MIPMAP_MODE_LINEAR,
             .addressModeU            = (ToVkType(sam.wrapS)),
-            .addressModeV            = (ToVkType(sam.wrapS)),
+            .addressModeV            = (ToVkType(sam.wrapT)),
             .addressModeW            = (ToVkType(sam.wrapT)),
             .anisotropyEnable        = (false),
             .maxAnisotropy           = (1.0f),
@@ -548,6 +881,34 @@ void TextureCache::allocateCmd() {
     m_tex_cmd = vvk::CommandBuffer(m_tex_cmds[0], m_device.handle().Dispatch());
 }
 
+void TextureCache::allocateVideoImportCmd() {
+    const auto& pool = m_device.cmd_pool();
+    VVK_CHECK(pool.Allocate(1, VK_COMMAND_BUFFER_LEVEL_PRIMARY, m_video_import_cmds));
+    m_video_import_cmd = vvk::CommandBuffer(m_video_import_cmds[0], m_device.handle().Dispatch());
+}
+
+bool TextureCache::waitForPendingVideoImport(std::string* error) {
+    if (!m_video_import_pending) return true;
+
+    const auto wait_started = std::chrono::steady_clock::now();
+    if (const VkResult result = m_video_import_fence.Wait(); result != VK_SUCCESS) {
+        VVK_CHECK(result);
+        return SetError(error, "failed waiting for pending video frame import");
+    }
+    const double wait_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - wait_started).count();
+    if (const VkResult result = m_video_import_fence.Reset(); result != VK_SUCCESS) {
+        VVK_CHECK(result);
+        return SetError(error, "failed resetting video frame import fence");
+    }
+
+    if (wait_ms >= 2.0) {
+        LOG_INFO("video texture import fence wait: %.3fms", wait_ms);
+    }
+    m_video_import_pending = false;
+    return true;
+}
+
 std::optional<VmaImageParameters> TextureCache::CreateTex(TextureKey tex_key) {
     VmaImageParameters image_paras;
     do {
@@ -584,10 +945,144 @@ TextureCache::TextureCache(const Device& device): m_device(device) {}
 
 TextureCache::~TextureCache() {};
 
+void TextureCache::SetVideoPlaybackPaused(bool paused) {
+    m_video_playback_state.paused = paused;
+}
+
+void TextureCache::SetVideoPlaybackRate(float rate) {
+    m_video_playback_state.rate = rate;
+}
+
+double TextureCache::GetVideoDuration(std::string_view key) const
+{
+    const auto iterator = m_video_tex_map.find(std::string(key));
+    if (iterator == m_video_tex_map.end() || iterator->second == nullptr || !iterator->second->source) {
+        return 0.0;
+    }
+    return iterator->second->source->durationSeconds();
+}
+
 void TextureCache::Clear() {
+    std::string error;
+    if (!waitForPendingVideoImport(&error) && !error.empty()) {
+        LOG_ERROR("failed waiting for pending video import before cache clear: %s", error.c_str());
+    }
     m_tex_map.clear();
+    m_video_tex_map.clear();
     m_query_texs.clear();
     m_query_map.clear();
+}
+
+bool TextureCache::UpdateVideoFrame(std::string_view key,
+                                    const video::VideoPlaybackState& playback_state,
+                                    ImageSlotsRef*   out,
+                                    std::string*     error) {
+    const auto update_started = std::chrono::steady_clock::now();
+    if (!exists(m_video_tex_map, key)) {
+        return SetError(error, std::string("video texture not registered: ") + std::string(key));
+    }
+
+    auto& video_tex = *m_video_tex_map.at(std::string(key));
+    if (!video_tex.source) {
+        return SetError(error, std::string("video texture source missing: ") + std::string(key));
+    }
+
+    video::VideoPlaybackState effective_state = playback_state;
+    effective_state.paused = m_video_playback_state.paused || playback_state.paused;
+    effective_state.rate = std::max(0.0f, m_video_playback_state.rate) *
+                           std::max(0.0f, playback_state.rate);
+    effective_state.scene_elapsed_seconds = playback_state.scene_elapsed_seconds;
+
+    if (!video_tex.source->syncPlayback(effective_state, error)) {
+        return false;
+    }
+    if (!video_tex.source->refreshFrame(error)) {
+        return false;
+    }
+
+    const auto frame = video_tex.source->currentFrame();
+    if (!frame.valid()) {
+        return SetError(error, std::string("video frame is not ready for texture: ") + std::string(key));
+    }
+
+    if (video_tex.current_frame == nullptr || video_tex.current_frame->generation != frame.generation) {
+        void* metal_device = ExportMetalDeviceHandle(m_device, error);
+        if (metal_device == nullptr) {
+            return false;
+        }
+        void* metal_texture =
+            video::CreateAppleVideoMetalTextureForDevice(
+                frame, metal_device, error);
+        if (metal_texture == nullptr) {
+            return false;
+        }
+
+        auto imported_image = CreateImportedMetalTextureImage(m_device,
+                                                              metal_texture,
+                                                              video_tex.sample,
+                                                              frame.width,
+                                                              frame.height,
+                                                              error);
+        if (!imported_image.has_value()) {
+            video::ReleaseAppleVideoMetalTexture(metal_texture);
+            return false;
+        }
+        if (!m_video_import_cmd) allocateVideoImportCmd();
+        if (!m_video_import_fence) {
+            VkFenceCreateInfo fence_info {
+                .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+            };
+            if (const VkResult result = m_device.handle().CreateFence(fence_info, m_video_import_fence);
+                result != VK_SUCCESS) {
+                VVK_CHECK(result);
+                video::ReleaseAppleVideoMetalTexture(metal_texture);
+                return SetError(error, "failed to create Vulkan fence for video frame import");
+            }
+        }
+        if (!waitForPendingVideoImport(error)) {
+            video::ReleaseAppleVideoMetalTexture(metal_texture);
+            return false;
+        }
+        if (const VkResult result = TransImgLayout(m_device.graphics_queue().handle,
+                                                   m_video_import_cmd,
+                                                   imported_image.value(),
+                                                   imported_image->layout,
+                                                   *m_video_import_fence);
+            result != VK_SUCCESS) {
+            VVK_CHECK(result);
+            video::ReleaseAppleVideoMetalTexture(metal_texture);
+            return SetError(error, "failed to transition imported video frame image layout");
+        }
+        m_video_import_pending = true;
+
+        auto imported_frame = std::make_unique<ImportedVideoFrame>();
+        imported_frame->image = std::move(imported_image.value());
+        imported_frame->metal_texture =
+            std::shared_ptr<void>(metal_texture, [](void* handle) {
+                video::ReleaseAppleVideoMetalTexture(handle);
+            });
+        imported_frame->generation = frame.generation;
+        video_tex.current_frame = std::move(imported_frame);
+    }
+
+    if (out != nullptr && video_tex.current_frame != nullptr) {
+        out->slots = { ImageParameters(video_tex.current_frame->image) };
+        out->active = 0;
+    }
+
+    const double update_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - update_started).count();
+    if (update_ms >= 25.0) {
+        LOG_INFO(
+            "video texture \"%s\" UpdateVideoFrame took %.3fms (generation=%llu)",
+            std::string(key).c_str(),
+            update_ms,
+            static_cast<unsigned long long>(
+                video_tex.current_frame != nullptr ? video_tex.current_frame->generation : 0));
+    }
+    return true;
 }
 
 std::optional<ImageParameters> TextureCache::Query(std::string_view key, TextureKey content_hash,
