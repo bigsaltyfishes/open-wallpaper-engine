@@ -38,6 +38,12 @@ struct WPUniformInfo {
     bool has_TEXELSIZEHALF { false };
     bool has_SCREEN { false };
     bool has_LP { false };
+    bool has_AudioSpectrum16Left { false };
+    bool has_AudioSpectrum16Right { false };
+    bool has_AudioSpectrum32Left { false };
+    bool has_AudioSpectrum32Right { false };
+    bool has_AudioSpectrum64Left { false };
+    bool has_AudioSpectrum64Right { false };
 
     struct Tex {
         bool has_resolution { false };

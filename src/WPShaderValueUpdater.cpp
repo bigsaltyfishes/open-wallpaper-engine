@@ -1,6 +1,7 @@
 #include "WPShaderValueUpdater.hpp"
 #include "Eigen/src/Core/Matrix.h"
 #include "Eigen/src/Geometry/Transform.h"
+#include "Runtime/SceneRuntimeContext.hpp"
 #include "Scene/Scene.h"
 #include "SpriteAnimation.hpp"
 #include "SpecTexs.hpp"
@@ -16,6 +17,18 @@
 
 using namespace wallpaper;
 using namespace Eigen;
+
+namespace
+{
+
+constexpr std::string_view G_AUDIO_SPECTRUM16_LEFT  = "g_AudioSpectrum16Left";
+constexpr std::string_view G_AUDIO_SPECTRUM16_RIGHT = "g_AudioSpectrum16Right";
+constexpr std::string_view G_AUDIO_SPECTRUM32_LEFT  = "g_AudioSpectrum32Left";
+constexpr std::string_view G_AUDIO_SPECTRUM32_RIGHT = "g_AudioSpectrum32Right";
+constexpr std::string_view G_AUDIO_SPECTRUM64_LEFT  = "g_AudioSpectrum64Left";
+constexpr std::string_view G_AUDIO_SPECTRUM64_RIGHT = "g_AudioSpectrum64Right";
+
+} // namespace
 
 void WPShaderValueUpdater::FrameBegin() {
     /*
@@ -72,6 +85,19 @@ void WPShaderValueUpdater::InitUniforms(SceneNode* pNode, const ExistsUniformOp&
     info.has_TEXELSIZEHALF    = existsOp(G_TEXELSIZEHALF);
     info.has_SCREEN           = existsOp(G_SCREEN);
     info.has_LP               = existsOp(G_LP);
+    info.has_AudioSpectrum16Left = existsOp(G_AUDIO_SPECTRUM16_LEFT);
+    info.has_AudioSpectrum16Right = existsOp(G_AUDIO_SPECTRUM16_RIGHT);
+    info.has_AudioSpectrum32Left = existsOp(G_AUDIO_SPECTRUM32_LEFT);
+    info.has_AudioSpectrum32Right = existsOp(G_AUDIO_SPECTRUM32_RIGHT);
+    info.has_AudioSpectrum64Left = existsOp(G_AUDIO_SPECTRUM64_LEFT);
+    info.has_AudioSpectrum64Right = existsOp(G_AUDIO_SPECTRUM64_RIGHT);
+
+    if (m_scene != nullptr && m_scene->runtime != nullptr &&
+        (info.has_AudioSpectrum16Left || info.has_AudioSpectrum16Right ||
+         info.has_AudioSpectrum32Left || info.has_AudioSpectrum32Right ||
+         info.has_AudioSpectrum64Left || info.has_AudioSpectrum64Right)) {
+        m_scene->runtime->MarkSceneRequiresAudioResponse();
+    }
 
     std::accumulate(begin(info.texs), end(info.texs), 0, [&existsOp](uint index, auto& value) {
         value.has_resolution = existsOp(WE_GLTEX_RESOLUTION_NAMES[index]);
@@ -86,7 +112,7 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
 
     pNode->UpdateTrans();
 
-    const SceneCamera* camera;
+    SceneCamera*      camera;
     std::string_view   cam_name = pNode->Camera();
     if (! pNode->Camera().empty()) {
         camera = m_scene->cameras.at(cam_name.data()).get();
@@ -94,6 +120,7 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
         camera = m_scene->activeCamera;
 
     if (! camera) return;
+    camera->Update();
 
     auto* material = pNode->Mesh()->Material();
     if (! material) return;
@@ -141,7 +168,7 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
         updateOp(G_VP, ShaderValue::fromMatrix(viewProTrans));
     }
     if (reqM || reqMVP || reqMI || reqMVPI) {
-        Matrix4d modelTrans = pNode->ModelTrans();
+        Matrix4d modelTrans = pNode->RenderTrans();
         if (hasNodeData && cam_name != "effect") {
             const auto& nodeData = m_nodeDataMap.at(pNode);
             if (m_parallax.enable) {
@@ -188,6 +215,45 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
     if (info.has_TIME) updateOp(G_TIME, (float)m_scene->elapsingTime);
 
     if (info.has_DAYTIME) updateOp(G_DAYTIME, (float)m_dayTime);
+
+    if (info.has_AudioSpectrum16Left || info.has_AudioSpectrum16Right ||
+        info.has_AudioSpectrum32Left || info.has_AudioSpectrum32Right ||
+        info.has_AudioSpectrum64Left || info.has_AudioSpectrum64Right) {
+        const auto snapshot = m_scene != nullptr && m_scene->runtime != nullptr
+            ? m_scene->runtime->CurrentAudioSpectrumSnapshot()
+            : wallpaper::audio::AudioSpectrumSnapshot {};
+
+        if (info.has_AudioSpectrum16Left) {
+            updateOp(
+                G_AUDIO_SPECTRUM16_LEFT,
+                std::span<const float> { snapshot.left16.data(), snapshot.left16.size() });
+        }
+        if (info.has_AudioSpectrum16Right) {
+            updateOp(
+                G_AUDIO_SPECTRUM16_RIGHT,
+                std::span<const float> { snapshot.right16.data(), snapshot.right16.size() });
+        }
+        if (info.has_AudioSpectrum32Left) {
+            updateOp(
+                G_AUDIO_SPECTRUM32_LEFT,
+                std::span<const float> { snapshot.left32.data(), snapshot.left32.size() });
+        }
+        if (info.has_AudioSpectrum32Right) {
+            updateOp(
+                G_AUDIO_SPECTRUM32_RIGHT,
+                std::span<const float> { snapshot.right32.data(), snapshot.right32.size() });
+        }
+        if (info.has_AudioSpectrum64Left) {
+            updateOp(
+                G_AUDIO_SPECTRUM64_LEFT,
+                std::span<const float> { snapshot.left64.data(), snapshot.left64.size() });
+        }
+        if (info.has_AudioSpectrum64Right) {
+            updateOp(
+                G_AUDIO_SPECTRUM64_RIGHT,
+                std::span<const float> { snapshot.right64.data(), snapshot.right64.size() });
+        }
+    }
 
     if (info.has_POINTERPOSITION) updateOp(G_POINTERPOSITION, m_mousePos);
 

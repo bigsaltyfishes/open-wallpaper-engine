@@ -2,6 +2,9 @@ set(LIB_NAME wpAudio)
 
 add_library(${LIB_NAME}
     STATIC
+    AudioResponseAnalyzerVdsp.cpp
+    AudioResponseService.cpp
+    FfmpegSoundStream.cpp
     SoundManager.cpp
 )
 
@@ -10,6 +13,10 @@ PUBLIC
     wpUtils
 PRIVATE
     wpFs
+    PkgConfig::AVFORMAT
+    PkgConfig::AVCODEC
+    PkgConfig::AVUTIL
+    PkgConfig::SWRESAMPLE
     miniaudio
 )
 target_include_directories(${LIB_NAME} PUBLIC include PRIVATE include/Audio)
