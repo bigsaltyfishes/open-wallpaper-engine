@@ -18,11 +18,13 @@
 #include "PrePass.hpp"
 #include "FinPass.hpp"
 #include "Resource.hpp"
+#include "SpecTexs.hpp"
 
 #include "Core/ArrayHelper.hpp"
 
 #include <atomic>
 #include <cassert>
+#include <cmath>
 #include <cstdint>
 #include <unistd.h>
 #include <vector>
@@ -39,14 +41,63 @@ constexpr uint32_t vk_command_num { 2 };
 constexpr std::array base_inst_exts {
     Extension { false, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME },
 };
-constexpr std::array base_device_exts {
-    Extension { false, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME },
-    Extension { true, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME },
-    Extension { true, VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME },
-    Extension { true, VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME },
-    Extension { true, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME },
-    Extension { true, VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME }
-};
+std::vector<Extension> BaseDeviceExtensions() {
+    std::vector<Extension> extensions {
+        Extension { false, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME },
+        Extension { true, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME },
+    };
+#if defined(__APPLE__)
+    extensions.push_back({ true, "VK_EXT_metal_objects" });
+#endif
+#if defined(__linux__)
+    extensions.push_back({ true, VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME });
+    extensions.push_back({ true, VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME });
+    extensions.push_back({ true, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME });
+    extensions.push_back({ true, VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME });
+#endif
+    return extensions;
+}
+
+namespace
+{
+const char* WallpaperScalingModeName(wallpaper::WallpaperScalingMode mode)
+{
+    switch (mode) {
+    case wallpaper::WallpaperScalingMode::NONE: return "none";
+    case wallpaper::WallpaperScalingMode::STRETCH: return "stretch";
+    case wallpaper::WallpaperScalingMode::FIT: return "fit";
+    case wallpaper::WallpaperScalingMode::FILL: return "fill";
+    }
+
+    return "unknown";
+}
+
+double NormalizeScaleFactor(double scale_factor)
+{
+    if (!std::isfinite(scale_factor) || scale_factor <= 0.0) return 1.0;
+    return scale_factor;
+}
+
+VkExtent2D ResolveSceneSourceExtent(const wallpaper::Scene& scene, const VkExtent2D& fallback_extent)
+{
+    auto spec_rt = scene.renderTargets.find(std::string(wallpaper::SpecTex_Default));
+    if (spec_rt != scene.renderTargets.end()) {
+        const auto width = static_cast<uint32_t>(std::max(1, spec_rt->second.width));
+        const auto height = static_cast<uint32_t>(std::max(1, spec_rt->second.height));
+        if (width > 1 && height > 1) return { width, height };
+    }
+
+    const auto ortho_width = static_cast<uint32_t>(std::max(0, scene.ortho[0]));
+    const auto ortho_height = static_cast<uint32_t>(std::max(0, scene.ortho[1]));
+    if (ortho_width > 2 && ortho_height > 2) return { ortho_width, ortho_height };
+
+    return {
+        std::max(1u, fallback_extent.width),
+        std::max(1u, fallback_extent.height),
+    };
+}
+
+} // namespace
 
 struct VulkanRender::Impl {
     Impl()  = default;
@@ -63,11 +114,14 @@ struct VulkanRender::Impl {
     void clearLastRenderGraph();
     void compileRenderGraph(Scene&, rg::RenderGraph&);
     void UpdateCameraFillMode(Scene&, wallpaper::FillMode);
+    void SetWallpaperScalingMode(wallpaper::WallpaperScalingMode);
+    void SetWallpaperScalingFactor(double);
 
     bool initRes();
     void drawFrameSwapchain();
     void drawFrameOffscreen();
     void setRenderTargetSize(Scene&, rg::RenderGraph&);
+    void updateScalingLayout(const Scene&, uint32_t output_width, uint32_t output_height);
 
     Instance                m_instance;
     std::unique_ptr<Device> m_device;
@@ -91,6 +145,11 @@ struct VulkanRender::Impl {
 
     std::unique_ptr<VulkanExSwapchain> m_ex_swapchain;
     RenderingResources                 m_rendering_resources;
+    WallpaperScalingLayout             m_scaling_layout {};
+    WallpaperScalingMode              m_scaling_mode { WallpaperScalingMode::FIT };
+    double                            m_scaling_factor { 1.0 };
+    double                            m_display_scale_factor { 1.0 };
+    VkExtent2D                        m_requested_render_extent {};
 
     // Exported dma_fence sync_file fd for the most recently completed
     // offscreen frame. Written by drawFrameOffscreen(), consumed by
@@ -120,6 +179,22 @@ void VulkanRender::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
 void VulkanRender::UpdateCameraFillMode(Scene& scene, wallpaper::FillMode fill) {
     pImpl->UpdateCameraFillMode(scene, fill);
 };
+void VulkanRender::SetWallpaperScalingMode(wallpaper::WallpaperScalingMode mode) {
+    pImpl->SetWallpaperScalingMode(mode);
+}
+void VulkanRender::SetWallpaperScalingFactor(double factor) {
+    pImpl->SetWallpaperScalingFactor(factor);
+}
+void VulkanRender::SetVideoPlaybackPaused(bool paused) {
+    if (pImpl->m_device != nullptr) {
+        pImpl->m_device->tex_cache().SetVideoPlaybackPaused(paused);
+    }
+}
+void VulkanRender::SetVideoPlaybackRate(float rate) {
+    if (pImpl->m_device != nullptr) {
+        pImpl->m_device->tex_cache().SetVideoPlaybackRate(rate);
+    }
+}
 
 wallpaper::ExSwapchain* VulkanRender::exSwapchain() const { return pImpl->m_ex_swapchain.get(); };
 
@@ -127,15 +202,23 @@ bool VulkanRender::Impl::init(RenderInitInfo info) {
     if (m_inited) return true;
 
     m_redraw_cb = info.redraw_callback;
+    m_display_scale_factor = NormalizeScaleFactor(info.display_scale_factor);
+    m_requested_render_extent = { info.render_width, info.render_height };
     VkExtent2D extent { info.width, info.height };
     if (extent.width * extent.height < 500 * 500) {
         LOG_ERROR("too small swapchain image size: %dx%d", extent.width, extent.height);
     } else {
         LOG_INFO("set swapchain image size: %dx%d", extent.width, extent.height);
     }
+    LOG_INFO("wallpaper render init: output_px=%ux%u requested_render_px=%ux%u display_scale=%.3f",
+             extent.width,
+             extent.height,
+             m_requested_render_extent.width,
+             m_requested_render_extent.height,
+             m_display_scale_factor);
 
     std::vector<Extension> inst_exts { base_inst_exts.begin(), base_inst_exts.end() };
-    std::vector<Extension> device_exts { base_device_exts.begin(), base_device_exts.end() };
+    std::vector<Extension> device_exts = BaseDeviceExtensions();
 
     if (! info.offscreen) {
         std::transform(info.surface_info.instanceExts.begin(),
@@ -146,6 +229,7 @@ bool VulkanRender::Impl::init(RenderInitInfo info) {
                        });
         device_exts.push_back({ true, VK_KHR_SWAPCHAIN_EXTENSION_NAME });
     } else {
+#if defined(__linux__)
         // Iteration 1a: offscreen FDs are real Linux DMA-BUFs so they can be
         // imported by arbitrary external consumers. These extensions are
         // strictly required on the offscreen path; if a driver lacks them
@@ -153,6 +237,10 @@ bool VulkanRender::Impl::init(RenderInitInfo info) {
         device_exts.push_back({ true, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME });
         device_exts.push_back({ true, VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME });
         device_exts.push_back({ true, VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME });
+#else
+        LOG_ERROR("offscreen external-memory rendering is only supported on Linux");
+        return false;
+#endif
     }
 
     std::vector<InstanceLayer> inst_layers;
@@ -321,6 +409,14 @@ void VulkanRender::Impl::DestroyRenderingResource(RenderingResources& rr) {}
 void VulkanRender::Impl::drawFrame(Scene& scene) {
     if (! (m_inited && m_pass_loaded)) return;
 
+    const auto output_extent = m_device->out_extent();
+    updateScalingLayout(
+        scene,
+        std::max(1u, output_extent.width),
+        std::max(1u, output_extent.height));
+    m_rendering_resources.wallpaper_viewport = MakeWallpaperViewport(m_scaling_layout);
+    m_rendering_resources.wallpaper_scissor = MakeWallpaperScissor(m_scaling_layout);
+
         // LOG_INFO("used ram: %fm", (m_device->GetUsage()/1024.0f)/1024.0f);
 
 #if ENABLE_RENDERDOC_API
@@ -459,11 +555,16 @@ void VulkanRender::Impl::drawFrameOffscreen() {
 
 void VulkanRender::Impl::setRenderTargetSize(Scene& scene, rg::RenderGraph& rg) {
     auto& ext = m_device->out_extent();
+    const auto source_extent = ResolveSceneSourceExtent(scene, ext);
     for (auto& item : scene.renderTargets) {
         auto& rt = item.second;
         if (rt.bind.enable && rt.bind.screen) {
-            rt.width  = (i32)(rt.bind.scale * ext.width);
-            rt.height = (i32)(rt.bind.scale * ext.height);
+            rt.width = std::max(
+                1,
+                static_cast<i32>(std::lround(rt.bind.scale * static_cast<double>(source_extent.width))));
+            rt.height = std::max(
+                1,
+                static_cast<i32>(std::lround(rt.bind.scale * static_cast<double>(source_extent.height))));
         }
     }
     for (auto& item : scene.renderTargets) {
@@ -488,7 +589,34 @@ void VulkanRender::Impl::setRenderTargetSize(Scene& scene, rg::RenderGraph& rg) 
                 2u;
         }
     }
-    scene.shaderValueUpdater->SetScreenSize((i32)ext.width, (i32)ext.height);
+    scene.shaderValueUpdater->SetScreenSize(
+        static_cast<i32>(source_extent.width),
+        static_cast<i32>(source_extent.height));
+}
+
+void VulkanRender::Impl::updateScalingLayout(
+    const Scene& scene,
+    uint32_t     output_width,
+    uint32_t     output_height)
+{
+    const double scale_factor = NormalizeScaleFactor(m_display_scale_factor);
+    const auto source_extent =
+        ResolveSceneSourceExtent(scene, { std::max(1u, output_width), std::max(1u, output_height) });
+    const uint32_t logical_width = std::max(
+        1u,
+        static_cast<uint32_t>(std::lround(static_cast<double>(output_width) / scale_factor)));
+    const uint32_t logical_height = std::max(
+        1u,
+        static_cast<uint32_t>(std::lround(static_cast<double>(output_height) / scale_factor)));
+
+    m_scaling_layout = ComputeWallpaperScalingLayout(
+        m_scaling_mode,
+        source_extent.width,
+        source_extent.height,
+        logical_width,
+        logical_height,
+        scale_factor,
+        m_scaling_factor);
 }
 
 void VulkanRender::Impl::UpdateCameraFillMode(wallpaper::Scene&   scene,
@@ -539,6 +667,16 @@ void VulkanRender::Impl::UpdateCameraFillMode(wallpaper::Scene&   scene,
     gCam.Update();
     gPerCam.Update();
     scene.UpdateLinkedCamera("global");
+}
+
+void VulkanRender::Impl::SetWallpaperScalingMode(wallpaper::WallpaperScalingMode mode) {
+    m_scaling_mode = mode;
+    LOG_INFO("wallpaper scaling mode: %s", WallpaperScalingModeName(m_scaling_mode));
+}
+
+void VulkanRender::Impl::SetWallpaperScalingFactor(double factor) {
+    m_scaling_factor = NormalizeScaleFactor(factor);
+    LOG_INFO("wallpaper scaling factor: %.3f", m_scaling_factor);
 }
 
 void VulkanRender::Impl::clearLastRenderGraph() {

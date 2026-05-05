@@ -1,6 +1,7 @@
 #pragma once
 
 #include "RenderGraph/RenderGraph.hpp"
+#include "Presentation/WallpaperScaling.hpp"
 #include "SceneWallpaperSurface.hpp"
 #include "Swapchain/ExSwapchain.hpp"
 #include "Type.hpp"
@@ -30,6 +31,10 @@ public:
     void clearLastRenderGraph();
     void compileRenderGraph(Scene&, rg::RenderGraph&);
     void UpdateCameraFillMode(Scene&, wallpaper::FillMode);
+    void SetWallpaperScalingMode(wallpaper::WallpaperScalingMode);
+    void SetWallpaperScalingFactor(double);
+    void SetVideoPlaybackPaused(bool paused);
+    void SetVideoPlaybackRate(float rate);
 
     ExSwapchain* exSwapchain() const;
     bool inited() const;

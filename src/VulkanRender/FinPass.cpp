@@ -93,9 +93,9 @@ void FinPass::setPresentQueueIndex(uint32_t i) { m_desc.present_queue_index = i;
 
 void FinPass::prepare(Scene& scene, const Device& device, RenderingResources& rr) {
     {
-        auto tex_name = std::string(m_desc.result);
-        if (scene.renderTargets.count(tex_name) == 0) return;
-        auto& rt = scene.renderTargets.at(tex_name);
+        auto tex_name = scene.ResolveRenderTargetName(std::string(m_desc.result));
+        if (!scene.HasRenderTarget(tex_name)) return;
+        auto& rt = *scene.FindRenderTarget(tex_name);
         if (auto opt = device.tex_cache().Query(tex_name, ToTexKey(rt), ! rt.allowReuse);
             opt.has_value()) {
             m_desc.vk_result = opt.value();
@@ -261,7 +261,7 @@ void FinPass::execute(const Device& device, RenderingResources& rr) {
     cmd.BeginRenderPass(pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
 
     cmd.BindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, *m_desc.pipeline.handle);
-    VkViewport viewport {
+    VkViewport fallback_viewport {
         .x        = 0,
         .y        = (float)outext.height,
         .width    = (float)outext.width,
@@ -269,7 +269,15 @@ void FinPass::execute(const Device& device, RenderingResources& rr) {
         .minDepth = 0.0f,
         .maxDepth = 1.0f,
     };
-    VkRect2D scissor { { 0, 0 }, { outext.width, outext.height } };
+    VkRect2D fallback_scissor { { 0, 0 }, { outext.width, outext.height } };
+    VkViewport viewport =
+        rr.wallpaper_viewport.width > 0.0f && rr.wallpaper_viewport.height != 0.0f
+            ? rr.wallpaper_viewport
+            : fallback_viewport;
+    VkRect2D scissor =
+        rr.wallpaper_scissor.extent.width > 0 && rr.wallpaper_scissor.extent.height > 0
+            ? rr.wallpaper_scissor
+            : fallback_scissor;
     cmd.SetViewport(0, viewport);
     cmd.SetScissor(0, scissor);
 

@@ -22,6 +22,9 @@ struct RenderingResources {
 
     StagingBuffer* vertex_buf;
     StagingBuffer* dyn_buf;
+
+    VkViewport wallpaper_viewport {};
+    VkRect2D   wallpaper_scissor {};
 };
 } // namespace vulkan
 } // namespace wallpaper

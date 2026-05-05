@@ -23,6 +23,9 @@ public:
     CopyPass(const Desc&);
     virtual ~CopyPass();
 
+    Desc&       desc() { return m_desc; }
+    const Desc& desc() const { return m_desc; }
+
     void prepare(Scene&, const Device&, RenderingResources&) override;
     void execute(const Device&, RenderingResources&) override;
     void destory(const Device&, RenderingResources&) override;

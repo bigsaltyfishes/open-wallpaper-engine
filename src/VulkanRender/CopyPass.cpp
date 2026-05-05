@@ -12,17 +12,19 @@ CopyPass::CopyPass(const Desc& desc): m_desc(desc) {}
 CopyPass::~CopyPass() {};
 
 void CopyPass::prepare(Scene& scene, const Device& device, RenderingResources& rr) {
-    if (scene.renderTargets.count(m_desc.src) == 0) {
+    const std::string src_name = scene.ResolveRenderTargetName(m_desc.src);
+    const std::string dst_name = scene.ResolveRenderTargetName(m_desc.dst);
+    if (!scene.HasRenderTarget(src_name)) {
         LOG_ERROR("%s not found", m_desc.src.c_str());
         return;
     }
-    if (scene.renderTargets.count(m_desc.dst) == 0) {
-        auto& rt                                   = scene.renderTargets.at(m_desc.src);
-        scene.renderTargets[m_desc.dst]            = rt;
-        scene.renderTargets[m_desc.dst].allowReuse = true;
+    if (!scene.HasRenderTarget(dst_name)) {
+        auto& rt                            = *scene.FindRenderTarget(src_name);
+        scene.renderTargets[dst_name]       = rt;
+        scene.renderTargets[dst_name].allowReuse = true;
     }
 
-    std::array<std::string, 2>      textures    = { m_desc.src, m_desc.dst };
+    std::array<std::string, 2>      textures    = { src_name, dst_name };
     std::array<ImageParameters*, 2> vk_textures = { &m_desc.vk_src, &m_desc.vk_dst };
     for (usize i = 0; i < textures.size(); i++) {
         auto& tex_name = textures[i];
@@ -30,7 +32,7 @@ void CopyPass::prepare(Scene& scene, const Device& device, RenderingResources& r
 
         ImageParameters img;
         if (IsSpecTex(tex_name)) {
-            auto& rt  = scene.renderTargets.at(tex_name);
+            auto& rt  = *scene.FindRenderTarget(tex_name);
             auto  opt = device.tex_cache().Query(tex_name, ToTexKey(rt), ! rt.allowReuse);
             if (opt.has_value())
                 img = opt.value();
