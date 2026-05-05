@@ -41,6 +41,7 @@ public:
     void Destroy();
 
     static bool Create(Instance&, std::span<const Extension>, std::span<const InstanceLayer>);
+    static VkInstanceCreateFlags CreateFlagsForPlatform();
     bool ChoosePhysicalDevice(const CheckGpuOp& checkgpu, std::span<const std::uint8_t> uuid = {});
 
     const vvk::Instance&       inst() const;

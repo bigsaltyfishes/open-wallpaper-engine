@@ -1,5 +1,7 @@
 #include "vvk/vulkan_wrapper.hpp"
 
+#include <array>
+
 namespace
 {
 
@@ -28,13 +30,33 @@ bool Load(InstanceDispatch& dld) noexcept {
 
 VkResult LoadLibrary(utils::DynamicLibrary& dlib, vvk::InstanceDispatch& dld) {
     using namespace utils;
-    dlib = DynamicLibrary("libvulkan.so.1");
-    if (! dlib.IsOpen()) dlib = DynamicLibrary("libvulkan.so");
-    if (! dlib.IsOpen()) return VK_ERROR_INITIALIZATION_FAILED;
+    dlib = DynamicLibrary(nullptr);
+    if (dlib.IsOpen() && dlib.GetSymbol("vkGetInstanceProcAddr", dld.vkGetInstanceProcAddr)) {
+        return VK_SUCCESS;
+    }
 
-    if (! dlib.GetSymbol("vkGetInstanceProcAddr", dld.vkGetInstanceProcAddr))
-        return VK_ERROR_INITIALIZATION_FAILED;
-    return VK_SUCCESS;
+#if defined(__APPLE__)
+    constexpr std::array<const char*, 3> kLibraryCandidates {
+        "libvulkan.1.dylib",
+        "libvulkan.dylib",
+        "libMoltenVK.dylib",
+    };
+#else
+    constexpr std::array<const char*, 2> kLibraryCandidates {
+        "libvulkan.so.1",
+        "libvulkan.so",
+    };
+#endif
+
+    for (const char* candidate : kLibraryCandidates) {
+        dlib = DynamicLibrary(candidate);
+        if (! dlib.IsOpen()) continue;
+        if (dlib.GetSymbol("vkGetInstanceProcAddr", dld.vkGetInstanceProcAddr)) {
+            return VK_SUCCESS;
+        }
+    }
+
+    return VK_ERROR_INITIALIZATION_FAILED;
 }
 
 bool Load(VkInstance instance, InstanceDispatch& dld) noexcept {

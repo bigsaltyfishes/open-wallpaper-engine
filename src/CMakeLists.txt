@@ -14,6 +14,17 @@ if(ENDIAN)
   add_compile_definitions(WP_BIG_ENDIAN)
 endif()
 
+if(APPLE)
+  find_library(ACCELERATE_FRAMEWORK Accelerate REQUIRED)
+  find_library(CORE_GRAPHICS_FRAMEWORK CoreGraphics REQUIRED)
+  find_library(CORE_MEDIA_FRAMEWORK CoreMedia REQUIRED)
+  find_library(CORE_VIDEO_FRAMEWORK CoreVideo REQUIRED)
+  find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
+  find_library(IOSURFACE_FRAMEWORK IOSurface REQUIRED)
+  find_library(METAL_FRAMEWORK Metal REQUIRED)
+  find_library(VIDEOTOOLBOX_FRAMEWORK VideoToolbox REQUIRED)
+endif()
+
 set(warn_opts
     -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wno-unused-variable
     CACHE INTERNAL "")
@@ -62,6 +73,7 @@ add_library(
   Project/ProjectManifest.cpp
   Project/ProjectProperties.cpp
   Runtime/VirtualAssetRegistry.cpp
+  Platform/Apple/FfmpegVideoInterop.mm
   SceneSourceResolver.cpp
   SceneWallpaper.cpp)
 
@@ -84,5 +96,24 @@ target_link_libraries(
   PRIVATE ${InteralLib} nlohmann_json quickjs::quickjs ${LZ4_LIBRARIES}
           ${CMAKE_THREAD_LIBS_INIT} ${CMAKE_DL_LIBS})
 
+if(APPLE)
+  target_link_libraries(
+    ${PROJECT_NAME}
+    PUBLIC
+      ${CORE_GRAPHICS_FRAMEWORK}
+      ${CORE_MEDIA_FRAMEWORK}
+      ${CORE_VIDEO_FRAMEWORK}
+      ${ACCELERATE_FRAMEWORK}
+      ${FOUNDATION_FRAMEWORK}
+      ${IOSURFACE_FRAMEWORK}
+      ${METAL_FRAMEWORK}
+      ${VIDEOTOOLBOX_FRAMEWORK})
+endif()
+
 target_include_directories(${PROJECT_NAME} PUBLIC . Swapchain)
+set_target_properties(${PROJECT_NAME} PROPERTIES
+  OBJCXX_STANDARD 20
+  OBJCXX_STANDARD_REQUIRED YES)
+target_compile_options(${PROJECT_NAME} PRIVATE
+  "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
 set_property(TARGET ${PROJECT_NAME} PROPERTY POSITION_INDEPENDENT_CODE ON)

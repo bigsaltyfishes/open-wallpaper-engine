@@ -114,6 +114,11 @@ bool Device::Create(Instance& inst, std::span<const Extension> exts, VkExtent2D 
                 return false;
             }
         }
+#if defined(__APPLE__)
+        if (device.supportExt("VK_KHR_portability_subset")) {
+            tested_exts.insert("VK_KHR_portability_subset");
+        }
+#endif
     }
     std::vector<const char*> tested_exts_c { tested_exts.size() };
     std::transform(

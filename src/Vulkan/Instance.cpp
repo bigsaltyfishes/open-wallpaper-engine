@@ -10,10 +10,16 @@ using namespace wallpaper::vulkan;
 
 constexpr std::array<InstanceLayer, 0> base_inst_layers {};
 
-constexpr std::array base_inst_exts { Extension { true, VK_EXT_DEBUG_UTILS_EXTENSION_NAME } };
-
 namespace
 {
+
+std::vector<Extension> BaseInstanceExtensions() {
+    std::vector<Extension> extensions { Extension { true, VK_EXT_DEBUG_UTILS_EXTENSION_NAME } };
+#if defined(__APPLE__)
+    extensions.push_back({ true, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME });
+#endif
+    return extensions;
+}
 
 VkBool32 DebugUtilsMessengerCallback(VkDebugUtilsMessageSeverityFlagBitsEXT      messageSeverity,
                                      VkDebugUtilsMessageTypeFlagsEXT             messageType,
@@ -46,7 +52,8 @@ vvk::DebugUtilsMessenger SetupDebugCallback(vvk::Instance& instance) {
 }
 
 VkResult CreatInstance(vvk::Instance* inst, std::span<const std::string_view> exts,
-                       std::span<const std::string_view> layers, vvk::InstanceDispatch& dld) {
+                       std::span<const std::string_view> layers, vvk::InstanceDispatch& dld,
+                       VkInstanceCreateFlags flags) {
     VkApplicationInfo app_info {
         .sType              = VK_STRUCTURE_TYPE_APPLICATION_INFO,
         .pNext              = nullptr,
@@ -67,7 +74,23 @@ VkResult CreatInstance(vvk::Instance* inst, std::span<const std::string_view> ex
             return layer.data();
         });
 
-    return vvk::Instance::Create(*inst, app_info, layer_names_c, extension_names_c, dld);
+    VkInstanceCreateInfo create_info {
+        .sType                   = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        .pNext                   = nullptr,
+        .flags                   = flags,
+        .pApplicationInfo        = &app_info,
+        .enabledLayerCount       = static_cast<uint32_t>(layer_names_c.size()),
+        .ppEnabledLayerNames     = layer_names_c.data(),
+        .enabledExtensionCount   = static_cast<uint32_t>(extension_names_c.size()),
+        .ppEnabledExtensionNames = extension_names_c.data(),
+    };
+
+    VkInstance raw_instance { VK_NULL_HANDLE };
+    const VkResult result = dld.vkCreateInstance(&create_info, nullptr, &raw_instance);
+    if (result == VK_SUCCESS) {
+        *inst = vvk::Instance(raw_instance, dld);
+    }
+    return result;
 }
 void EnumateExts(wallpaper::Set<std::string>& set, const vvk::InstanceDispatch& dld) {
     if (auto rv = vvk::EnumerateInstanceExtensionProperties(dld); rv.has_value()) {
@@ -84,6 +107,14 @@ void EnumateLayers(wallpaper::Set<std::string>& set, const vvk::InstanceDispatch
     }
 }
 } // namespace
+
+VkInstanceCreateFlags Instance::CreateFlagsForPlatform() {
+#if defined(__APPLE__)
+    return VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+#else
+    return 0;
+#endif
+}
 
 bool Instance::ChoosePhysicalDevice(const CheckGpuOp&             checkgpu,
                                     std::span<const std::uint8_t> uuid) {
@@ -154,11 +185,18 @@ void Instance::Destroy() {}
 
 bool Instance::Create(Instance& inst, std::span<const Extension> instExts,
                       std::span<const InstanceLayer> instLayers) {
-    vvk::LoadLibrary(inst.m_vklib, inst.m_dld);
-    vvk::Load(inst.m_dld);
+    if (vvk::LoadLibrary(inst.m_vklib, inst.m_dld) != VK_SUCCESS) {
+        LOG_ERROR("failed to load Vulkan loader library");
+        return false;
+    }
+    if (!vvk::Load(inst.m_dld)) {
+        LOG_ERROR("failed to load Vulkan global function pointers");
+        return false;
+    }
 
     EnumateExts(inst.m_extensions, inst.m_dld);
     Set<std::string> exts, layers;
+    const auto       base_inst_exts = BaseInstanceExtensions();
     std::array       test_exts_array { std::span<const Extension>(base_inst_exts), instExts };
     for (auto& test_exts : test_exts_array) {
         for (auto& ext : test_exts) {
@@ -189,7 +227,12 @@ bool Instance::Create(Instance& inst, std::span<const Extension> instExts,
     std::vector<std::string_view> exts_vec { exts.begin(), exts.end() },
         layers_vec { layers.begin(), layers.end() };
 
-    VVK_CHECK_BOOL_RE(CreatInstance(&inst.m_vinst, exts_vec, layers_vec, inst.m_dld));
+    VVK_CHECK_BOOL_RE(CreatInstance(
+        &inst.m_vinst,
+        exts_vec,
+        layers_vec,
+        inst.m_dld,
+        Instance::CreateFlagsForPlatform()));
     vvk::Load(*inst.m_vinst, inst.m_dld);
 
     inst.m_debug_utils = SetupDebugCallback(inst.m_vinst);
