@@ -1,40 +1,5 @@
-include(FetchContent)
 set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
 
-get_filename_component(WESCENE_ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
-
-if(NOT DEFINED FETCHCONTENT_BASE_DIR)
-    set(
-        FETCHCONTENT_BASE_DIR
-        "${WESCENE_ROOT_DIR}/build/_fetchcontent"
-        CACHE PATH "Shared FetchContent cache for wescene-renderer dependencies"
-    )
-endif()
-
-if(NOT DEFINED FETCHCONTENT_UPDATES_DISCONNECTED)
-    set(
-        FETCHCONTENT_UPDATES_DISCONNECTED
-        ON
-        CACHE BOOL "Avoid refreshing FetchContent dependencies during normal local configures"
-    )
-endif()
-
-# ------------------------------------------------------------------
-# Locally vendored deps still living under third_party/
-# (glad, effolkronium, vog, stb_image.h, vk_mem_alloc.h)
-# argparse moved to FetchContent via deps.json.
-# ------------------------------------------------------------------
-add_subdirectory(glad)
-
-# ------------------------------------------------------------------
-# JSON-driven FetchContent for eigen, nlohmann_json, spirv_reflect,
-# glslang, miniaudio. To enable the flatpak-aware dependency provider,
-# pass:
-#   -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES=cmake/FetchDepsProvider.cmake
-# ------------------------------------------------------------------
-include(${WESCENE_ROOT_DIR}/cmake/FetchDeps.cmake)
-
-# Cache vars consumed by nested add_subdirectory calls inside fetchdeps().
 set(JSON_BuildTests         OFF CACHE INTERNAL "")
 set(JSON_Install            OFF CACHE INTERNAL "")
 set(SPIRV_REFLECT_STATIC_LIB  ON  CACHE INTERNAL "")
@@ -42,6 +7,8 @@ set(SPIRV_REFLECT_EXECUTABLE  OFF CACHE INTERNAL "")
 set(SPIRV_REFLECT_BUILD_TESTS OFF CACHE INTERNAL "")
 set(SPIRV_REFLECT_EXAMPLES    OFF CACHE INTERNAL "")
 set(SPIRV_REFLECT_INSTALL    OFF CACHE INTERNAL "")
+set(GLSLANG_TESTS           OFF CACHE INTERNAL "")
+set(GLSLANG_ENABLE_INSTALL  OFF CACHE INTERNAL "")
 set(SKIP_GLSLANG_INSTALL    ON  CACHE INTERNAL "")
 set(ENABLE_GLSLANG_BINARIES OFF CACHE INTERNAL "")
 set(ENABLE_SPVREMAPPER      OFF CACHE INTERNAL "")
@@ -58,18 +25,25 @@ set(QJS_BUILD_CLI_STATIC    OFF CACHE INTERNAL "")
 set(QJS_BUILD_CLI_WITH_MIMALLOC OFF CACHE INTERNAL "")
 set(QJS_BUILD_CLI_WITH_STATIC_MIMALLOC OFF CACHE INTERNAL "")
 
-fetchdeps(${WESCENE_ROOT_DIR}/deps.json)
+# ------------------------------------------------------------------
+# Locally vendored dependencies.
+# ------------------------------------------------------------------
+add_subdirectory(glad)
+add_subdirectory(nlohmann_json EXCLUDE_FROM_ALL)
+add_subdirectory(argparse EXCLUDE_FROM_ALL)
+add_subdirectory(spirv_reflect EXCLUDE_FROM_ALL)
+add_subdirectory(glslang EXCLUDE_FROM_ALL)
+add_subdirectory(quickjs_ng EXCLUDE_FROM_ALL)
 
 if(TARGET qjs AND NOT TARGET quickjs::quickjs)
     add_library(quickjs::quickjs ALIAS qjs)
 endif()
 
-# Post-fetch setup for eigen (header-only, source_subdir=cmake-noop).
+# Eigen is header-only for renderer usage.
 add_library(eigen INTERFACE)
 add_library(Eigen3::Eigen ALIAS eigen)
-target_include_directories(eigen SYSTEM INTERFACE ${eigen_SOURCE_DIR})
+target_include_directories(eigen SYSTEM INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/eigen)
 
-# Post-fetch setup for miniaudio (single-header, source_subdir=cmake-noop).
-# Consumers include as <miniaudio.h> / <extras/stb_vorbis.c>.
+# miniaudio is consumed as <miniaudio.h> and <extras/stb_vorbis.c>.
 add_library(miniaudio INTERFACE)
-target_include_directories(miniaudio SYSTEM INTERFACE ${miniaudio_SOURCE_DIR})
+target_include_directories(miniaudio SYSTEM INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/miniaudio)
