@@ -20,12 +20,16 @@ struct WPSoundObject {
     float                    maxtime { 10.0f };
     float                    mintime { 0.0f };
     float                    volume { 1.0f };
+    bool                     muted { false };
+    bool                     startsilent { false };
     bool                     visible { true };
     std::string              name;
     std::vector<std::string> sound;
 
     bool FromJson(const nlohmann::json& json, fs::VFS&) {
         GET_JSON_NAME_VALUE(json, "volume", volume);
+        GET_JSON_NAME_VALUE_NOWARN(json, "muted", muted);
+        GET_JSON_NAME_VALUE_NOWARN(json, "startsilent", startsilent);
         GET_JSON_NAME_VALUE(json, "playbackmode", playbackmode);
         GET_JSON_NAME_VALUE_NOWARN(json, "mintime", mintime);
         GET_JSON_NAME_VALUE_NOWARN(json, "maxtime", maxtime);

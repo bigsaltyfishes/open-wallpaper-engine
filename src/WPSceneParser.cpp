@@ -20,6 +20,7 @@
 
 #include "WPShaderValueUpdater.hpp"
 #include "Shader/TextureFormatCombos.hpp"
+#include "Runtime/RuntimeImageSource.hpp"
 #include "Runtime/SceneRuntimeContext.hpp"
 #include "Runtime/SceneSettingResolver.hpp"
 #include "wpscene/WPImageObject.h"
@@ -49,18 +50,18 @@ using namespace Eigen;
 std::string getAddr(void* p) { return std::to_string(reinterpret_cast<intptr_t>(p)); }
 
 struct ParseContext {
-    std::shared_ptr<Scene> scene;
-    WPShaderValueUpdater*  shader_updater;
-    i32                    ortho_w;
-    i32                    ortho_h;
-    fs::VFS*               vfs;
-    const SceneParseRequest* request;
-    const nlohmann::json*  object_list { nullptr };
+    std::shared_ptr<Scene>                                  scene;
+    WPShaderValueUpdater*                                   shader_updater;
+    i32                                                     ortho_w;
+    i32                                                     ortho_h;
+    fs::VFS*                                                vfs;
+    const SceneParseRequest*                                request;
+    const nlohmann::json*                                   object_list { nullptr };
     std::unordered_map<int32_t, std::shared_ptr<SceneNode>> layer_nodes;
-    std::unordered_map<int32_t, int32_t> layer_parent_ids;
-    std::unordered_set<int32_t> attached_layer_nodes;
-    std::vector<int32_t> layer_node_order;
-    std::vector<std::pair<std::string, std::string>> pending_scene_scripts;
+    std::unordered_map<int32_t, int32_t>                    layer_parent_ids;
+    std::unordered_set<int32_t>                             attached_layer_nodes;
+    std::vector<int32_t>                                    layer_node_order;
+    std::vector<std::pair<std::string, std::string>>        pending_scene_scripts;
 
     ShaderValueMap             global_base_uniforms;
     std::shared_ptr<SceneNode> effect_camera_node;
@@ -91,21 +92,18 @@ struct RawLayerObject {
 
 namespace
 {
-bool MaterialUsesAudioResponse(const wpscene::WPMaterial& material)
-{
+bool MaterialUsesAudioResponse(const wpscene::WPMaterial& material) {
     const auto combo = material.combos.find("AUDIOPROCESSING");
     return combo != material.combos.end() && combo->second != 0;
 }
 
-void MarkSceneRequiresAudioResponse(Scene* scene)
-{
+void MarkSceneRequiresAudioResponse(Scene* scene) {
     if (scene != nullptr && scene->runtime != nullptr) {
         scene->runtime->MarkSceneRequiresAudioResponse();
     }
 }
 
-void LogUnsupportedParticleAudioModeOnce(uint32_t mode)
-{
+void LogUnsupportedParticleAudioModeOnce(uint32_t mode) {
     static std::unordered_set<uint32_t> logged_modes;
     if (logged_modes.insert(mode).second) {
         LOG_INFO(
@@ -114,20 +112,16 @@ void LogUnsupportedParticleAudioModeOnce(uint32_t mode)
     }
 }
 
-const nlohmann::json& UnwrapSettingValue(const nlohmann::json& value)
-{
+const nlohmann::json& UnwrapSettingValue(const nlohmann::json& value) {
     if (value.is_object() && value.contains("value")) return value.at("value");
     return value;
 }
 
-bool HasDynamicSetting(const nlohmann::json& value)
-{
-    return value.is_object() &&
-           (value.contains("script") || value.contains("user"));
+bool HasDynamicSetting(const nlohmann::json& value) {
+    return value.is_object() && (value.contains("script") || value.contains("user"));
 }
 
-bool DefaultSettingVisible(const nlohmann::json& value)
-{
+bool DefaultSettingVisible(const nlohmann::json& value) {
     const auto& source = UnwrapSettingValue(value);
     if (source.is_boolean()) return source.get<bool>();
     if (source.is_number()) return source.get<float>() != 0.0f;
@@ -138,26 +132,20 @@ bool DefaultSettingVisible(const nlohmann::json& value)
     return false;
 }
 
-bool AllowSceneScriptsForVisibilitySetting(
-    bool                  dynamic_visible,
-    const nlohmann::json& visible_setting)
-{
-    if (!dynamic_visible) return true;
-    if (!visible_setting.is_object() || !visible_setting.contains("script")) return true;
+bool AllowSceneScriptsForVisibilitySetting(bool                  dynamic_visible,
+                                           const nlohmann::json& visible_setting) {
+    if (! dynamic_visible) return true;
+    if (! visible_setting.is_object() || ! visible_setting.contains("script")) return true;
     return DefaultSettingVisible(visible_setting);
 }
 
-void ReadVec3Setting(
-    const nlohmann::json& json,
-    const char*           key,
-    std::array<float, 3>* destination,
-    nlohmann::json*       setting,
-    bool*                 dynamic)
-{
-    if (!json.contains(key) || destination == nullptr || setting == nullptr || dynamic == nullptr) return;
+void ReadVec3Setting(const nlohmann::json& json, const char* key, std::array<float, 3>* destination,
+                     nlohmann::json* setting, bool* dynamic) {
+    if (! json.contains(key) || destination == nullptr || setting == nullptr || dynamic == nullptr)
+        return;
 
-    *setting = json.at(key);
-    *dynamic = HasDynamicSetting(*setting);
+    *setting           = json.at(key);
+    *dynamic           = HasDynamicSetting(*setting);
     const auto& source = UnwrapSettingValue(*setting);
 
     if (source.is_array() && source.size() >= 3) {
@@ -168,7 +156,7 @@ void ReadVec3Setting(
     }
     if (source.is_number()) {
         const float scalar = source.get<float>();
-        *destination = { scalar, scalar, scalar };
+        *destination       = { scalar, scalar, scalar };
         return;
     }
     if (source.is_string()) {
@@ -177,11 +165,9 @@ void ReadVec3Setting(
     }
 }
 
-bool IsSceneScriptSetting(const nlohmann::json& setting)
-{
-    if (!setting.is_object() ||
-        !setting.contains("script") ||
-        !setting.at("script").is_string()) {
+bool IsSceneScriptSetting(const nlohmann::json& setting) {
+    if (! setting.is_object() || ! setting.contains("script") ||
+        ! setting.at("script").is_string()) {
         return false;
     }
 
@@ -195,53 +181,42 @@ bool IsSceneScriptSetting(const nlohmann::json& setting)
            script.find("thisScene.on(") != std::string::npos;
 }
 
-void QueueSceneScriptIfNeeded(
-    ParseContext&         context,
-    std::string_view      layer_name,
-    const nlohmann::json& setting)
-{
-    if (!IsSceneScriptSetting(setting)) return;
-    context.pending_scene_scripts.emplace_back(
-        std::string(layer_name),
-        setting.at("script").get<std::string>());
+void QueueSceneScriptIfNeeded(ParseContext& context, std::string_view layer_name,
+                              const nlohmann::json& setting) {
+    if (! IsSceneScriptSetting(setting)) return;
+    context.pending_scene_scripts.emplace_back(std::string(layer_name),
+                                               setting.at("script").get<std::string>());
 }
 
-bool IsLayerObject(const nlohmann::json& object)
-{
-    return !object.contains("image") &&
-           !object.contains("particle") &&
-           !object.contains("sound") &&
-           !object.contains("light");
+bool IsLayerObject(const nlohmann::json& object) {
+    return ! object.contains("image") && ! object.contains("particle") &&
+           ! object.contains("sound") && ! object.contains("light");
 }
 
-bool HasChildObject(const nlohmann::json& objects, int32_t parent_id)
-{
+bool HasChildObject(const nlohmann::json& objects, int32_t parent_id) {
     for (const auto& object : objects) {
-        if (!object.contains("parent")) continue;
+        if (! object.contains("parent")) continue;
         const auto& parent = object.at("parent");
-        if (!parent.is_number_integer()) continue;
+        if (! parent.is_number_integer()) continue;
         if (parent.get<int32_t>() == parent_id) return true;
     }
     return false;
 }
 
-std::string LayerRuntimeName(const RawLayerObject& layer)
-{
-    if (!layer.name.empty()) return layer.name;
+std::string LayerRuntimeName(const RawLayerObject& layer) {
+    if (! layer.name.empty()) return layer.name;
     return "__we_layer_" + std::to_string(layer.id);
 }
 
-void AttachLayerNode(ParseContext& context, int32_t layer_id)
-{
+void AttachLayerNode(ParseContext& context, int32_t layer_id) {
     if (context.attached_layer_nodes.contains(layer_id)) return;
 
     auto node_iterator = context.layer_nodes.find(layer_id);
     if (node_iterator == context.layer_nodes.end() || node_iterator->second == nullptr) return;
 
-    const auto parent_id_iterator = context.layer_parent_ids.find(layer_id);
-    const int32_t parent_id = parent_id_iterator != context.layer_parent_ids.end()
-        ? parent_id_iterator->second
-        : -1;
+    const auto    parent_id_iterator = context.layer_parent_ids.find(layer_id);
+    const int32_t parent_id =
+        parent_id_iterator != context.layer_parent_ids.end() ? parent_id_iterator->second : -1;
 
     if (context.layer_parent_ids.contains(parent_id)) {
         AttachLayerNode(context, parent_id);
@@ -256,16 +231,14 @@ void AttachLayerNode(ParseContext& context, int32_t layer_id)
     context.attached_layer_nodes.insert(layer_id);
 }
 
-void AttachRemainingLayerNodes(ParseContext& context)
-{
+void AttachRemainingLayerNodes(ParseContext& context) {
     for (const auto layer_id : context.layer_node_order) {
         AttachLayerNode(context, layer_id);
     }
 }
 
-bool ParseLayerObject(const nlohmann::json& json, RawLayerObject& layer)
-{
-    if (!IsLayerObject(json)) return false;
+bool ParseLayerObject(const nlohmann::json& json, RawLayerObject& layer) {
+    if (! IsLayerObject(json)) return false;
 
     GET_JSON_NAME_VALUE_NOWARN(json, "id", layer.id);
     GET_JSON_NAME_VALUE_NOWARN(json, "parent", layer.parent_id);
@@ -282,8 +255,7 @@ bool ParseLayerObject(const nlohmann::json& json, RawLayerObject& layer)
     return layer.id != 0;
 }
 
-void ParseLayerNodes(ParseContext& context, const nlohmann::json& objects)
-{
+void ParseLayerNodes(ParseContext& context, const nlohmann::json& objects) {
     std::vector<RawLayerObject> layers;
     for (const auto& object : objects) {
         RawLayerObject layer;
@@ -296,53 +268,49 @@ void ParseLayerNodes(ParseContext& context, const nlohmann::json& objects)
         const auto runtime_name = LayerRuntimeName(layer);
         const bool allow_script_update =
             AllowSceneScriptsForVisibilitySetting(layer.dynamic_visible, layer.visible_setting);
-        auto node = std::make_shared<SceneNode>(
-            Vector3f(layer.origin.data()),
-            Vector3f(layer.scale.data()),
-            Vector3f(layer.angles.data()),
-            runtime_name);
+        auto node = std::make_shared<SceneNode>(Vector3f(layer.origin.data()),
+                                                Vector3f(layer.scale.data()),
+                                                Vector3f(layer.angles.data()),
+                                                runtime_name);
         if (context.scene->runtime != nullptr) {
             context.scene->runtime->RegisterNode(runtime_name, node.get());
             context.scene->runtime->RegisterNodeVisibility(
                 runtime_name,
                 node.get(),
-                ResolveBoolSetting(
-                    *context.scene->runtime,
-                    layer.dynamic_visible ? layer.visible_setting : nlohmann::json(layer.visible),
-                    runtime_name,
-                    allow_script_update));
+                ResolveBoolSetting(*context.scene->runtime,
+                                   layer.dynamic_visible ? layer.visible_setting
+                                                         : nlohmann::json(layer.visible),
+                                   runtime_name,
+                                   allow_script_update));
             if (layer.dynamic_origin) {
                 context.scene->runtime->RegisterNodeTranslate(
                     runtime_name,
                     node.get(),
-                    ResolveVec3Setting(
-                        *context.scene->runtime,
-                        layer.origin_setting,
-                        runtime_name,
-                        Vec3SettingSemantic::Generic,
-                        allow_script_update));
+                    ResolveVec3Setting(*context.scene->runtime,
+                                       layer.origin_setting,
+                                       runtime_name,
+                                       Vec3SettingSemantic::Generic,
+                                       allow_script_update));
             }
             if (layer.dynamic_scale) {
                 context.scene->runtime->RegisterNodeScale(
                     runtime_name,
                     node.get(),
-                    ResolveVec3Setting(
-                        *context.scene->runtime,
-                        layer.scale_setting,
-                        runtime_name,
-                        Vec3SettingSemantic::Generic,
-                        allow_script_update));
+                    ResolveVec3Setting(*context.scene->runtime,
+                                       layer.scale_setting,
+                                       runtime_name,
+                                       Vec3SettingSemantic::Generic,
+                                       allow_script_update));
             }
             if (layer.dynamic_angles) {
                 context.scene->runtime->RegisterNodeRotation(
                     runtime_name,
                     node.get(),
-                    ResolveVec3Setting(
-                        *context.scene->runtime,
-                        layer.angles_setting,
-                        runtime_name,
-                        Vec3SettingSemantic::AnglesDegrees,
-                        allow_script_update));
+                    ResolveVec3Setting(*context.scene->runtime,
+                                       layer.angles_setting,
+                                       runtime_name,
+                                       Vec3SettingSemantic::AnglesDegrees,
+                                       allow_script_update));
             }
         } else {
             node->SetVisible(layer.visible);
@@ -353,15 +321,14 @@ void ParseLayerNodes(ParseContext& context, const nlohmann::json& objects)
             QueueSceneScriptIfNeeded(context, runtime_name, layer.scale_setting);
             QueueSceneScriptIfNeeded(context, runtime_name, layer.angles_setting);
         }
-        context.layer_nodes[layer.id] = node;
+        context.layer_nodes[layer.id]      = node;
         context.layer_parent_ids[layer.id] = layer.parent_id;
         context.layer_node_order.push_back(layer.id);
     }
 }
 
-i32 EffectiveProjectionDimension(i32 base_dimension, float zoom)
-{
-    if (!std::isfinite(zoom) || zoom <= 0.0f) zoom = 1.0f;
+i32 EffectiveProjectionDimension(i32 base_dimension, float zoom) {
+    if (! std::isfinite(zoom) || zoom <= 0.0f) zoom = 1.0f;
     return std::max(1, static_cast<i32>(static_cast<float>(base_dimension) / zoom));
 }
 
@@ -402,22 +369,18 @@ void GenCardMesh(SceneMesh& mesh, const std::array<uint16_t, 2> size,
     mesh.AddVertexArray(std::move(vertex));
 }
 
-void GenPassthroughCardMesh(
-    SceneMesh&                    mesh,
-    const std::array<uint16_t, 2>  size,
-    const SceneNode&               node,
-    int32_t                       projection_width,
-    int32_t                       projection_height)
-{
+void GenPassthroughCardMesh(SceneMesh& mesh, const std::array<uint16_t, 2> size,
+                            const SceneNode& node, int32_t projection_width,
+                            int32_t projection_height) {
     float left   = -(size[0] / 2.0f);
     float right  = size[0] / 2.0f;
     float bottom = -(size[1] / 2.0f);
     float top    = size[1] / 2.0f;
     float z      = 0.0f;
 
-    const auto transform = node.GetLocalTrans();
-    const float width = std::max(1.0f, static_cast<float>(projection_width));
-    const float height = std::max(1.0f, static_cast<float>(projection_height));
+    const auto  transform = node.GetLocalTrans();
+    const float width     = std::max(1.0f, static_cast<float>(projection_width));
+    const float height    = std::max(1.0f, static_cast<float>(projection_height));
 
     const auto tex_coord_for = [&](float x, float y) {
         const auto world = transform * Eigen::Vector4d(x, y, 0.0, 1.0);
@@ -427,22 +390,17 @@ void GenPassthroughCardMesh(
         };
     };
 
-    const auto bottom_left = tex_coord_for(left, bottom);
-    const auto top_left = tex_coord_for(left, top);
+    const auto bottom_left  = tex_coord_for(left, bottom);
+    const auto top_left     = tex_coord_for(left, top);
     const auto bottom_right = tex_coord_for(right, bottom);
-    const auto top_right = tex_coord_for(right, top);
+    const auto top_right    = tex_coord_for(right, top);
 
     const std::array pos = {
-        left, bottom, z,
-        left, top, z,
-        right, bottom, z,
-        right, top, z,
+        left, bottom, z, left, top, z, right, bottom, z, right, top, z,
     };
     const std::array texCoord = {
-        bottom_left[0], bottom_left[1],
-        top_left[0], top_left[1],
-        bottom_right[0], bottom_right[1],
-        top_right[0], top_right[1],
+        bottom_left[0],  bottom_left[1],  top_left[0],  top_left[1],
+        bottom_right[0], bottom_right[1], top_right[0], top_right[1],
     };
 
     SceneVertexArray vertex(
@@ -456,22 +414,18 @@ void GenPassthroughCardMesh(
     mesh.AddVertexArray(std::move(vertex));
 }
 
-void GenPassthroughClipSpaceMesh(
-    SceneMesh&                    mesh,
-    const std::array<uint16_t, 2>  size,
-    const SceneNode&               node,
-    int32_t                       projection_width,
-    int32_t                       projection_height)
-{
+void GenPassthroughClipSpaceMesh(SceneMesh& mesh, const std::array<uint16_t, 2> size,
+                                 const SceneNode& node, int32_t projection_width,
+                                 int32_t projection_height) {
     float left   = -(size[0] / 2.0f);
     float right  = size[0] / 2.0f;
     float bottom = -(size[1] / 2.0f);
     float top    = size[1] / 2.0f;
     float z      = 0.0f;
 
-    const auto transform = node.GetLocalTrans();
-    const float width = std::max(1.0f, static_cast<float>(projection_width));
-    const float height = std::max(1.0f, static_cast<float>(projection_height));
+    const auto  transform = node.GetLocalTrans();
+    const float width     = std::max(1.0f, static_cast<float>(projection_width));
+    const float height    = std::max(1.0f, static_cast<float>(projection_height));
 
     struct VertexData {
         float clip_x;
@@ -481,33 +435,29 @@ void GenPassthroughClipSpaceMesh(
     };
 
     const auto vertex_for = [&](float x, float y) {
-        const auto world = transform * Eigen::Vector4d(x, y, 0.0, 1.0);
-        const float u = static_cast<float>(world.x()) / width;
-        const float y01 = static_cast<float>(world.y()) / height;
+        const auto  world = transform * Eigen::Vector4d(x, y, 0.0, 1.0);
+        const float u     = static_cast<float>(world.x()) / width;
+        const float y01   = static_cast<float>(world.y()) / height;
         return VertexData {
             .clip_x = (u * 2.0f) - 1.0f,
             .clip_y = (y01 * 2.0f) - 1.0f,
-            .u = u,
-            .v = 1.0f - y01,
+            .u      = u,
+            .v      = 1.0f - y01,
         };
     };
 
-    const auto bottom_left = vertex_for(left, bottom);
-    const auto top_left = vertex_for(left, top);
+    const auto bottom_left  = vertex_for(left, bottom);
+    const auto top_left     = vertex_for(left, top);
     const auto bottom_right = vertex_for(right, bottom);
-    const auto top_right = vertex_for(right, top);
+    const auto top_right    = vertex_for(right, top);
 
     const std::array pos = {
-        bottom_left.clip_x, bottom_left.clip_y, z,
-        top_left.clip_x, top_left.clip_y, z,
-        bottom_right.clip_x, bottom_right.clip_y, z,
-        top_right.clip_x, top_right.clip_y, z,
+        bottom_left.clip_x,  bottom_left.clip_y,  z, top_left.clip_x,  top_left.clip_y,  z,
+        bottom_right.clip_x, bottom_right.clip_y, z, top_right.clip_x, top_right.clip_y, z,
     };
     const std::array texCoord = {
-        bottom_left.u, bottom_left.v,
-        top_left.u, top_left.v,
-        bottom_right.u, bottom_right.v,
-        top_right.u, top_right.v,
+        bottom_left.u,  bottom_left.v,  top_left.u,  top_left.v,
+        bottom_right.u, bottom_right.v, top_right.u, top_right.v,
     };
 
     SceneVertexArray vertex(
@@ -714,9 +664,12 @@ bool LoadMaterial(fs::VFS& vfs, const wpscene::WPMaterial& wpmat, Scene* pScene,
                               .preprocess_info = {},
                           } };
 
+    auto textures = wpmat.textures;
+    ApplySystemUserTextures(textures, wpmat.usertextures);
+
     std::vector<WPShaderTexInfo>                 texinfos;
     std::unordered_map<std::string, ImageHeader> texHeaders;
-    for (const auto& el : wpmat.textures) {
+    for (const auto& el : textures) {
         if (el.empty()) {
             texinfos.push_back({ false });
         } else if (! IsSpecTex(el)) {
@@ -746,7 +699,6 @@ bool LoadMaterial(fs::VFS& vfs, const wpscene::WPMaterial& wpmat, Scene* pScene,
         pWPShaderInfo->combos[el.first] = std::to_string(el.second);
     }
 
-    auto textures = wpmat.textures;
     if (pWPShaderInfo->defTexs.size() > 0) {
         for (auto& t : pWPShaderInfo->defTexs) {
             if (textures.size() > t.first) {
@@ -771,7 +723,7 @@ bool LoadMaterial(fs::VFS& vfs, const wpscene::WPMaterial& wpmat, Scene* pScene,
         if (IsSpecTex(name)) {
             if (IsSpecLinkTex(name)) {
                 svData.renderTargets.push_back({ i, name });
-            } else if (!pScene->HasRenderTarget(name)) {
+            } else if (! pScene->HasRenderTarget(name)) {
                 LOG_ERROR("%s not found in render targes", name.c_str());
             } else {
                 name = pScene->ResolveRenderTargetName(name);
@@ -783,10 +735,7 @@ bool LoadMaterial(fs::VFS& vfs, const wpscene::WPMaterial& wpmat, Scene* pScene,
             const ImageHeader& texh = texHeaders.count(name) == 0
                                           ? pScene->imageParser->ParseHeader(name)
                                           : texHeaders.at(name);
-            wallpaper::shader::ApplyTextureFormatCombo(
-                pWPShaderInfo->combos,
-                i,
-                texh.format);
+            wallpaper::shader::ApplyTextureFormatCombo(pWPShaderInfo->combos, i, texh.format);
             if (texh.mipmap_larger) {
                 resolution = { texh.width, texh.height, texh.mapWidth, texh.mapHeight };
             } else {
@@ -795,8 +744,8 @@ bool LoadMaterial(fs::VFS& vfs, const wpscene::WPMaterial& wpmat, Scene* pScene,
 
             if (pScene->textures.count(name) == 0) {
                 SceneTexture stex;
-                stex.sample = texh.sample;
-                stex.url    = name;
+                stex.sample  = texh.sample;
+                stex.url     = name;
                 stex.isVideo = texh.isVideo;
                 if (texh.isSprite) {
                     stex.isSprite   = texh.isSprite;
@@ -806,7 +755,7 @@ bool LoadMaterial(fs::VFS& vfs, const wpscene::WPMaterial& wpmat, Scene* pScene,
             }
             if ((pScene->textures.at(name)).isSprite) {
                 material.hasSprite = true;
-const auto& f1     = texh.spriteAnim.GetCurFrame();
+                const auto& f1     = texh.spriteAnim.GetCurFrame();
                 if (wpmat.shader == "genericparticle" || wpmat.shader == "genericropeparticle") {
                     pWPShaderInfo->combos["SPRITESHEET"] = "1";
                     pWPShaderInfo->combos["THICKFORMAT"] = "1";
@@ -874,10 +823,9 @@ void LoadAlignment(SceneNode& node, std::string_view align, Vector2f size) {
     node.SetTranslate(trans);
 }
 
-void SetNodeTransformFromMatrix(SceneNode& node, const Matrix4d& transform)
-{
+void SetNodeTransformFromMatrix(SceneNode& node, const Matrix4d& transform) {
     const Vector3d translation = transform.block<3, 1>(0, 3);
-    const Matrix3d linear = transform.block<3, 3>(0, 0);
+    const Matrix3d linear      = transform.block<3, 3>(0, 0);
 
     Vector3d scale {
         linear.col(0).norm(),
@@ -896,19 +844,15 @@ void SetNodeTransformFromMatrix(SceneNode& node, const Matrix4d& transform)
     node.SetTranslate(translation.cast<float>());
     node.SetScale(scale.cast<float>());
     node.SetRotation(Vector3f(
-        static_cast<float>(zyx[2]),
-        static_cast<float>(zyx[1]),
-        static_cast<float>(zyx[0])));
+        static_cast<float>(zyx[2]), static_cast<float>(zyx[1]), static_cast<float>(zyx[0])));
 }
 
-void CopyResolvedWorldTransform(SceneNode& destination, SceneNode& source)
-{
+void CopyResolvedWorldTransform(SceneNode& destination, SceneNode& source) {
     source.UpdateTrans();
     SetNodeTransformFromMatrix(destination, source.ModelTrans());
 }
 
-void ResolveEffectFinalTransform(SceneNode& destination, SceneNode& effect_render_node)
-{
+void ResolveEffectFinalTransform(SceneNode& destination, SceneNode& effect_render_node) {
     effect_render_node.UpdateTrans();
     const Matrix4d resolved = effect_render_node.ModelTrans() * destination.GetLocalTrans();
     SetNodeTransformFromMatrix(destination, resolved);
@@ -942,8 +886,8 @@ void LoadConstvalue(SceneMaterial& material, const wpscene::WPMaterial& wpmat,
 // parse
 
 void ParseCamera(ParseContext& context, wpscene::WPSceneGeneral& general) {
-    auto& scene = *context.scene;
-    const i32 projection_width = EffectiveProjectionDimension(context.ortho_w, general.zoom);
+    auto&     scene             = *context.scene;
+    const i32 projection_width  = EffectiveProjectionDimension(context.ortho_w, general.zoom);
     const i32 projection_height = EffectiveProjectionDimension(context.ortho_h, general.zoom);
     // effect camera
     scene.cameras["effect"]    = std::make_shared<SceneCamera>(2, 2, -1.0f, 1.0f);
@@ -952,11 +896,9 @@ void ParseCamera(ParseContext& context, wpscene::WPSceneGeneral& general) {
     scene.sceneGraph->AppendChild(context.effect_camera_node);
 
     // global camera
-    scene.cameras["global"] = std::make_shared<SceneCamera>(projection_width,
-                                                            projection_height,
-                                                            -5000.0f,
-                                                            5000.0f);
-    scene.activeCamera      = scene.cameras.at("global").get();
+    scene.cameras["global"] =
+        std::make_shared<SceneCamera>(projection_width, projection_height, -5000.0f, 5000.0f);
+    scene.activeCamera = scene.cameras.at("global").get();
     Vector3f cori { (float)context.ortho_w / 2.0f, (float)context.ortho_h / 2.0f, 0 },
         cscale { 1.0f, 1.0f, 1.0f }, cangle(Vector3f::Zero());
 
@@ -964,11 +906,11 @@ void ParseCamera(ParseContext& context, wpscene::WPSceneGeneral& general) {
     scene.activeCamera->AttatchNode(context.global_camera_node);
     scene.sceneGraph->AppendChild(context.global_camera_node);
 
-    scene.cameras["global_perspective"] =
-        std::make_shared<SceneCamera>((float)projection_width / (float)projection_height,
-                                      general.nearz,
-                                      general.farz,
-                                      algorism::CalculatePersperctiveFov(1000.0f, projection_height));
+    scene.cameras["global_perspective"] = std::make_shared<SceneCamera>(
+        (float)projection_width / (float)projection_height,
+        general.nearz,
+        general.farz,
+        algorism::CalculatePersperctiveFov(1000.0f, projection_height));
 
     Vector3f cperori                       = cori;
     cperori[2]                             = 1000.0f;
@@ -978,10 +920,11 @@ void ParseCamera(ParseContext& context, wpscene::WPSceneGeneral& general) {
 }
 
 void InitContext(ParseContext& context, fs::VFS& vfs, wpscene::WPScene& sc) {
-    context.scene            = std::make_shared<Scene>();
-    context.vfs              = &vfs;
-    auto& scene              = *context.scene;
-    scene.imageParser        = std::make_unique<WPTexImageParser>(&vfs);
+    context.scene = std::make_shared<Scene>();
+    context.vfs   = &vfs;
+    auto& scene   = *context.scene;
+    scene.imageParser =
+        std::make_unique<RuntimeImageSource>(std::make_unique<WPTexImageParser>(&vfs));
     scene.paritileSys->gener = std::make_unique<WPParticleRawGener>();
     scene.shaderValueUpdater = std::make_unique<WPShaderValueUpdater>(&scene);
     GenCardMesh(scene.default_effect_mesh, { 2, 2 });
@@ -993,15 +936,15 @@ void InitContext(ParseContext& context, fs::VFS& vfs, wpscene::WPScene& sc) {
     scene.ortho[1]     = sc.general.orthogonalprojection.height;
     if (context.request != nullptr && context.request->project_properties != nullptr) {
         SceneRuntimeBootstrap bootstrap {
-            .canvas_width = scene.ortho[0],
-            .canvas_height = scene.ortho[1],
+            .canvas_width       = scene.ortho[0],
+            .canvas_height      = scene.ortho[1],
             .project_properties = *context.request->project_properties,
         };
         scene.runtime = CreateSceneRuntimeContext(std::move(bootstrap));
         scene.runtime->AttachScene(&scene);
     }
-    context.ortho_w  = scene.ortho[0];
-    context.ortho_h  = scene.ortho[1];
+    context.ortho_w = scene.ortho[0];
+    context.ortho_h = scene.ortho[1];
 
     {
         auto& gb              = context.global_base_uniforms;
@@ -1032,8 +975,8 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
 
     auto& vfs = *context.vfs;
 
-    const bool isCompose = (wpimgobj.image == "models/util/composelayer.json");
-    int32_t explicit_visible_effects = 0;
+    const bool isCompose                = (wpimgobj.image == "models/util/composelayer.json");
+    int32_t    explicit_visible_effects = 0;
     for (const auto& wpeffobj : wpimgobj.effects) {
         if (wpeffobj.visible) explicit_visible_effects++;
     }
@@ -1063,9 +1006,8 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     const bool has_child_content =
         context.object_list != nullptr && HasChildObject(*context.object_list, wpimgobj.id);
     const bool render_as_compose =
-        isCompose && has_child_content && (!wpimgobj.copybackground || count_eff > 0);
-    bool hasEffect =
-        count_eff > 0 || render_as_compose || (isCompose && !wpimgobj.copybackground);
+        isCompose && has_child_content && (! wpimgobj.copybackground || count_eff > 0);
+    bool hasEffect = count_eff > 0 || render_as_compose || (isCompose && ! wpimgobj.copybackground);
 
     bool hasPuppet = ! wpimgobj.puppet.empty();
     (void)hasPuppet;
@@ -1076,29 +1018,28 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
         if (! WPMdlParser::Parse(wpimgobj.puppet, vfs, *puppet)) {
             LOG_INFO("parse puppet failed: %s", wpimgobj.puppet.c_str());
             puppet = nullptr;
-        }
-        else if (puppet->puppet->bones.size() == 0){
+        } else if (puppet->puppet->bones.size() == 0) {
             LOG_INFO("puppet has no bones: %s", wpimgobj.puppet.c_str());
             puppet = nullptr;
         }
     }
 
     if (wpimgobj.fullscreen) {
-        wpimgobj.size[0] = static_cast<float>(context.ortho_w);
-        wpimgobj.size[1] = static_cast<float>(context.ortho_h);
+        wpimgobj.size[0]   = static_cast<float>(context.ortho_w);
+        wpimgobj.size[1]   = static_cast<float>(context.ortho_h);
         wpimgobj.origin[0] = static_cast<float>(context.ortho_w) * 0.5f;
         wpimgobj.origin[1] = static_cast<float>(context.ortho_h) * 0.5f;
     }
 
     // wpimgobj.origin[1] = context.ortho_h - wpimgobj.origin[1];
-    auto spImgNode = std::make_shared<SceneNode>(Vector3f(wpimgobj.origin.data()),
+    auto       spImgNode = std::make_shared<SceneNode>(Vector3f(wpimgobj.origin.data()),
                                                  Vector3f(wpimgobj.scale.data()),
                                                  Vector3f(wpimgobj.angles.data()),
                                                  wpimgobj.name);
     const bool allow_script_update =
         AllowSceneScriptsForVisibilitySetting(wpimgobj.dynamic_visible, wpimgobj.visible_setting);
     context.layer_nodes[wpimgobj.id] = spImgNode;
-    auto appendImageNode = [&context, &wpimgobj, &spImgNode]() {
+    auto appendImageNode             = [&context, &wpimgobj, &spImgNode]() {
         if (context.layer_parent_ids.contains(wpimgobj.parent_id)) {
             AttachLayerNode(context, wpimgobj.parent_id);
         }
@@ -1110,58 +1051,55 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
         }
     };
     const auto registerImageAlphaAnimation = [&context, &wpimgobj](SceneMaterial* material) {
-        if (context.scene->runtime == nullptr || material == nullptr || !wpimgobj.dynamic_alpha) return;
+        if (context.scene->runtime == nullptr || material == nullptr || ! wpimgobj.dynamic_alpha)
+            return;
         const auto animation = ResolveScalarAnimation(wpimgobj.alpha_setting);
-        if (!animation.has_value()) return;
+        if (! animation.has_value()) return;
         context.scene->runtime->RegisterMaterialAlphaAnimation(material, *animation);
     };
     if (context.scene->runtime != nullptr) {
         context.scene->runtime->RegisterNode(wpimgobj.name, spImgNode.get());
         context.scene->runtime->RegisterNodeSize(
             wpimgobj.name,
-            Eigen::Vector2f(
-                static_cast<float>(wpimgobj.size[0]),
-                static_cast<float>(wpimgobj.size[1])));
+            Eigen::Vector2f(static_cast<float>(wpimgobj.size[0]),
+                            static_cast<float>(wpimgobj.size[1])));
         context.scene->runtime->RegisterNodeVisibility(
             wpimgobj.name,
             spImgNode.get(),
-            ResolveBoolSetting(
-                *context.scene->runtime,
-                wpimgobj.dynamic_visible ? wpimgobj.visible_setting : nlohmann::json(wpimgobj.visible),
-                wpimgobj.name,
-                allow_script_update));
+            ResolveBoolSetting(*context.scene->runtime,
+                               wpimgobj.dynamic_visible ? wpimgobj.visible_setting
+                                                        : nlohmann::json(wpimgobj.visible),
+                               wpimgobj.name,
+                               allow_script_update));
         if (wpimgobj.dynamic_origin) {
             context.scene->runtime->RegisterNodeTranslate(
                 wpimgobj.name,
                 spImgNode.get(),
-                ResolveVec3Setting(
-                    *context.scene->runtime,
-                    wpimgobj.origin_setting,
-                    wpimgobj.name,
-                    Vec3SettingSemantic::Generic,
-                    allow_script_update));
+                ResolveVec3Setting(*context.scene->runtime,
+                                   wpimgobj.origin_setting,
+                                   wpimgobj.name,
+                                   Vec3SettingSemantic::Generic,
+                                   allow_script_update));
         }
         if (wpimgobj.dynamic_scale) {
             context.scene->runtime->RegisterNodeScale(
                 wpimgobj.name,
                 spImgNode.get(),
-                ResolveVec3Setting(
-                    *context.scene->runtime,
-                    wpimgobj.scale_setting,
-                    wpimgobj.name,
-                    Vec3SettingSemantic::Generic,
-                    allow_script_update));
+                ResolveVec3Setting(*context.scene->runtime,
+                                   wpimgobj.scale_setting,
+                                   wpimgobj.name,
+                                   Vec3SettingSemantic::Generic,
+                                   allow_script_update));
         }
         if (wpimgobj.dynamic_angles) {
-                context.scene->runtime->RegisterNodeRotation(
-                    wpimgobj.name,
-                    spImgNode.get(),
-                    ResolveVec3Setting(
-                        *context.scene->runtime,
-                        wpimgobj.angles_setting,
-                        wpimgobj.name,
-                        Vec3SettingSemantic::AnglesDegrees,
-                        allow_script_update));
+            context.scene->runtime->RegisterNodeRotation(
+                wpimgobj.name,
+                spImgNode.get(),
+                ResolveVec3Setting(*context.scene->runtime,
+                                   wpimgobj.angles_setting,
+                                   wpimgobj.name,
+                                   Vec3SettingSemantic::AnglesDegrees,
+                                   allow_script_update));
         }
     }
     if (allow_script_update) {
@@ -1173,13 +1111,13 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     LoadAlignment(*spImgNode, wpimgobj.alignment, { wpimgobj.size[0], wpimgobj.size[1] });
     spImgNode->ID() = wpimgobj.id;
 
-    const bool skipComposeRender = isCompose && !hasEffect;
+    const bool skipComposeRender = isCompose && ! hasEffect;
     if (skipComposeRender) {
         appendImageNode();
         return;
     }
 
-    if (wpimgobj.config.passthrough && !hasEffect && !isCompose) {
+    if (wpimgobj.config.passthrough && ! hasEffect && ! isCompose) {
         appendImageNode();
         return;
     }
@@ -1197,17 +1135,11 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
             }
         }
 
-        baseConstSvs["g_Color4"]     = std::array<float, 4> {
-            wpimgobj.color[0],
-            wpimgobj.color[1],
-            wpimgobj.color[2],
-            wpimgobj.alpha
+        baseConstSvs["g_Color4"] = std::array<float, 4> {
+            wpimgobj.color[0], wpimgobj.color[1], wpimgobj.color[2], wpimgobj.alpha
         };
-        baseConstSvs["g_Color"]      = std::array<float, 3> {
-            wpimgobj.color[0],
-            wpimgobj.color[1],
-            wpimgobj.color[2]
-        };
+        baseConstSvs["g_Color"] =
+            std::array<float, 3> { wpimgobj.color[0], wpimgobj.color[1], wpimgobj.color[2] };
         baseConstSvs["g_Alpha"]      = wpimgobj.alpha;
         baseConstSvs["g_UserAlpha"]  = wpimgobj.alpha;
         baseConstSvs["g_Brightness"] = wpimgobj.brightness;
@@ -1281,29 +1213,30 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                 WPMdlParser::GenPuppetMesh(mesh, *puppet);
             }
         }
-    if (! puppet) {
-        if (wpimgobj.config.passthrough && hasEffect) {
-            if (material.name == "passthrough") {
-                GenPassthroughClipSpaceMesh(
-                    mesh,
-                    { (uint16_t)wpimgobj.size[0], (uint16_t)wpimgobj.size[1] },
-                    *spImgNode,
-                    context.ortho_w,
-                    context.ortho_h);
+        if (! puppet) {
+            if (wpimgobj.config.passthrough && hasEffect) {
+                if (material.name == "passthrough") {
+                    GenPassthroughClipSpaceMesh(
+                        mesh,
+                        { (uint16_t)wpimgobj.size[0], (uint16_t)wpimgobj.size[1] },
+                        *spImgNode,
+                        context.ortho_w,
+                        context.ortho_h);
+                } else {
+                    GenPassthroughCardMesh(
+                        mesh,
+                        { (uint16_t)wpimgobj.size[0], (uint16_t)wpimgobj.size[1] },
+                        *spImgNode,
+                        context.ortho_w,
+                        context.ortho_h);
+                }
             } else {
-                GenPassthroughCardMesh(
-                    mesh,
-                    { (uint16_t)wpimgobj.size[0], (uint16_t)wpimgobj.size[1] },
-                    *spImgNode,
-                    context.ortho_w,
-                    context.ortho_h);
+                GenCardMesh(
+                    mesh, { (uint16_t)wpimgobj.size[0], (uint16_t)wpimgobj.size[1] }, mapRate);
             }
-        } else {
-            GenCardMesh(mesh, { (uint16_t)wpimgobj.size[0], (uint16_t)wpimgobj.size[1] }, mapRate);
+            GenCardMesh(effct_final_mesh,
+                        { (uint16_t)wpimgobj.size[0], (uint16_t)wpimgobj.size[1] });
         }
-        GenCardMesh(effct_final_mesh,
-                    { (uint16_t)wpimgobj.size[0], (uint16_t)wpimgobj.size[1] });
-    }
     }
     // material blendmode for last step to use
     auto imgBlendMode = material.blenmode;
@@ -1318,11 +1251,12 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
             if (texture_name.empty()) continue;
             const auto texture_iterator = context.scene->textures.find(texture_name);
             if (texture_iterator == context.scene->textures.end()) continue;
-            if (!texture_iterator->second.isVideo) continue;
+            if (! texture_iterator->second.isVideo) continue;
             context.scene->runtime->RegisterNodeVideoTexture(wpimgobj.name, texture_name);
             const ImageHeader header = context.scene->imageParser->ParseHeader(texture_name);
             if (header.durationSeconds > 0.0) {
-                context.scene->runtime->SetVideoTextureDuration(texture_name, header.durationSeconds);
+                context.scene->runtime->SetVideoTextureDuration(texture_name,
+                                                                header.durationSeconds);
             }
             break;
         }
@@ -1336,11 +1270,8 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
         std::string nodeAddr = getAddr(spImgNode.get());
         // set camera to attatch effect
         if (render_as_compose) {
-            scene.cameras[nodeAddr] =
-                std::make_shared<SceneCamera>((int32_t)wpimgobj.size[0],
-                                              (int32_t)wpimgobj.size[1],
-                                              -1.0f,
-                                              1.0f);
+            scene.cameras[nodeAddr] = std::make_shared<SceneCamera>(
+                (int32_t)wpimgobj.size[0], (int32_t)wpimgobj.size[1], -1.0f, 1.0f);
             scene.cameras.at(nodeAddr)->SetComposeLayer(true);
             scene.cameras.at(nodeAddr)->AttatchNode(spImgNode);
         } else {
@@ -1361,20 +1292,18 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
             imgEffectLayer->SetFinalBlend(imgBlendMode);
             imgEffectLayer->FinalMesh().ChangeMeshDataFrom(effct_final_mesh);
             imgEffectLayer->FinalNode().CopyTrans(*spImgNode);
-            if (!render_as_compose) {
+            if (! render_as_compose) {
                 spImgNode->SetRenderTransformOverride(Eigen::Matrix4d::Identity());
             } else {
                 spImgNode->ClearRenderTransformOverride();
             }
-            if (!wpimgobj.copybackground) {
+            if (! wpimgobj.copybackground) {
                 spImgNode->SetSkipRenderPass(true);
             }
             scene.cameras.at(nodeAddr)->AttatchImgEffect(imgEffectLayer);
             if (context.scene->runtime != nullptr) {
                 context.scene->runtime->RegisterNodeEffectFinal(
-                    wpimgobj.name,
-                    spImgNode.get(),
-                    imgEffectLayer.get());
+                    wpimgobj.name, spImgNode.get(), imgEffectLayer.get());
             }
         }
         // set renderTarget for ping-pong operate
@@ -1390,52 +1319,45 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
             scene.renderTargets[effect_ppong_b] = scene.renderTargets.at(effect_ppong_a);
         }
         if (render_as_compose && wpimgobj.effects.empty()) {
-            auto passthrough_effect = std::make_shared<SceneImageEffect>();
-            auto passthrough_node = std::make_shared<SceneNode>();
+            auto                passthrough_effect = std::make_shared<SceneImageEffect>();
+            auto                passthrough_node   = std::make_shared<SceneNode>();
             wpscene::WPMaterial passthrough_wp_material;
-            nlohmann::json passthrough_json;
-            if (PARSE_JSON(
-                    fs::GetFileContent(vfs, "/assets/materials/util/effectpassthrough.json"),
-                    passthrough_json) &&
+            nlohmann::json      passthrough_json;
+            if (PARSE_JSON(fs::GetFileContent(vfs, "/assets/materials/util/effectpassthrough.json"),
+                           passthrough_json) &&
                 passthrough_wp_material.FromJson(passthrough_json)) {
                 if (passthrough_wp_material.textures.empty()) {
                     passthrough_wp_material.textures.resize(1);
                 }
                 passthrough_wp_material.textures[0] = effect_ppong_a;
-                SceneMaterial passthrough_material;
+                SceneMaterial     passthrough_material;
                 WPShaderValueData passthrough_sv_data;
-                WPShaderInfo passthrough_shader_info;
+                WPShaderInfo      passthrough_shader_info;
                 passthrough_shader_info.baseConstSvs = baseConstSvs;
-                if (LoadMaterial(
-                        vfs,
-                        passthrough_wp_material,
-                        context.scene.get(),
-                        passthrough_node.get(),
-                        &passthrough_material,
-                        &passthrough_sv_data,
-                        &passthrough_shader_info)) {
+                if (LoadMaterial(vfs,
+                                 passthrough_wp_material,
+                                 context.scene.get(),
+                                 passthrough_node.get(),
+                                 &passthrough_material,
+                                 &passthrough_sv_data,
+                                 &passthrough_shader_info)) {
                     LoadConstvalue(
-                        passthrough_material,
-                        passthrough_wp_material,
-                        passthrough_shader_info);
+                        passthrough_material, passthrough_wp_material, passthrough_shader_info);
                     auto passthrough_mesh = std::make_shared<SceneMesh>();
                     passthrough_mesh->AddMaterial(std::move(passthrough_material));
                     passthrough_node->AddMesh(passthrough_mesh);
-                    context.shader_updater->SetNodeData(
-                        passthrough_node.get(),
-                        passthrough_sv_data);
+                    context.shader_updater->SetNodeData(passthrough_node.get(),
+                                                        passthrough_sv_data);
                     passthrough_effect->nodes.push_back(
                         { std::string(SpecTex_Default), passthrough_node });
                     imgEffectLayer->AddEffect(passthrough_effect);
                 } else {
-                    LOG_ERROR(
-                        "failed to load compose passthrough material for '%s'",
-                        wpimgobj.name.c_str());
+                    LOG_ERROR("failed to load compose passthrough material for '%s'",
+                              wpimgobj.name.c_str());
                 }
             } else {
-                LOG_ERROR(
-                    "failed to parse compose passthrough material for '%s'",
-                    wpimgobj.name.c_str());
+                LOG_ERROR("failed to parse compose passthrough material for '%s'",
+                          wpimgobj.name.c_str());
             }
         }
 
@@ -1579,15 +1501,13 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
         context.scene->runtime->RegisterLayerTemplate(
             wpimgobj.image,
             spImgNode,
-            Eigen::Vector2f(
-                static_cast<float>(wpimgobj.size[0]),
-                static_cast<float>(wpimgobj.size[1])));
+            Eigen::Vector2f(static_cast<float>(wpimgobj.size[0]),
+                            static_cast<float>(wpimgobj.size[1])));
     }
 
-    if (hasEffect && !spImgNode->Camera().empty()) {
+    if (hasEffect && ! spImgNode->Camera().empty()) {
         auto camera_iterator = context.scene->cameras.find(spImgNode->Camera());
-        if (camera_iterator != context.scene->cameras.end() &&
-            camera_iterator->second != nullptr &&
+        if (camera_iterator != context.scene->cameras.end() && camera_iterator->second != nullptr &&
             camera_iterator->second->HasImgEffect()) {
             auto& final_node = camera_iterator->second->GetImgEffect()->FinalNode();
             CopyResolvedWorldTransform(final_node, *spImgNode);
@@ -1638,50 +1558,47 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
                                              Vector3f(wppartobj.scale.data()),
                                              Vector3f(wppartobj.angles.data()),
                                              wppartobj.name);
-        const bool allow_script_update =
-            AllowSceneScriptsForVisibilitySetting(wppartobj.dynamic_visible, wppartobj.visible_setting);
+        const bool allow_script_update = AllowSceneScriptsForVisibilitySetting(
+            wppartobj.dynamic_visible, wppartobj.visible_setting);
         if (context.scene->runtime != nullptr) {
             context.scene->runtime->RegisterNode(wppartobj.name, spNode.get());
             context.scene->runtime->RegisterNodeVisibility(
                 wppartobj.name,
                 spNode.get(),
-                ResolveBoolSetting(
-                    *context.scene->runtime,
-                    wppartobj.dynamic_visible ? wppartobj.visible_setting : nlohmann::json(wppartobj.visible),
-                    wppartobj.name,
-                    allow_script_update));
+                ResolveBoolSetting(*context.scene->runtime,
+                                   wppartobj.dynamic_visible ? wppartobj.visible_setting
+                                                             : nlohmann::json(wppartobj.visible),
+                                   wppartobj.name,
+                                   allow_script_update));
             if (wppartobj.dynamic_origin) {
                 context.scene->runtime->RegisterNodeTranslate(
                     wppartobj.name,
                     spNode.get(),
-                    ResolveVec3Setting(
-                        *context.scene->runtime,
-                        wppartobj.origin_setting,
-                        wppartobj.name,
-                        Vec3SettingSemantic::Generic,
-                        allow_script_update));
+                    ResolveVec3Setting(*context.scene->runtime,
+                                       wppartobj.origin_setting,
+                                       wppartobj.name,
+                                       Vec3SettingSemantic::Generic,
+                                       allow_script_update));
             }
             if (wppartobj.dynamic_scale) {
                 context.scene->runtime->RegisterNodeScale(
                     wppartobj.name,
                     spNode.get(),
-                    ResolveVec3Setting(
-                        *context.scene->runtime,
-                        wppartobj.scale_setting,
-                        wppartobj.name,
-                        Vec3SettingSemantic::Generic,
-                        allow_script_update));
+                    ResolveVec3Setting(*context.scene->runtime,
+                                       wppartobj.scale_setting,
+                                       wppartobj.name,
+                                       Vec3SettingSemantic::Generic,
+                                       allow_script_update));
             }
             if (wppartobj.dynamic_angles) {
                 context.scene->runtime->RegisterNodeRotation(
                     wppartobj.name,
                     spNode.get(),
-                    ResolveVec3Setting(
-                        *context.scene->runtime,
-                        wppartobj.angles_setting,
-                        wppartobj.name,
-                        Vec3SettingSemantic::AnglesDegrees,
-                        allow_script_update));
+                    ResolveVec3Setting(*context.scene->runtime,
+                                       wppartobj.angles_setting,
+                                       wppartobj.name,
+                                       Vec3SettingSemantic::AnglesDegrees,
+                                       allow_script_update));
             }
         }
         if (allow_script_update) {
@@ -1723,13 +1640,11 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
     shaderInfo.baseConstSvs["g_OrientationForward"] = std::array { 0.0f, 0.0f, 1.0f };
     shaderInfo.baseConstSvs["g_ViewUp"]             = std::array { 0.0f, 1.0f, 0.0f };
     shaderInfo.baseConstSvs["g_ViewRight"]          = std::array { 1.0f, 0.0f, 0.0f };
-	shaderInfo.baseConstSvs["g_EyePosition"]        = std::array {
-		static_cast<float>(context.ortho_w) / 2.0f,
-		static_cast<float>(context.ortho_h) / 2.0f,
-		1000.0f,
-	};
- 
-
+    shaderInfo.baseConstSvs["g_EyePosition"]        = std::array {
+        static_cast<float>(context.ortho_w) / 2.0f,
+        static_cast<float>(context.ortho_h) / 2.0f,
+        1000.0f,
+    };
 
     u32 maxcount = particle_obj.maxcount;
     maxcount     = std::min(maxcount, 20000u);
@@ -1775,15 +1690,15 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
     bool  hasSprite          = material.hasSprite;
     (void)hasSprite;
 
-    bool thick_format = material.hasSprite || hastrail;
+    bool      thick_format  = material.hasSprite || hastrail;
     const u32 mesh_maxcount = maxcount * (u32)child_ptr.max_instancecount;
     if (mesh_maxcount == 0) {
-        LOG_INFO(
-            "skip zero-capacity particle mesh for \"%s\" child type=\"%s\" maxcount=%u instances=%zu",
-            wppartobj.name.c_str(),
-            child_data.type.c_str(),
-            maxcount,
-            child_ptr.max_instancecount);
+        LOG_INFO("skip zero-capacity particle mesh for \"%s\" child type=\"%s\" maxcount=%u "
+                 "instances=%zu",
+                 wppartobj.name.c_str(),
+                 child_data.type.c_str(),
+                 maxcount,
+                 child_ptr.max_instancecount);
         return;
     }
     {
@@ -1821,12 +1736,12 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
     LoadControlPoint(*particleSub, particle_obj);
 
     mesh.AddMaterial(std::move(material));
-    if (!is_child && context.scene->runtime != nullptr && spMesh->Material() != nullptr) {
+    if (! is_child && context.scene->runtime != nullptr && spMesh->Material() != nullptr) {
         for (const auto& texture_name : spMesh->Material()->textures) {
             if (texture_name.empty()) continue;
             const auto texture_iterator = context.scene->textures.find(texture_name);
             if (texture_iterator == context.scene->textures.end()) continue;
-            if (!texture_iterator->second.isVideo) continue;
+            if (! texture_iterator->second.isVideo) continue;
             context.scene->runtime->RegisterNodeVideoTexture(wppartobj.name, texture_name);
             break;
         }
@@ -1850,7 +1765,7 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
     else
         context.scene->paritileSys->subsystems.emplace_back(std::move(particleSub));
 
-    if (!is_child) {
+    if (! is_child) {
         context.layer_nodes[wppartobj.id] = spNode;
     }
 
@@ -1878,20 +1793,13 @@ void ParseLightObj(ParseContext& context, wpscene::WPLightObject& light_obj) {
 }
 
 template<typename T>
-bool HasDynamicVisible(const T&)
-{
+bool HasDynamicVisible(const T&) {
     return false;
 }
 
-bool HasDynamicVisible(const wpscene::WPImageObject& object)
-{
-    return object.dynamic_visible;
-}
+bool HasDynamicVisible(const wpscene::WPImageObject& object) { return object.dynamic_visible; }
 
-bool HasDynamicVisible(const wpscene::WPParticleObject& object)
-{
-    return object.dynamic_visible;
-}
+bool HasDynamicVisible(const wpscene::WPParticleObject& object) { return object.dynamic_visible; }
 
 template<typename T>
 void AddWPObject(std::vector<WPObjectVar>& objs, const nlohmann::json& json_obj, fs::VFS& vfs) {
@@ -1905,8 +1813,20 @@ void AddWPObject(std::vector<WPObjectVar>& objs, const nlohmann::json& json_obj,
 }
 } // namespace
 
-std::shared_ptr<Scene> WPSceneParser::Parse(const SceneParseRequest& request, const std::string& buf,
-                                            fs::VFS& vfs, audio::SoundManager& sm) {
+void wallpaper::ApplySystemUserTextures(std::vector<std::string>&                  textures,
+                                        const std::vector<wpscene::WPUserTexture>& usertextures) {
+    for (std::size_t index = 0; index < usertextures.size(); ++index) {
+        const auto& user_texture = usertextures[index];
+        if (user_texture.type == "system" && user_texture.name == "$mediaThumbnail") {
+            if (textures.size() <= index) textures.resize(index + 1);
+            textures[index] = "$mediaThumbnail";
+        }
+    }
+}
+
+std::shared_ptr<Scene> WPSceneParser::Parse(const SceneParseRequest& request,
+                                            const std::string& buf, fs::VFS& vfs,
+                                            audio::SoundManager& sm) {
     nlohmann::json json;
     if (! PARSE_JSON(buf, json)) return nullptr;
     wpscene::WPScene sc;
@@ -1914,7 +1834,7 @@ std::shared_ptr<Scene> WPSceneParser::Parse(const SceneParseRequest& request, co
     //	LOG_INFO(nlohmann::json(sc).dump(4));
 
     ParseContext context;
-    context.request = &request;
+    context.request     = &request;
     context.object_list = &json.at("objects");
 
     std::vector<WPObjectVar> wp_objs;
@@ -1951,12 +1871,10 @@ std::shared_ptr<Scene> WPSceneParser::Parse(const SceneParseRequest& request, co
     ParseCamera(context, sc.general);
 
     {
-        const auto render_width = std::max(
-            1,
-            static_cast<i32>(context.scene->cameras.at("global")->Width()));
-        const auto render_height = std::max(
-            1,
-            static_cast<i32>(context.scene->cameras.at("global")->Height()));
+        const auto render_width =
+            std::max(1, static_cast<i32>(context.scene->cameras.at("global")->Width()));
+        const auto render_height =
+            std::max(1, static_cast<i32>(context.scene->cameras.at("global")->Height()));
         context.scene->renderTargets[SpecTex_Default.data()] = {
             .width  = render_width,
             .height = render_height,
@@ -1974,10 +1892,10 @@ std::shared_ptr<Scene> WPSceneParser::Parse(const SceneParseRequest& request, co
             .allowReuse = true,
         };
         context.scene->renderTargetAliases["_alias_lightCookie"] = "_rt_shadowAtlas";
-        context.scene->renderTargets["_rt_4FrameBuffer"] = {
-            .width      = std::max(1, render_width / 4),
-            .height     = std::max(1, render_height / 4),
-            .allowReuse = true,
+        context.scene->renderTargets["_rt_4FrameBuffer"]         = {
+                    .width      = std::max(1, render_width / 4),
+                    .height     = std::max(1, render_height / 4),
+                    .allowReuse = true,
         };
         context.scene->renderTargets["_rt_8FrameBuffer"] = {
             .width      = std::max(1, render_width / 8),
@@ -1997,14 +1915,15 @@ std::shared_ptr<Scene> WPSceneParser::Parse(const SceneParseRequest& request, co
 
     for (WPObjectVar& obj : wp_objs) {
         std::visit(visitor::overload {
-                       [&context](wpscene::WPImageObject& obj) {                           
-                            ParseImageObj(context, obj);
+                       [&context](wpscene::WPImageObject& obj) {
+                           ParseImageObj(context, obj);
                        },
                        [&context](wpscene::WPParticleObject& obj) {
                            ParseParticleObj(context, obj);
                        },
                        [&context, &sm](wpscene::WPSoundObject& obj) {
-                           WPSoundParser::Parse(obj, *context.vfs, sm);
+                           WPSoundParser::Parse(
+                               obj, *context.vfs, sm, context.scene->runtime.get());
                        },
                        [&context](wpscene::WPLightObject& obj) {
                            ParseLightObj(context, obj);

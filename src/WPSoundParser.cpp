@@ -1,92 +1,151 @@
 #include "WPSoundParser.hpp"
-#include "Audio/SoundManager.h"
-#include "Fs/VFS.h"
-#include "wpscene/WPSoundObject.h"
-#include "Utils/Logging.h"
 
+#include "Audio/SampleMath.h"
+#include "Fs/VFS.h"
+#include "Runtime/SceneRuntimeContext.hpp"
+#include "Utils/Logging.h"
+#include "wpscene/WPSoundObject.h"
+
+#include <algorithm>
 #include <string>
 #include <string_view>
+#include <utility>
 
 using namespace wallpaper;
 
-enum class PlaybackMode
+namespace
 {
-    Random,
-    Loop
-};
 
-static PlaybackMode ToPlaybackMode(std::string_view s) {
-    if (s == "loop")
-        return PlaybackMode::Loop;
-    else if (s == "random")
-        return PlaybackMode::Random;
+PlaybackMode ToPlaybackMode(std::string_view value) {
+    if (value == "random") return PlaybackMode::Random;
     return PlaybackMode::Loop;
-};
+}
 
-class WPSoundStream : public audio::SoundStream {
-public:
-    struct Config {
-        float        maxtime { 10.0f };
-        float        mintime { 0.0f };
-        float        volume { 1.0f };
-        PlaybackMode mode { PlaybackMode::Loop };
-    };
-    WPSoundStream(const std::vector<std::string>& paths, fs::VFS& vfs, Config c)
-        : vfs(vfs), m_config(c), m_soundPaths(paths) {};
-    virtual ~WPSoundStream() = default;
+} // namespace
 
-    uint64_t NextPcmData(void* pData, uint32_t frameCount) override {
-        // first
-        if (! m_curActive) {
-            Switch();
-        }
+WPSoundStream::WPSoundStream(const std::vector<std::string>& paths, fs::VFS& vfs, Config config)
+    : WPSoundStream(
+          [&paths, &vfs] {
+              std::vector<StreamFactory> factories;
+              factories.reserve(paths.size());
+              for (const auto& path : paths) {
+                  factories.emplace_back([&vfs, path](const Desc& desc) {
+                      return std::shared_ptr<audio::SoundStream>(
+                          audio::CreateSoundStream(vfs.Open("/assets/" + path), desc));
+                  });
+              }
+              return factories;
+          }(),
+          config) {}
 
-        // loop
-        uint64_t frameReads = m_curActive->NextPcmData(pData, frameCount);
-        if (frameReads == 0) {
-            Switch();
-            frameReads = m_curActive->NextPcmData(pData, frameCount);
-        }
-        // volume
-        {
-            float*     pData_float = static_cast<float*>(pData);
-            const auto num         = frameReads * m_desc.channels;
-            for (uint i = 0; i < num; i++, pData_float++) {
-                (*pData_float) *= m_config.volume;
-            }
-        }
-        return frameReads;
-    };
-    void PassDesc(const Desc& d) override { m_desc = d; }
-    void Switch() {
-        std::string path = m_soundPaths[LoopIndex()];
-        // LOG_INFO("Switch to audio file: %s", path.c_str());
-        m_curActive = audio::CreateSoundStream(vfs.Open("/assets/" + path), m_desc);
-    }
-    uint32_t LoopIndex() {
-        m_curIndex++;
-        if (m_curIndex == m_soundPaths.size()) m_curIndex = 0;
-        return m_curIndex;
+WPSoundStream::WPSoundStream(std::vector<StreamFactory> factories, Config config)
+    : m_config(config),
+      m_stream_factories(std::move(factories)),
+      m_volume(audio::ClampVolume(config.volume)),
+      m_muted(config.muted),
+      m_playing(! config.startsilent) {
+    m_config.volume = m_volume.load(std::memory_order_relaxed);
+}
+
+WPSoundStream::~WPSoundStream() = default;
+
+uint64_t WPSoundStream::NextPcmData(void* data, uint32_t frame_count) {
+    if (m_desc.channels == 0 || m_stream_factories.empty()) return 0;
+
+    const auto sample_count = static_cast<std::size_t>(frame_count) * m_desc.channels;
+    audio::ClearInterleavedF32(data, sample_count);
+
+    if (m_rewind_requested.exchange(false, std::memory_order_relaxed)) {
+        m_cur_active.reset();
+        m_cur_index = 0;
     }
 
-private:
-    fs::VFS& vfs;
-    Config   m_config;
-    Desc     m_desc;
-    uint32_t m_curIndex { 0 };
+    if (! m_cur_active) {
+        Switch();
+    }
+    if (! m_cur_active) return 0;
 
-    const std::vector<std::string> m_soundPaths;
-    std::unique_ptr<SoundStream>   m_curActive;
-};
+    if (! m_playing.load(std::memory_order_relaxed)) {
+        return frame_count;
+    }
 
-void WPSoundParser::Parse(const wpscene::WPSoundObject& obj, fs::VFS& vfs,
-                          audio::SoundManager& sm) {
-    WPSoundStream::Config config { .maxtime = obj.maxtime,
-                                   .mintime = obj.mintime,
-                                   .volume  = obj.volume > 1.0f ? 1.0f : obj.volume,
-                                   .mode    = ToPlaybackMode(obj.playbackmode) };
+    uint64_t frames_read = m_cur_active->NextPcmData(data, frame_count);
+    if (frames_read == 0) {
+        if (m_config.mode != PlaybackMode::Loop) {
+            m_playing.store(false, std::memory_order_relaxed);
+            return frame_count;
+        }
+        Switch();
+        if (! m_cur_active) return 0;
+        frames_read = m_cur_active->NextPcmData(data, frame_count);
+    }
 
-    auto ss = std::make_unique<WPSoundStream>(obj.sound, vfs, config);
-    // auto ss_raw = ss.get();
-    sm.MountStream(std::move(ss));
+    const auto samples_read =
+        static_cast<std::size_t>(std::min<uint64_t>(frames_read, frame_count) * m_desc.channels);
+    if (m_muted.load(std::memory_order_relaxed)) {
+        audio::ClearInterleavedF32(data, samples_read);
+    } else {
+        audio::ApplyVolumeF32(data, samples_read, m_volume.load(std::memory_order_relaxed));
+    }
+    return frames_read;
+}
+
+void WPSoundStream::PassDesc(const Desc& desc) {
+    m_desc = desc;
+    if (m_cur_active != nullptr) m_cur_active->PassDesc(desc);
+}
+
+void WPSoundStream::Play() { m_playing.store(true, std::memory_order_relaxed); }
+
+void WPSoundStream::Pause() { m_playing.store(false, std::memory_order_relaxed); }
+
+void WPSoundStream::Stop() {
+    m_playing.store(false, std::memory_order_relaxed);
+    m_rewind_requested.store(true, std::memory_order_relaxed);
+}
+
+bool WPSoundStream::IsPlaying() const { return m_playing.load(std::memory_order_relaxed); }
+
+void WPSoundStream::SetVolume(float volume) {
+    m_volume.store(audio::ClampVolume(volume), std::memory_order_relaxed);
+}
+
+float WPSoundStream::Volume() const { return m_volume.load(std::memory_order_relaxed); }
+
+void WPSoundStream::SetMuted(bool muted) { m_muted.store(muted, std::memory_order_relaxed); }
+
+bool WPSoundStream::Muted() const { return m_muted.load(std::memory_order_relaxed); }
+
+void WPSoundStream::Switch() {
+    if (m_stream_factories.empty()) return;
+    auto stream = m_stream_factories[LoopIndex()](m_desc);
+    if (stream == nullptr) {
+        m_cur_active.reset();
+        return;
+    }
+    stream->PassDesc(m_desc);
+    m_cur_active = std::move(stream);
+}
+
+std::size_t WPSoundStream::LoopIndex() {
+    const std::size_t index = m_cur_index;
+    m_cur_index++;
+    if (m_cur_index == m_stream_factories.size()) m_cur_index = 0;
+    return index;
+}
+
+void WPSoundParser::Parse(const wpscene::WPSoundObject& obj, fs::VFS& vfs, audio::SoundManager& sm,
+                          SceneRuntimeContext* runtime) {
+    WPSoundStream::Config config { .maxtime     = obj.maxtime,
+                                   .mintime     = obj.mintime,
+                                   .volume      = audio::ClampVolume(obj.volume),
+                                   .muted       = obj.muted,
+                                   .startsilent = obj.startsilent,
+                                   .mode        = ToPlaybackMode(obj.playbackmode) };
+
+    auto stream = std::make_shared<WPSoundStream>(obj.sound, vfs, config);
+    if (runtime != nullptr) {
+        runtime->RegisterSoundLayer(obj.name, stream);
+    }
+    sm.MountStream(stream);
 }

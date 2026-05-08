@@ -33,19 +33,22 @@
 #include "SpecTexs.hpp"
 #include "Presentation/WallpaperScaling.hpp"
 #include "Runtime/SceneRuntimeContext.hpp"
+#include "Runtime/RuntimeImageSource.hpp"
 #include "VulkanRender/SceneToRenderGraph.hpp"
 #include "VulkanRender/VulkanRender.hpp"
 #include "Runtime/VirtualAssetRegistry.hpp"
 #include <atomic>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
+#include <optional>
+#include <vector>
 
 using namespace wallpaper;
 
-#define CASE_CMD(cmd)      \
-    case CMD::CMD_##cmd:   \
-        handle_##cmd(msg); \
-        break;
+#define CASE_CMD(cmd) \
+    case CMD::CMD_##cmd: handle_##cmd(msg); break;
 #define MHANDLER_CMD(cmd) void handle_##cmd(const std::shared_ptr<looper::Message>& msg)
 #define MHANDLER_CMD_IMPL(cl, cmd) \
     void impl_##cl::handle_##cmd(const std::shared_ptr<looper::Message>& msg)
@@ -53,8 +56,7 @@ using namespace wallpaper;
 
 namespace
 {
-bool SetError(std::string* error, std::string message)
-{
+bool SetError(std::string* error, std::string message) {
     if (error != nullptr) *error = std::move(message);
     return false;
 }
@@ -71,37 +73,29 @@ std::shared_ptr<looper::Message> CreateMsgWithCmd(const std::shared_ptr<looper::
     return msg;
 }
 
-class NoOpShaderValueUpdater final : public wallpaper::IShaderValueUpdater
-{
+class NoOpShaderValueUpdater final : public wallpaper::IShaderValueUpdater {
 public:
     void FrameBegin() override {}
     void InitUniforms(wallpaper::SceneNode*, const wallpaper::ExistsUniformOp&) override {}
-    void UpdateUniforms(
-        wallpaper::SceneNode*,
-        wallpaper::sprite_map_t&,
-        const wallpaper::UpdateUniformOp&) override {}
+    void UpdateUniforms(wallpaper::SceneNode*, wallpaper::sprite_map_t&,
+                        const wallpaper::UpdateUniformOp&) override {}
     void FrameEnd() override {}
     void MouseInput(double, double) override {}
     void SetTexelSize(float, float) override {}
     void SetScreenSize(i32, i32) override {}
 };
 
-class SingleVideoImageParser final : public wallpaper::IImageParser
-{
+class SingleVideoImageParser final : public wallpaper::IImageParser {
 public:
     explicit SingleVideoImageParser(std::shared_ptr<wallpaper::Image> image)
-        : m_image(std::move(image))
-    {
-    }
+        : m_image(std::move(image)) {}
 
-    std::shared_ptr<wallpaper::Image> Parse(const std::string& name) override
-    {
+    std::shared_ptr<wallpaper::Image> Parse(const std::string& name) override {
         if (m_image != nullptr && name == m_image->key) return m_image;
         return nullptr;
     }
 
-    wallpaper::ImageHeader ParseHeader(const std::string& name) override
-    {
+    wallpaper::ImageHeader ParseHeader(const std::string& name) override {
         if (m_image != nullptr && name == m_image->key) return m_image->header;
         return {};
     }
@@ -110,18 +104,21 @@ private:
     std::shared_ptr<wallpaper::Image> m_image;
 };
 
-class ScopedGlslang final
-{
+class ScopedGlslang final {
 public:
     ScopedGlslang() { wallpaper::WPShaderParser::InitGlslang(); }
     ~ScopedGlslang() { wallpaper::WPShaderParser::FinalGlslang(); }
 };
 
-std::shared_ptr<wallpaper::Image> LoadVideoProjectImage(
-    const std::filesystem::path& project_path,
-    std::string_view             file_name,
-    std::string*                 error)
-{
+struct SystemMediaArtworkPayload {
+    uint32_t             width { 0 };
+    uint32_t             height { 0 };
+    std::vector<uint8_t> rgba;
+};
+
+std::shared_ptr<wallpaper::Image> LoadVideoProjectImage(const std::filesystem::path& project_path,
+                                                        std::string_view             file_name,
+                                                        std::string*                 error) {
     if (file_name.empty()) {
         SetError(error, "video project file entry must not be empty");
         return nullptr;
@@ -133,63 +130,56 @@ std::shared_ptr<wallpaper::Image> LoadVideoProjectImage(
     }
 
     std::ifstream input(media_path, std::ios::binary | std::ios::ate);
-    if (!input.good()) {
-        SetError(
-            error,
-            std::string("failed to open video project media file: ") + media_path.string());
+    if (! input.good()) {
+        SetError(error,
+                 std::string("failed to open video project media file: ") + media_path.string());
         return nullptr;
     }
 
     const std::streamsize size = input.tellg();
     if (size <= 0) {
-        SetError(
-            error,
-            std::string("video project media file is empty: ") + media_path.string());
+        SetError(error, std::string("video project media file is empty: ") + media_path.string());
         return nullptr;
     }
 
     input.seekg(0, std::ios::beg);
 
-    auto image = std::make_shared<wallpaper::Image>();
-    image->key = std::string(file_name);
-    image->header.isVideo = true;
+    auto image                      = std::make_shared<wallpaper::Image>();
+    image->key                      = std::string(file_name);
+    image->header.isVideo           = true;
     image->header.videoAudioEnabled = true;
-    image->header.count = 1;
-    image->header.sample.wrapS = wallpaper::TextureWrap::CLAMP_TO_EDGE;
-    image->header.sample.wrapT = wallpaper::TextureWrap::CLAMP_TO_EDGE;
-    image->header.sample.minFilter = wallpaper::TextureFilter::LINEAR;
-    image->header.sample.magFilter = wallpaper::TextureFilter::LINEAR;
+    image->header.count             = 1;
+    image->header.sample.wrapS      = wallpaper::TextureWrap::CLAMP_TO_EDGE;
+    image->header.sample.wrapT      = wallpaper::TextureWrap::CLAMP_TO_EDGE;
+    image->header.sample.minFilter  = wallpaper::TextureFilter::LINEAR;
+    image->header.sample.magFilter  = wallpaper::TextureFilter::LINEAR;
 
-    uint32_t source_width = 0;
+    uint32_t source_width  = 0;
     uint32_t source_height = 0;
-    if (!wallpaper::video::ProbeVideoFileDimensions(
-            media_path.string(),
-            &source_width,
-            &source_height,
-            error)) {
+    if (! wallpaper::video::ProbeVideoFileDimensions(
+            media_path.string(), &source_width, &source_height, error)) {
         return nullptr;
     }
-    image->header.width = static_cast<i32>(source_width);
-    image->header.height = static_cast<i32>(source_height);
-    image->header.mapWidth = static_cast<i32>(source_width);
+    image->header.width     = static_cast<i32>(source_width);
+    image->header.height    = static_cast<i32>(source_height);
+    image->header.mapWidth  = static_cast<i32>(source_width);
     image->header.mapHeight = static_cast<i32>(source_height);
 
     wallpaper::Image::Slot slot;
-    slot.width = std::max<i32>(1, image->header.width);
+    slot.width  = std::max<i32>(1, image->header.width);
     slot.height = std::max<i32>(1, image->header.height);
 
     wallpaper::ImageData mip;
-    mip.width = slot.width;
+    mip.width  = slot.width;
     mip.height = slot.height;
-    mip.size = static_cast<isize>(size);
-    mip.data = wallpaper::ImageDataPtr(new uint8_t[static_cast<size_t>(size)], [](uint8_t* data) {
+    mip.size   = static_cast<isize>(size);
+    mip.data   = wallpaper::ImageDataPtr(new uint8_t[static_cast<size_t>(size)], [](uint8_t* data) {
         delete[] data;
     });
 
-    if (!input.read(reinterpret_cast<char*>(mip.data.get()), size)) {
-        SetError(
-            error,
-            std::string("failed to read video project media file: ") + media_path.string());
+    if (! input.read(reinterpret_cast<char*>(mip.data.get()), size)) {
+        SetError(error,
+                 std::string("failed to read video project media file: ") + media_path.string());
         return nullptr;
     }
 
@@ -198,42 +188,36 @@ std::shared_ptr<wallpaper::Image> LoadVideoProjectImage(
     return image;
 }
 
-bool BuildVideoCopyShader(
-    wallpaper::fs::VFS&                       vfs,
-    std::string_view                          scene_id,
-    std::shared_ptr<wallpaper::SceneShader>*  shader,
-    std::string*                              error)
-{
+bool BuildVideoCopyShader(wallpaper::fs::VFS& vfs, std::string_view scene_id,
+                          std::shared_ptr<wallpaper::SceneShader>* shader, std::string* error) {
     if (shader == nullptr) return SetError(error, "video copy shader output must not be null");
 
-    std::string vertex_src =
-        "in vec3 a_Position;\n"
-        "in vec2 a_TexCoord;\n"
-        "void main() {\n"
-        "gl_Position = vec4(a_Position, 1.0);\n"
-        "v_TexCoord = a_TexCoord;\n"
-        "}\n";
+    std::string vertex_src = "in vec3 a_Position;\n"
+                             "in vec2 a_TexCoord;\n"
+                             "void main() {\n"
+                             "gl_Position = vec4(a_Position, 1.0);\n"
+                             "v_TexCoord = a_TexCoord;\n"
+                             "}\n";
 
-    std::string fragment_src =
-        "uniform sampler2D g_Texture0;\n"
-        "in vec2 v_TexCoord;\n"
-        "void main() {\n"
-        "gl_FragColor = texture(g_Texture0, v_TexCoord);\n"
-        "}\n";
+    std::string fragment_src = "uniform sampler2D g_Texture0;\n"
+                               "in vec2 v_TexCoord;\n"
+                               "void main() {\n"
+                               "gl_FragColor = texture(g_Texture0, v_TexCoord);\n"
+                               "}\n";
 
-    wallpaper::WPShaderInfo shader_info;
+    wallpaper::WPShaderInfo                 shader_info;
     std::vector<wallpaper::WPShaderTexInfo> tex_infos(1);
     tex_infos[0].enabled = true;
 
     std::array units {
         wallpaper::WPShaderUnit {
-            .stage = wallpaper::ShaderType::VERTEX,
-            .src = std::move(vertex_src),
+            .stage           = wallpaper::ShaderType::VERTEX,
+            .src             = std::move(vertex_src),
             .preprocess_info = {},
         },
         wallpaper::WPShaderUnit {
-            .stage = wallpaper::ShaderType::FRAGMENT,
-            .src = std::move(fragment_src),
+            .stage           = wallpaper::ShaderType::FRAGMENT,
+            .src             = std::move(fragment_src),
             .preprocess_info = {},
         },
     };
@@ -244,25 +228,19 @@ bool BuildVideoCopyShader(
 
     ScopedGlslang glslang_scope;
 
-    auto compiled_shader = std::make_shared<wallpaper::SceneShader>();
+    auto compiled_shader  = std::make_shared<wallpaper::SceneShader>();
     compiled_shader->name = "commands/copy";
-    if (!wallpaper::WPShaderParser::CompileToSpv(
-            scene_id,
-            units,
-            compiled_shader->codes,
-            vfs,
-            &shader_info,
-            tex_infos)) {
+    if (! wallpaper::WPShaderParser::CompileToSpv(
+            scene_id, units, compiled_shader->codes, vfs, &shader_info, tex_infos)) {
         return SetError(error, "failed to compile pure-video copy shader");
     }
 
     compiled_shader->default_uniforms = shader_info.svs;
-    *shader = std::move(compiled_shader);
+    *shader                           = std::move(compiled_shader);
     return true;
 }
 
-void InstallVideoProjectCameras(wallpaper::Scene& scene)
-{
+void InstallVideoProjectCameras(wallpaper::Scene& scene) {
     scene.ortho[0] = 2;
     scene.ortho[1] = 2;
 
@@ -272,35 +250,27 @@ void InstallVideoProjectCameras(wallpaper::Scene& scene)
     auto global_camera = std::make_shared<wallpaper::SceneCamera>(2, 2, -1.0f, 1.0f);
     global_camera->AttatchNode(global_node);
     scene.cameras["global"] = global_camera;
-    scene.activeCamera = global_camera.get();
+    scene.activeCamera      = global_camera.get();
 
     auto perspective_node = std::make_shared<wallpaper::SceneNode>();
     scene.sceneGraph->AppendChild(perspective_node);
 
-    auto perspective_camera =
-        std::make_shared<wallpaper::SceneCamera>(1.0f, 0.1f, 1000.0f, 45.0f);
+    auto perspective_camera = std::make_shared<wallpaper::SceneCamera>(1.0f, 0.1f, 1000.0f, 45.0f);
     perspective_camera->AttatchNode(perspective_node);
     scene.cameras["global_perspective"] = perspective_camera;
 }
 
-std::shared_ptr<wallpaper::SceneNode> CreateVideoProjectNode(
-    std::string_view                              texture_name,
-    const std::shared_ptr<wallpaper::SceneShader>& shader)
-{
+std::shared_ptr<wallpaper::SceneNode>
+CreateVideoProjectNode(std::string_view                               texture_name,
+                       const std::shared_ptr<wallpaper::SceneShader>& shader) {
     constexpr std::array<float, 12> positions {
-        -1.0f, -1.0f, 0.0f,
-        -1.0f, 1.0f, 0.0f,
-        1.0f, -1.0f, 0.0f,
-        1.0f, 1.0f, 0.0f,
+        -1.0f, -1.0f, 0.0f, -1.0f, 1.0f, 0.0f, 1.0f, -1.0f, 0.0f, 1.0f, 1.0f, 0.0f,
     };
     constexpr std::array<float, 8> tex_coords {
-        0.0f, 1.0f,
-        0.0f, 0.0f,
-        1.0f, 1.0f,
-        1.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 0.0f,
     };
 
-    auto mesh = std::make_shared<wallpaper::SceneMesh>();
+    auto                        mesh = std::make_shared<wallpaper::SceneMesh>();
     wallpaper::SceneVertexArray vertex(
         {
             { std::string(wallpaper::WE_IN_POSITION), wallpaper::VertexType::FLOAT3 },
@@ -315,28 +285,26 @@ std::shared_ptr<wallpaper::SceneNode> CreateVideoProjectNode(
     material.name = "video_project_copy";
     material.textures.push_back(std::string(texture_name));
     material.defines.push_back(std::string(wallpaper::WE_GLTEX_NAMES[0]));
-    material.blenmode = wallpaper::BlendMode::Normal;
+    material.blenmode            = wallpaper::BlendMode::Normal;
     material.customShader.shader = shader;
     mesh->AddMaterial(std::move(material));
 
-    auto node = std::make_shared<wallpaper::SceneNode>();
+    auto node  = std::make_shared<wallpaper::SceneNode>();
     node->ID() = 1;
     node->AddMesh(mesh);
     return node;
 }
 
-std::shared_ptr<wallpaper::Scene> CreateVideoProjectScene(
-    std::unique_ptr<wallpaper::fs::VFS> vfs,
-    const std::filesystem::path&        project_path,
-    const wallpaper::ProjectManifest&   manifest,
-    std::string*                        error)
-{
+std::shared_ptr<wallpaper::Scene>
+CreateVideoProjectScene(std::unique_ptr<wallpaper::fs::VFS> vfs,
+                        const std::filesystem::path&        project_path,
+                        const wallpaper::ProjectManifest& manifest, std::string* error) {
     if (vfs == nullptr) {
         SetError(error, "video project VFS must not be null");
         return nullptr;
     }
 
-    if (!wallpaper::InstallVirtualAssets(*vfs)) {
+    if (! wallpaper::InstallVirtualAssets(*vfs)) {
         SetError(error, "failed to install runtime virtual assets for video project");
         return nullptr;
     }
@@ -350,24 +318,24 @@ std::shared_ptr<wallpaper::Scene> CreateVideoProjectScene(
     }
 
     std::shared_ptr<wallpaper::SceneShader> shader;
-    if (!BuildVideoCopyShader(*vfs, scene_id, &shader, error)) return nullptr;
+    if (! BuildVideoCopyShader(*vfs, scene_id, &shader, error)) return nullptr;
 
-    auto scene = std::make_shared<wallpaper::Scene>();
-    scene->scene_id = scene_id;
-    scene->clearColor = { 0.0f, 0.0f, 0.0f };
+    auto scene                = std::make_shared<wallpaper::Scene>();
+    scene->scene_id           = scene_id;
+    scene->clearColor         = { 0.0f, 0.0f, 0.0f };
     scene->shaderValueUpdater = std::make_unique<NoOpShaderValueUpdater>();
-    scene->imageParser = std::make_unique<SingleVideoImageParser>(image);
-    scene->vfs = std::move(vfs);
+    scene->imageParser        = std::make_unique<SingleVideoImageParser>(image);
+    scene->vfs                = std::move(vfs);
 
     InstallVideoProjectCameras(*scene);
     scene->renderTargets[std::string(wallpaper::SpecTex_Default)] = wallpaper::SceneRenderTarget {
-        .width = std::max(1, image->header.width),
+        .width  = std::max(1, image->header.width),
         .height = std::max(1, image->header.height),
-        .bind = { .enable = true, .screen = true },
+        .bind   = { .enable = true, .screen = true },
     };
     scene->textures[image->key] = wallpaper::SceneTexture {
-        .url = image->key,
-        .sample = image->header.sample,
+        .url     = image->key,
+        .sample  = image->header.sample,
         .isVideo = true,
     };
     scene->sceneGraph->AppendChild(CreateVideoProjectNode(image->key, shader));
@@ -437,6 +405,7 @@ private:
     std::string m_project_property_override_json;
     bool        m_gen_graphviz { false };
     bool        m_audio_response_enabled { false };
+    bool        m_media_integration_enabled { false };
     bool        m_force_shader_refresh { false };
 
     WPSceneParser                        m_scene_parser;
@@ -461,6 +430,9 @@ public:
         CMD_SET_SCALINGMODE,
         CMD_SET_SCALINGFACTOR,
         CMD_SET_AUDIO_RESPONSE_ENABLED,
+        CMD_SET_MEDIA_INTEGRATION_ENABLED,
+        CMD_MEDIA_EVENT_JSON,
+        CMD_SYSTEM_MEDIA_ARTWORK,
         CMD_SET_SPEED,
         CMD_STOP,
         CMD_DRAW,
@@ -486,6 +458,9 @@ public:
                 CASE_CMD(SET_SCALINGMODE);
                 CASE_CMD(SET_SCALINGFACTOR);
                 CASE_CMD(SET_AUDIO_RESPONSE_ENABLED);
+                CASE_CMD(SET_MEDIA_INTEGRATION_ENABLED);
+                CASE_CMD(MEDIA_EVENT_JSON);
+                CASE_CMD(SYSTEM_MEDIA_ARTWORK);
                 CASE_CMD(SET_SCENE);
                 CASE_CMD(SET_SPEED);
                 CASE_CMD(INIT_VULKAN);
@@ -502,8 +477,7 @@ public:
     void setMousePos(double x, double y) { m_mouse_pos.store(std::array { (float)x, (float)y }); }
 
 private:
-    void rebuildRenderGraph()
-    {
+    void rebuildRenderGraph() {
         if (m_scene == nullptr) return;
 
         if (m_rg) m_render->clearLastRenderGraph();
@@ -519,6 +493,25 @@ private:
         if (m_scene->runtime != nullptr) {
             m_scene->runtime->ConsumeSceneGraphMutationFlag();
         }
+    }
+
+    bool applySystemMediaArtworkPayload(const SystemMediaArtworkPayload& artwork) {
+        if (m_scene == nullptr || m_scene->imageParser == nullptr) return false;
+
+        auto* runtime_images = dynamic_cast<RuntimeImageSource*>(m_scene->imageParser.get());
+        if (runtime_images == nullptr) return false;
+
+        runtime_images->SetRgbaImage("$mediaThumbnail",
+                                     artwork.width,
+                                     artwork.height,
+                                     artwork.rgba.data(),
+                                     artwork.rgba.size());
+        if (m_scene->runtime != nullptr) {
+            m_scene->runtime->DispatchMediaEventJson(
+                R"({"type":"mediaThumbnailChanged","hasThumbnail":true})");
+        }
+        rebuildRenderGraph();
+        return true;
     }
 
     MHANDLER_CMD(STOP) {
@@ -543,10 +536,10 @@ private:
                 auto pos = m_mouse_pos.load();
                 m_scene->shaderValueUpdater->MouseInput(pos[0], pos[1]);
                 if (m_scene->runtime != nullptr) {
-                    m_scene->runtime->SetCursorWorldPosition(Eigen::Vector3f(
-                        pos[0] * static_cast<float>(m_scene->ortho[0]),
-                        pos[1] * static_cast<float>(m_scene->ortho[1]),
-                        0.0f));
+                    m_scene->runtime->SetCursorWorldPosition(
+                        Eigen::Vector3f(pos[0] * static_cast<float>(m_scene->ortho[0]),
+                                        pos[1] * static_cast<float>(m_scene->ortho[1]),
+                                        0.0f));
                 }
             }
             m_scene->paritileSys->Emitt();
@@ -563,11 +556,10 @@ private:
             const int64_t draw_second = static_cast<int64_t>(m_scene->elapsingTime);
             if (draw_second != m_last_draw_log_second) {
                 m_last_draw_log_second = draw_second;
-                LOG_INFO(
-                    "render draw tick scene \"%s\": elapsed %.3fs, frame %.3fs",
-                    m_scene->scene_id.c_str(),
-                    m_scene->elapsingTime,
-                    m_scene->frameTime);
+                LOG_INFO("render draw tick scene \"%s\": elapsed %.3fs, frame %.3fs",
+                         m_scene->scene_id.c_str(),
+                         m_scene->elapsingTime,
+                         m_scene->frameTime);
             }
 
             m_scene->shaderValueUpdater->FrameEnd();
@@ -583,7 +575,7 @@ private:
     MHANDLER_CMD(SET_FILLMODE) {
         int32_t value;
         if (msg->findInt32("value", &value)) {
-            m_fillmode = (FillMode)value;
+            m_fillmode          = (FillMode)value;
             m_fillmode_explicit = true;
             if (m_scene && renderInited()) {
                 m_render->UpdateCameraFillMode(*m_scene, m_fillmode);
@@ -616,9 +608,45 @@ private:
             }
         }
     }
+    MHANDLER_CMD(SET_MEDIA_INTEGRATION_ENABLED) {
+        bool enabled { false };
+        if (msg->findBool("value", &enabled)) {
+            m_media_integration_enabled = enabled;
+            if (m_scene != nullptr && m_scene->runtime != nullptr) {
+                m_scene->runtime->SetMediaIntegrationEnabled(enabled);
+            }
+        }
+    }
+    MHANDLER_CMD(MEDIA_EVENT_JSON) {
+        if (! m_media_integration_enabled || m_scene == nullptr || m_scene->runtime == nullptr)
+            return;
+
+        std::string json;
+        if (msg->findString("value", &json)) {
+            m_scene->runtime->DispatchMediaEventJson(json);
+        }
+    }
+    MHANDLER_CMD(SYSTEM_MEDIA_ARTWORK) {
+        std::shared_ptr<SystemMediaArtworkPayload> artwork;
+        if (! msg->findObject("artwork", &artwork) || artwork == nullptr || artwork->rgba.empty())
+            return;
+        if (! applySystemMediaArtworkPayload(*artwork)) {
+            m_pending_system_media_artwork = *artwork;
+        } else {
+            m_pending_system_media_artwork.reset();
+        }
+    }
     MHANDLER_CMD(SET_SCENE) {
         if (msg->findObject("scene", &m_scene)) {
-            rebuildRenderGraph();
+            if (m_scene != nullptr && m_scene->runtime != nullptr) {
+                m_scene->runtime->SetMediaIntegrationEnabled(m_media_integration_enabled);
+            }
+            if (m_pending_system_media_artwork.has_value() &&
+                applySystemMediaArtworkPayload(*m_pending_system_media_artwork)) {
+                m_pending_system_media_artwork.reset();
+            } else {
+                rebuildRenderGraph();
+            }
         }
     }
     MHANDLER_CMD(SET_SPEED) {
@@ -633,7 +661,7 @@ private:
             m_render->SetWallpaperScalingMode(m_scalingmode);
             m_render->SetWallpaperScalingFactor(m_scalingfactor);
             m_render->SetVideoPlaybackRate(m_speed);
-            m_render->SetVideoPlaybackPaused(!frame_timer.Running());
+            m_render->SetVideoPlaybackPaused(! frame_timer.Running());
 
             // inited, callback to laod scene
             main_handler.sendCmdLoadScene();
@@ -655,7 +683,9 @@ private:
     bool                 m_fillmode_explicit { false };
     WallpaperScalingMode m_scalingmode { WallpaperScalingMode::FIT };
     float                m_scalingfactor { 1.0f };
+    bool                 m_media_integration_enabled { false };
     int64_t              m_last_draw_log_second { -1 };
+    std::optional<SystemMediaArtworkPayload> m_pending_system_media_artwork {};
 
     std::atomic<std::array<float, 2>> m_mouse_pos { std::array { 0.5f, 0.5f } };
 };
@@ -663,9 +693,7 @@ private:
 
 SceneWallpaper::SceneWallpaper(): m_main_handler(std::make_shared<MainHandler>()) {}
 
-SceneWallpaper::~SceneWallpaper() {
-    shutdown();
-}
+SceneWallpaper::~SceneWallpaper() { shutdown(); }
 
 bool SceneWallpaper::inited() const { return m_main_handler->inited(); }
 
@@ -731,6 +759,30 @@ void SceneWallpaper::setTargetFps(uint32_t fps) {
 
 void SceneWallpaper::mouseInput(double x, double y) {
     m_main_handler->renderHandler()->setMousePos(x, y);
+}
+
+void SceneWallpaper::applySystemMediaArtwork(uint32_t width, uint32_t height, const uint8_t* rgba,
+                                             std::size_t rgba_len) {
+    if (width == 0 || height == 0 || rgba == nullptr) return;
+    if (width > static_cast<uint32_t>(std::numeric_limits<int32_t>::max()) ||
+        height > static_cast<uint32_t>(std::numeric_limits<int32_t>::max())) {
+        return;
+    }
+    const std::size_t pixel_count = static_cast<std::size_t>(width) * height;
+    if (pixel_count > std::numeric_limits<std::size_t>::max() / 4) return;
+    const std::size_t expected_len = pixel_count * 4;
+    if (rgba_len != expected_len) return;
+
+    auto artwork    = std::make_shared<SystemMediaArtworkPayload>();
+    artwork->width  = width;
+    artwork->height = height;
+    artwork->rgba.resize(rgba_len);
+    std::memcpy(artwork->rgba.data(), rgba, rgba_len);
+
+    auto msg = CreateMsgWithCmd(m_main_handler->renderHandler(),
+                                RenderHandler::CMD::CMD_SYSTEM_MEDIA_ARTWORK);
+    msg->setObject("artwork", artwork);
+    msg->post();
 }
 
 #define BASIC_TYPE(NAME, TYPENAME)                                                       \
@@ -815,11 +867,29 @@ MHANDLER_CMD_IMPL(MainHandler, SET_PROPERTY) {
             bool enabled { false };
             msg->findBool("value", &enabled);
             m_audio_response_enabled = enabled;
-            auto nmsg = CreateMsgWithCmd(
-                m_render_handler,
-                RenderHandler::CMD::CMD_SET_AUDIO_RESPONSE_ENABLED);
+            auto nmsg                = CreateMsgWithCmd(m_render_handler,
+                                         RenderHandler::CMD::CMD_SET_AUDIO_RESPONSE_ENABLED);
             nmsg->setBool("value", enabled);
             nmsg->post();
+        } else if (property == PROPERTY_MEDIA_INTEGRATION_ENABLED) {
+            bool enabled { false };
+            msg->findBool("value", &enabled);
+            m_media_integration_enabled = enabled;
+            if (m_render_handler != nullptr) {
+                auto nmsg = CreateMsgWithCmd(m_render_handler,
+                                             RenderHandler::CMD::CMD_SET_MEDIA_INTEGRATION_ENABLED);
+                nmsg->setBool("value", enabled);
+                nmsg->post();
+            }
+        } else if (property == PROPERTY_MEDIA_EVENT_JSON) {
+            std::string json;
+            if (msg->findString("value", &json) && m_media_integration_enabled &&
+                m_render_handler != nullptr) {
+                auto nmsg =
+                    CreateMsgWithCmd(m_render_handler, RenderHandler::CMD::CMD_MEDIA_EVENT_JSON);
+                nmsg->setString("value", json);
+                nmsg->post();
+            }
         } else if (property == PROPERTY_CACHE_PATH) {
             std::string path;
             msg->findString("value", &path);
@@ -898,7 +968,7 @@ void MainHandler::loadScene() {
     }
     SceneSourceResolution source_resolution;
     std::string           source_error;
-    if (!ResolveSceneSourcePaths(m_source, &source_resolution, &source_error)) {
+    if (! ResolveSceneSourcePaths(m_source, &source_resolution, &source_error)) {
         LOG_ERROR("failed to resolve scene source %s: %s", m_source.c_str(), source_error.c_str());
         return;
     }
@@ -945,24 +1015,22 @@ void MainHandler::loadScene() {
             LOG_ERROR("Not supported scene type");
             return;
         }
-        if (!ParseProjectProperties(m_source, &project_properties, &source_error)) {
-            LOG_ERROR("failed to parse project properties %s: %s", m_source.c_str(), source_error.c_str());
+        if (! ParseProjectProperties(m_source, &project_properties, &source_error)) {
+            LOG_ERROR("failed to parse project properties %s: %s",
+                      m_source.c_str(),
+                      source_error.c_str());
             return;
         }
-        if (!m_project_property_override_json.empty()) {
+        if (! m_project_property_override_json.empty()) {
             ProjectProperties override_properties;
-            if (!ParseFlatProjectPropertyOverrideJson(
-                    m_project_property_override_json,
-                    &override_properties,
-                    &source_error)) {
-                LOG_ERROR(
-                    "failed to parse project override json %s: %s",
-                    m_source.c_str(),
-                    source_error.c_str());
+            if (! ParseFlatProjectPropertyOverrideJson(
+                    m_project_property_override_json, &override_properties, &source_error)) {
+                LOG_ERROR("failed to parse project override json %s: %s",
+                          m_source.c_str(),
+                          source_error.c_str());
                 return;
             }
-            project_properties =
-                MergeProjectProperties(project_properties, override_properties);
+            project_properties = MergeProjectProperties(project_properties, override_properties);
         }
         SceneParseRequest request {
             .scene_id           = source_paths.scene_id,
@@ -972,6 +1040,7 @@ void MainHandler::loadScene() {
         scene = m_scene_parser.Parse(request, scene_src, vfs, *m_sound_manager);
         if (scene != nullptr && scene->runtime != nullptr) {
             scene->runtime->SetAudioResponseEnabled(m_audio_response_enabled);
+            scene->runtime->SetMediaIntegrationEnabled(m_media_integration_enabled);
         }
         scene->vfs.swap(pVfs);
     }
@@ -989,15 +1058,13 @@ void MainHandler::loadScene() {
     }
 }
 
-bool MainHandler::loadNonSceneProject(const ProjectManifest& manifest, std::unique_ptr<fs::VFS> vfs) {
+bool MainHandler::loadNonSceneProject(const ProjectManifest&   manifest,
+                                      std::unique_ptr<fs::VFS> vfs) {
     switch (manifest.type) {
     case WallpaperProjectType::Video: {
         std::string error;
-        auto scene = CreateVideoProjectScene(
-            std::move(vfs),
-            std::filesystem::path(m_source),
-            manifest,
-            &error);
+        auto        scene = CreateVideoProjectScene(
+            std::move(vfs), std::filesystem::path(m_source), manifest, &error);
         if (scene == nullptr) {
             LOG_ERROR("failed to load video wallpaper project: %s", error.c_str());
             return false;
@@ -1028,7 +1095,8 @@ bool MainHandler::loadNonSceneProject(const ProjectManifest& manifest, std::uniq
         LOG_ERROR("unsupported wallpaper project type for %s", m_source.c_str());
         return false;
     case WallpaperProjectType::Scene:
-        LOG_ERROR("scene project was routed through the non-scene project path: %s", m_source.c_str());
+        LOG_ERROR("scene project was routed through the non-scene project path: %s",
+                  m_source.c_str());
         return false;
     }
 

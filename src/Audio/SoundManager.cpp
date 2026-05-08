@@ -21,7 +21,7 @@ miniaudio::DeviceDesc ToSSDesc(const SoundStream::Desc& d) {
 
 class Channel_Impl : public miniaudio::Channel {
 public:
-    Channel_Impl(std::unique_ptr<SoundStream>&& ss): m_ss(std::move(ss)) {}
+    explicit Channel_Impl(std::shared_ptr<SoundStream> ss): m_ss(std::move(ss)) {}
     virtual ~Channel_Impl() = default;
 
     ma_uint64 NextPcmData(void* pData, ma_uint32 frameCount) override {
@@ -33,15 +33,15 @@ public:
 
 private:
     miniaudio::DeviceDesc        m_desc;
-    std::unique_ptr<SoundStream> m_ss;
+    std::shared_ptr<SoundStream> m_ss;
 };
 
 struct BStreamWrapper {
     std::shared_ptr<wallpaper::fs::IBinaryStream> stream;
     size_t                                        Read(void* pBufferOut, size_t bytesToRead) {
-                                               size_t reads = stream->Read(pBufferOut, bytesToRead);
-                                               // LOG_INFO("r:%u, %u",bytesToRead, reads);
-                                               return reads;
+        size_t reads = stream->Read(pBufferOut, bytesToRead);
+        // LOG_INFO("r:%u, %u",bytesToRead, reads);
+        return reads;
     }
     bool Seek(idx offset, ma_seek_origin origin) {
         bool result { false };
@@ -91,7 +91,10 @@ SoundManager::SoundManager(): pImpl(std::make_unique<impl>()) {}
 SoundManager::~SoundManager() {}
 
 void SoundManager::MountStream(std::unique_ptr<SoundStream>&& ss) {
-    // if(!IsInited()) return;
+    MountStream(std::shared_ptr<SoundStream>(std::move(ss)));
+}
+
+void SoundManager::MountStream(std::shared_ptr<SoundStream> ss) {
     pImpl->device.MountChannel(std::make_unique<Channel_Impl>(std::move(ss)));
 }
 
@@ -99,13 +102,7 @@ void SoundManager::Test(std::shared_ptr<fs::IBinaryStream> stream) {
     BStreamWrapper sw { stream };
     auto           decoder = std::make_unique<miniaudio::Decoder<BStreamWrapper>>(std::move(sw));
 }
-bool SoundManager::Init() {
-    if (Muted()) {
-        LOG_INFO("muted, not init sound device");
-        return false;
-    }
-    return pImpl->device.Init({});
-}
+bool SoundManager::Init() { return pImpl->device.Init({}); }
 bool SoundManager::IsInited() const { return pImpl->device.IsInited(); }
 void SoundManager::Play() { pImpl->device.Start(); }
 void SoundManager::Pause() { pImpl->device.Stop(); }
@@ -116,10 +113,10 @@ float SoundManager::Volume() const { return pImpl->device.Volume(); }
 bool SoundManager::Muted() const { return pImpl->device.Muted(); }
 void SoundManager::SetMuted(bool v) {
     pImpl->device.SetMuted(v);
-    if (! Muted()) {
-        Init();
-    } else {
-        pImpl->device.UnInit();
+    if (! pImpl->device.IsInited()) {
+        if (! Init()) {
+            LOG_ERROR("can't init sound device after mute state change");
+        }
     }
 }
 void SoundManager::SetVolume(float v) { pImpl->device.SetVolume(v); }

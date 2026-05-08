@@ -1,9 +1,10 @@
 #pragma once
 #include "WPJson.hpp"
 #include <nlohmann/json.hpp>
-#include <string>
-#include <vector>
 #include <cstdint>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace wallpaper
 {
@@ -17,11 +18,17 @@ public:
     int32_t     index;
 };
 
+struct WPUserTexture {
+    std::string name;
+    std::string type;
+};
+
 class WPMaterialPass {
 public:
     bool                                                FromJson(const nlohmann::json&);
     void                                                Update(const WPMaterialPass&);
     std::vector<std::string>                            textures;
+    std::vector<WPUserTexture>                          usertextures;
     std::unordered_map<std::string, int32_t>            combos;
     std::unordered_map<std::string, std::vector<float>> constantshadervalues;
     std::string                                         target;
@@ -38,6 +45,7 @@ public:
     std::string                                         depthtest { "disabled" };
     std::string                                         depthwrite { "disabled" };
     std::vector<std::string>                            textures;
+    std::vector<WPUserTexture>                          usertextures;
     std::unordered_map<std::string, int32_t>            combos;
     std::unordered_map<std::string, std::vector<float>> constantshadervalues;
 
@@ -45,6 +53,7 @@ public:
 };
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPMaterialPassBindItem, name, index);
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPUserTexture, name, type);
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPMaterialPass, bind, target, textures, combos,
                                    constantshadervalues);
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPMaterial, blending, shader, textures, combos,

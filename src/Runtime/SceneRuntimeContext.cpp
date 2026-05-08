@@ -9,6 +9,7 @@
 #include "Scene/SceneNode.h"
 #include "Scripting/ScriptEngine.hpp"
 #include "Utils/Logging.h"
+#include "WPSoundParser.hpp"
 
 #include <cmath>
 #include <filesystem>
@@ -18,27 +19,24 @@ namespace wallpaper
 
 namespace
 {
-std::string NormalizeTemplatePath(std::string_view value)
-{
+std::string NormalizeTemplatePath(std::string_view value) {
     if (value.empty()) return {};
     return std::filesystem::path(std::string(value)).generic_string();
 }
 
-std::string MakeWorkshopLocalAlias(std::string_view canonical_path)
-{
-    const std::string normalized = NormalizeTemplatePath(canonical_path);
-    constexpr std::string_view prefix = "models/workshop/";
-    if (!normalized.starts_with(prefix)) return {};
+std::string MakeWorkshopLocalAlias(std::string_view canonical_path) {
+    const std::string          normalized = NormalizeTemplatePath(canonical_path);
+    constexpr std::string_view prefix     = "models/workshop/";
+    if (! normalized.starts_with(prefix)) return {};
 
     const std::size_t workshop_begin = prefix.size();
-    const std::size_t slash = normalized.find('/', workshop_begin);
+    const std::size_t slash          = normalized.find('/', workshop_begin);
     if (slash == std::string::npos || slash + 1 >= normalized.size()) return {};
 
     return std::string("models/") + normalized.substr(slash + 1);
 }
 
-std::shared_ptr<SceneMesh> CloneMesh(SceneMesh& mesh)
-{
+std::shared_ptr<SceneMesh> CloneMesh(SceneMesh& mesh) {
     auto clone = std::make_shared<SceneMesh>(mesh.Dynamic());
     clone->SetPrimitive(mesh.Primitive());
     clone->SetPointSize(mesh.PointSize());
@@ -50,13 +48,9 @@ std::shared_ptr<SceneMesh> CloneMesh(SceneMesh& mesh)
     return clone;
 }
 
-std::shared_ptr<SceneNode> CloneNodeShallow(SceneNode& node, std::string name)
-{
+std::shared_ptr<SceneNode> CloneNodeShallow(SceneNode& node, std::string name) {
     auto clone = std::make_shared<SceneNode>(
-        node.Translate(),
-        node.Scale(),
-        node.Rotation(),
-        std::move(name));
+        node.Translate(), node.Scale(), node.Rotation(), std::move(name));
     clone->SetVisible(node.Visible());
     clone->SetSkipRenderPass(node.SkipRenderPass());
     clone->SetCamera(node.Camera());
@@ -71,21 +65,17 @@ std::shared_ptr<SceneNode> CloneNodeShallow(SceneNode& node, std::string name)
 }
 
 template<typename ListT>
-bool SortNodeInList(ListT& nodes, SceneNode* target, int index)
-{
+bool SortNodeInList(ListT& nodes, SceneNode* target, int index) {
     if (target == nullptr) return false;
 
-    auto current = std::find_if(
-        nodes.begin(),
-        nodes.end(),
-        [target](const auto& entry) {
-            return entry.get() == target;
-        });
+    auto current = std::find_if(nodes.begin(), nodes.end(), [target](const auto& entry) {
+        return entry.get() == target;
+    });
     if (current == nodes.end()) return false;
 
-    const int size = static_cast<int>(nodes.size());
-    int clamped_index = std::clamp(index, 0, std::max(0, size - 1));
-    auto destination = nodes.begin();
+    const int size          = static_cast<int>(nodes.size());
+    int       clamped_index = std::clamp(index, 0, std::max(0, size - 1));
+    auto      destination   = nodes.begin();
     std::advance(destination, clamped_index);
     if (destination == current) return false;
 
@@ -94,8 +84,7 @@ bool SortNodeInList(ListT& nodes, SceneNode* target, int index)
 }
 
 template<typename ListT>
-int NodeIndexInList(const ListT& nodes, const SceneNode* target)
-{
+int NodeIndexInList(const ListT& nodes, const SceneNode* target) {
     if (target == nullptr) return -1;
 
     int index = 0;
@@ -106,31 +95,25 @@ int NodeIndexInList(const ListT& nodes, const SceneNode* target)
     return -1;
 }
 
-double WrapSeconds(double seconds, double duration_seconds)
-{
-    if (!(duration_seconds > 0.0) || !std::isfinite(seconds)) return std::max(0.0, seconds);
+double WrapSeconds(double seconds, double duration_seconds) {
+    if (! (duration_seconds > 0.0) || ! std::isfinite(seconds)) return std::max(0.0, seconds);
     double wrapped = std::fmod(seconds, duration_seconds);
     if (wrapped < 0.0) wrapped += duration_seconds;
     if (wrapped >= duration_seconds) wrapped = 0.0;
     return wrapped;
 }
 
-std::unique_ptr<DynamicValue> MakePropertyValue(const RuntimeScalarValue& value)
-{
+std::unique_ptr<DynamicValue> MakePropertyValue(const RuntimeScalarValue& value) {
     switch (value.kind) {
-    case RuntimeScalarValue::Kind::Bool:
-        return std::make_unique<DynamicValue>(value.asBool());
-    case RuntimeScalarValue::Kind::Float:
-        return std::make_unique<DynamicValue>(value.asFloat());
-    case RuntimeScalarValue::Kind::String:
-        return std::make_unique<DynamicValue>(value.asString());
+    case RuntimeScalarValue::Kind::Bool: return std::make_unique<DynamicValue>(value.asBool());
+    case RuntimeScalarValue::Kind::Float: return std::make_unique<DynamicValue>(value.asFloat());
+    case RuntimeScalarValue::Kind::String: return std::make_unique<DynamicValue>(value.asString());
     }
 
     return std::make_unique<DynamicValue>();
 }
 
-void ApplyMaterialAlpha(SceneMaterial& material, float alpha)
-{
+void ApplyMaterialAlpha(SceneMaterial& material, float alpha) {
     auto& values = material.customShader.constValues;
 
     values["g_UserAlpha"] = ShaderValue(alpha);
@@ -149,8 +132,7 @@ void ApplyMaterialAlpha(SceneMaterial& material, float alpha)
     values["g_Color4"] = color;
 }
 
-void SyncEffectFinalNode(SceneNode& source, SceneImageEffectLayer& layer)
-{
+void SyncEffectFinalNode(SceneNode& source, SceneImageEffectLayer& layer) {
     source.UpdateTrans();
     const auto sync_node = [&source](SceneNode& target) {
         target.SetRenderTransformOverride(source.ModelTrans());
@@ -166,18 +148,16 @@ void SyncEffectFinalNode(SceneNode& source, SceneImageEffectLayer& layer)
 
 } // namespace
 
-SceneRuntimeContext::SceneRuntimeContext(SceneRuntimeBootstrap bootstrap) :
-    m_script_engine(std::make_unique<ScriptEngine>()),
-    m_host_context(std::make_unique<ScriptHostContext>()),
-    m_default_project_properties(bootstrap.project_properties),
-    m_project_properties(bootstrap.project_properties)
-{
-    m_host_context->canvas_size = Eigen::Vector2f(
-        static_cast<float>(bootstrap.canvas_width),
-        static_cast<float>(bootstrap.canvas_height));
+SceneRuntimeContext::SceneRuntimeContext(SceneRuntimeBootstrap bootstrap)
+    : m_script_engine(std::make_unique<ScriptEngine>()),
+      m_host_context(std::make_unique<ScriptHostContext>()),
+      m_default_project_properties(bootstrap.project_properties),
+      m_project_properties(bootstrap.project_properties) {
+    m_host_context->canvas_size = Eigen::Vector2f(static_cast<float>(bootstrap.canvas_width),
+                                                  static_cast<float>(bootstrap.canvas_height));
     m_host_context->cursor_world_position = Eigen::Vector3f::Zero();
-    m_host_context->frame_time = 0.0;
-    m_host_context->runtime_seconds = 0.0;
+    m_host_context->frame_time            = 0.0;
+    m_host_context->runtime_seconds       = 0.0;
 
     for (const auto& [name, value] : m_project_properties) {
         m_property_values.emplace(name, MakePropertyValue(value));
@@ -186,8 +166,7 @@ SceneRuntimeContext::SceneRuntimeContext(SceneRuntimeBootstrap bootstrap) :
 
 SceneRuntimeContext::~SceneRuntimeContext() = default;
 
-void SceneRuntimeContext::Tick(double frame_time)
-{
+void SceneRuntimeContext::Tick(double frame_time) {
     m_host_context->frame_time = frame_time;
     m_host_context->runtime_seconds += frame_time;
     for (auto& [texture_key, playback] : m_video_texture_playback) {
@@ -231,38 +210,28 @@ void SceneRuntimeContext::Tick(double frame_time)
     }
     for (auto& binding : m_material_alpha) {
         if (binding.material == nullptr) continue;
-        ApplyMaterialAlpha(
-            *binding.material,
-            binding.animation.Evaluate(m_host_context->runtime_seconds));
+        ApplyMaterialAlpha(*binding.material,
+                           binding.animation.Evaluate(m_host_context->runtime_seconds));
     }
     for (auto& script : m_scene_scripts) {
         if (script != nullptr) script->Tick(*m_host_context);
     }
 }
 
-ScriptEngine& SceneRuntimeContext::scriptEngine()
-{
-    return *m_script_engine;
-}
+ScriptEngine& SceneRuntimeContext::scriptEngine() { return *m_script_engine; }
 
-const ScriptHostContext& SceneRuntimeContext::hostContext() const
-{
-    return *m_host_context;
-}
+const ScriptHostContext& SceneRuntimeContext::hostContext() const { return *m_host_context; }
 
-const ProjectProperties& SceneRuntimeContext::defaultProjectProperties() const
-{
+const ProjectProperties& SceneRuntimeContext::defaultProjectProperties() const {
     return m_default_project_properties;
 }
 
-const ProjectProperties& SceneRuntimeContext::projectProperties() const
-{
+const ProjectProperties& SceneRuntimeContext::projectProperties() const {
     return m_project_properties;
 }
 
 void SceneRuntimeContext::ApplyProjectPropertyOverride(
-    const ProjectProperties& override_properties)
-{
+    const ProjectProperties& override_properties) {
     m_project_property_overrides = override_properties;
     m_project_properties =
         MergeProjectProperties(m_default_project_properties, m_project_property_overrides);
@@ -283,50 +252,37 @@ void SceneRuntimeContext::ApplyProjectPropertyOverride(
     }
 }
 
-void SceneRuntimeContext::ResetProjectPropertyOverride()
-{
-    ApplyProjectPropertyOverride({});
-}
+void SceneRuntimeContext::ResetProjectPropertyOverride() { ApplyProjectPropertyOverride({}); }
 
-void SceneRuntimeContext::AttachScene(Scene* scene)
-{
-    m_scene = scene;
-}
+void SceneRuntimeContext::AttachScene(Scene* scene) { m_scene = scene; }
 
-void SceneRuntimeContext::SetCursorWorldPosition(const Eigen::Vector3f& value)
-{
+void SceneRuntimeContext::SetCursorWorldPosition(const Eigen::Vector3f& value) {
     m_host_context->cursor_world_position = value;
 }
 
-DynamicValue* SceneRuntimeContext::FindPropertyValue(std::string_view name) const
-{
+DynamicValue* SceneRuntimeContext::FindPropertyValue(std::string_view name) const {
     const auto iterator = m_property_values.find(std::string(name));
     if (iterator == m_property_values.end()) return nullptr;
     return iterator->second.get();
 }
 
-void SceneRuntimeContext::RegisterScriptedValue(ScriptedDynamicValue* value)
-{
+void SceneRuntimeContext::RegisterScriptedValue(ScriptedDynamicValue* value) {
     m_scripted_values.push_back(value);
 }
 
-void SceneRuntimeContext::RegisterNode(std::string name, SceneNode* node)
-{
+void SceneRuntimeContext::RegisterNode(std::string name, SceneNode* node) {
     if (node == nullptr || name.empty()) return;
     m_nodes[std::move(name)] = node;
 }
 
-void SceneRuntimeContext::RegisterNodeSize(std::string name, Eigen::Vector2f value)
-{
+void SceneRuntimeContext::RegisterNodeSize(std::string name, Eigen::Vector2f value) {
     if (name.empty()) return;
     m_node_size[std::move(name)] = value;
 }
 
-void SceneRuntimeContext::RegisterLayerTemplate(
-    std::string template_path,
-    std::shared_ptr<SceneNode> node,
-    Eigen::Vector2f size)
-{
+void SceneRuntimeContext::RegisterLayerTemplate(std::string                template_path,
+                                                std::shared_ptr<SceneNode> node,
+                                                Eigen::Vector2f            size) {
     if (node == nullptr) return;
 
     const std::string canonical_path = NormalizeTemplatePath(template_path);
@@ -334,25 +290,22 @@ void SceneRuntimeContext::RegisterLayerTemplate(
 
     LayerTemplateBinding binding {
         .canonical_path = canonical_path,
-        .node = std::move(node),
-        .size = size,
+        .node           = std::move(node),
+        .size           = size,
     };
     m_layer_templates[canonical_path] = binding;
 
-    if (const auto alias = MakeWorkshopLocalAlias(canonical_path); !alias.empty()) {
+    if (const auto alias = MakeWorkshopLocalAlias(canonical_path); ! alias.empty()) {
         m_layer_templates[alias] = binding;
     }
 
-    if (!binding.node->Name().empty()) {
+    if (! binding.node->Name().empty()) {
         m_node_template_paths[binding.node->Name()] = canonical_path;
     }
 }
 
-void SceneRuntimeContext::RegisterNodeVisibility(
-    std::string name,
-    SceneNode* node,
-    std::unique_ptr<DynamicValue> value)
-{
+void SceneRuntimeContext::RegisterNodeVisibility(std::string name, SceneNode* node,
+                                                 std::unique_ptr<DynamicValue> value) {
     if (node == nullptr || value == nullptr) return;
 
     RegisterNode(name, node);
@@ -360,16 +313,13 @@ void SceneRuntimeContext::RegisterNodeVisibility(
     auto* raw = value.get();
     m_owned_values.push_back(std::move(value));
     m_node_visibility[std::move(name)] = NodeVisibilityBinding {
-        .node = node,
+        .node  = node,
         .value = raw,
     };
 }
 
-void SceneRuntimeContext::RegisterNodeTranslate(
-    std::string name,
-    SceneNode* node,
-    std::unique_ptr<DynamicValue> value)
-{
+void SceneRuntimeContext::RegisterNodeTranslate(std::string name, SceneNode* node,
+                                                std::unique_ptr<DynamicValue> value) {
     if (node == nullptr || value == nullptr) return;
 
     RegisterNode(name, node);
@@ -377,16 +327,13 @@ void SceneRuntimeContext::RegisterNodeTranslate(
     auto* raw = value.get();
     m_owned_values.push_back(std::move(value));
     m_node_translate[std::move(name)] = NodeVec3Binding {
-        .node = node,
+        .node  = node,
         .value = raw,
     };
 }
 
-void SceneRuntimeContext::RegisterNodeScale(
-    std::string name,
-    SceneNode* node,
-    std::unique_ptr<DynamicValue> value)
-{
+void SceneRuntimeContext::RegisterNodeScale(std::string name, SceneNode* node,
+                                            std::unique_ptr<DynamicValue> value) {
     if (node == nullptr || value == nullptr) return;
 
     RegisterNode(name, node);
@@ -394,16 +341,13 @@ void SceneRuntimeContext::RegisterNodeScale(
     auto* raw = value.get();
     m_owned_values.push_back(std::move(value));
     m_node_scale[std::move(name)] = NodeVec3Binding {
-        .node = node,
+        .node  = node,
         .value = raw,
     };
 }
 
-void SceneRuntimeContext::RegisterNodeRotation(
-    std::string name,
-    SceneNode* node,
-    std::unique_ptr<DynamicValue> value)
-{
+void SceneRuntimeContext::RegisterNodeRotation(std::string name, SceneNode* node,
+                                               std::unique_ptr<DynamicValue> value) {
     if (node == nullptr || value == nullptr) return;
 
     RegisterNode(name, node);
@@ -411,72 +355,122 @@ void SceneRuntimeContext::RegisterNodeRotation(
     auto* raw = value.get();
     m_owned_values.push_back(std::move(value));
     m_node_rotation[std::move(name)] = NodeVec3Binding {
-        .node = node,
+        .node  = node,
         .value = raw,
     };
 }
 
-void SceneRuntimeContext::RegisterNodeEffectFinal(
-    std::string name,
-    SceneNode* node,
-    SceneImageEffectLayer* layer)
-{
+void SceneRuntimeContext::RegisterNodeEffectFinal(std::string name, SceneNode* node,
+                                                  SceneImageEffectLayer* layer) {
     if (node == nullptr || layer == nullptr) return;
     RegisterNode(name, node);
     m_node_effect_final[std::move(name)] = NodeEffectFinalBinding {
-        .node = node,
+        .node  = node,
         .layer = layer,
     };
 }
 
-void SceneRuntimeContext::RegisterMaterialAlphaAnimation(
-    SceneMaterial* material,
-    ScalarAnimation animation)
-{
+void SceneRuntimeContext::RegisterMaterialAlphaAnimation(SceneMaterial*  material,
+                                                         ScalarAnimation animation) {
     if (material == nullptr) return;
     ApplyMaterialAlpha(*material, animation.Evaluate(m_host_context->runtime_seconds));
     m_material_alpha.push_back(MaterialAlphaBinding {
-        .material = material,
+        .material  = material,
         .animation = std::move(animation),
     });
 }
 
-void SceneRuntimeContext::RegisterSceneScript(std::string script_source, std::string layer_name)
-{
-    auto script = m_script_engine->CreateSceneScriptProgram(
-        *this,
-        std::move(script_source),
-        std::move(layer_name),
-        m_project_properties,
-        *m_host_context);
+void SceneRuntimeContext::RegisterSceneScript(std::string script_source, std::string layer_name) {
+    auto script = m_script_engine->CreateSceneScriptProgram(*this,
+                                                            std::move(script_source),
+                                                            std::move(layer_name),
+                                                            m_project_properties,
+                                                            *m_host_context);
     if (script != nullptr && script->Valid()) {
         m_scene_scripts.push_back(std::move(script));
     }
 }
 
-void SceneRuntimeContext::RegisterNodeVideoTexture(std::string name, std::string texture_key)
-{
+void SceneRuntimeContext::RegisterNodeVideoTexture(std::string name, std::string texture_key) {
     if (name.empty() || texture_key.empty()) return;
     m_node_video_textures[std::move(name)] = texture_key;
-    if (!m_video_texture_playback.contains(texture_key)) {
-        m_video_texture_playback.emplace(
-            std::move(texture_key),
-            VideoTexturePlaybackBinding {});
+    if (! m_video_texture_playback.contains(texture_key)) {
+        m_video_texture_playback.emplace(std::move(texture_key), VideoTexturePlaybackBinding {});
     }
 }
 
-std::size_t SceneRuntimeContext::sceneScriptCount() const
-{
+void SceneRuntimeContext::RegisterSoundLayer(std::string                    name,
+                                             std::shared_ptr<WPSoundStream> stream) {
+    if (name.empty() || stream == nullptr) return;
+    m_sound_layers[std::move(name)] = std::move(stream);
+}
+
+std::size_t SceneRuntimeContext::sceneScriptCount() const {
     return m_scripted_values.size() + m_scene_scripts.size();
 }
 
-bool SceneRuntimeContext::HasNodeNamed(std::string_view name) const
-{
+bool SceneRuntimeContext::HasNodeNamed(std::string_view name) const {
     return m_nodes.count(std::string(name)) != 0;
 }
 
-int SceneRuntimeContext::NodeSiblingIndex(std::string_view name) const
-{
+bool SceneRuntimeContext::HasSoundLayer(std::string_view name) const {
+    return LockSoundLayer(name) != nullptr;
+}
+
+bool SceneRuntimeContext::PlaySoundLayer(std::string_view name) {
+    auto stream = LockSoundLayer(name);
+    if (stream == nullptr) return false;
+    stream->Play();
+    DispatchMediaPlaybackChanged(name, true);
+    return true;
+}
+
+bool SceneRuntimeContext::PauseSoundLayer(std::string_view name) {
+    auto stream = LockSoundLayer(name);
+    if (stream == nullptr) return false;
+    stream->Pause();
+    DispatchMediaPlaybackChanged(name, false);
+    return true;
+}
+
+bool SceneRuntimeContext::StopSoundLayer(std::string_view name) {
+    auto stream = LockSoundLayer(name);
+    if (stream == nullptr) return false;
+    stream->Stop();
+    DispatchMediaPlaybackChanged(name, false);
+    return true;
+}
+
+bool SceneRuntimeContext::SoundLayerPlaying(std::string_view name) const {
+    auto stream = LockSoundLayer(name);
+    return stream != nullptr && stream->IsPlaying();
+}
+
+bool SceneRuntimeContext::SetSoundLayerVolume(std::string_view name, float volume) {
+    auto stream = LockSoundLayer(name);
+    if (stream == nullptr) return false;
+    stream->SetVolume(volume);
+    return true;
+}
+
+float SceneRuntimeContext::SoundLayerVolume(std::string_view name) const {
+    auto stream = LockSoundLayer(name);
+    return stream != nullptr ? stream->Volume() : 0.0f;
+}
+
+bool SceneRuntimeContext::SetSoundLayerMuted(std::string_view name, bool muted) {
+    auto stream = LockSoundLayer(name);
+    if (stream == nullptr) return false;
+    stream->SetMuted(muted);
+    return true;
+}
+
+bool SceneRuntimeContext::SoundLayerMuted(std::string_view name) const {
+    auto stream = LockSoundLayer(name);
+    return stream != nullptr && stream->Muted();
+}
+
+int SceneRuntimeContext::NodeSiblingIndex(std::string_view name) const {
     const auto iterator = m_nodes.find(std::string(name));
     if (iterator == m_nodes.end() || iterator->second == nullptr) return -1;
 
@@ -489,10 +483,8 @@ int SceneRuntimeContext::NodeSiblingIndex(std::string_view name) const
     return NodeIndexInList(m_scene->sceneGraph->GetChildren(), node);
 }
 
-std::string SceneRuntimeContext::CreateLayerFromTemplate(
-    std::string_view requested_template_path,
-    std::string_view current_layer_name)
-{
+std::string SceneRuntimeContext::CreateLayerFromTemplate(std::string_view requested_template_path,
+                                                         std::string_view current_layer_name) {
     if (m_scene == nullptr || m_scene->sceneGraph == nullptr) return {};
 
     const std::string requested_path = NormalizeTemplatePath(requested_template_path);
@@ -503,13 +495,13 @@ std::string SceneRuntimeContext::CreateLayerFromTemplate(
         if (const auto owner = m_node_template_paths.find(std::string(current_layer_name));
             owner != m_node_template_paths.end()) {
             if (const auto alias = MakeWorkshopLocalAlias(owner->second);
-                !alias.empty() && alias == requested_path) {
+                ! alias.empty() && alias == requested_path) {
                 template_iterator = m_layer_templates.find(owner->second);
             } else if (owner->second.starts_with("models/workshop/") &&
                        requested_path.starts_with("models/")) {
-                constexpr std::string_view prefix = "models/workshop/";
-                const std::size_t workshop_begin = prefix.size();
-                const std::size_t slash = owner->second.find('/', workshop_begin);
+                constexpr std::string_view prefix         = "models/workshop/";
+                const std::size_t          workshop_begin = prefix.size();
+                const std::size_t          slash          = owner->second.find('/', workshop_begin);
                 if (slash != std::string::npos) {
                     const std::string candidate =
                         owner->second.substr(0, slash + 1) +
@@ -521,16 +513,15 @@ std::string SceneRuntimeContext::CreateLayerFromTemplate(
     }
 
     if (template_iterator == m_layer_templates.end()) {
-        LOG_INFO(
-            "scene runtime createLayer template not found: current=\"%s\" template=\"%s\"",
-            std::string(current_layer_name).c_str(),
-            requested_path.c_str());
+        LOG_INFO("scene runtime createLayer template not found: current=\"%s\" template=\"%s\"",
+                 std::string(current_layer_name).c_str(),
+                 requested_path.c_str());
         return {};
     }
 
     const auto& binding = template_iterator->second;
     if (binding.node == nullptr) return {};
-    if (!binding.node->Camera().empty() || !binding.node->GetChildren().empty()) {
+    if (! binding.node->Camera().empty() || ! binding.node->GetChildren().empty()) {
         LOG_INFO(
             "scene runtime createLayer unsupported template shape: current=\"%s\" template=\"%s\"",
             std::string(current_layer_name).c_str(),
@@ -558,17 +549,16 @@ std::string SceneRuntimeContext::CreateLayerFromTemplate(
     RegisterNode(generated_name, generated.get());
     RegisterNodeSize(generated_name, binding.size);
     m_node_template_paths[generated_name] = binding.canonical_path;
-    m_scene_graph_mutated = true;
+    m_scene_graph_mutated                 = true;
     return generated_name;
 }
 
-bool SceneRuntimeContext::SortNode(std::string_view name, int index)
-{
+bool SceneRuntimeContext::SortNode(std::string_view name, int index) {
     const auto iterator = m_nodes.find(std::string(name));
     if (iterator == m_nodes.end() || iterator->second == nullptr) return false;
 
-    SceneNode* node = iterator->second;
-    bool sorted = false;
+    SceneNode* node   = iterator->second;
+    bool       sorted = false;
     if (node->Parent() != nullptr) {
         sorted = SortNodeInList(node->Parent()->GetChildren(), node, index);
     } else {
@@ -579,15 +569,13 @@ bool SceneRuntimeContext::SortNode(std::string_view name, int index)
     return sorted;
 }
 
-bool SceneRuntimeContext::NodeVisible(std::string_view name) const
-{
+bool SceneRuntimeContext::NodeVisible(std::string_view name) const {
     const auto iterator = m_nodes.find(std::string(name));
     if (iterator == m_nodes.end() || iterator->second == nullptr) return false;
     return iterator->second->Visible();
 }
 
-bool SceneRuntimeContext::SetNodeVisible(std::string_view name, bool visible)
-{
+bool SceneRuntimeContext::SetNodeVisible(std::string_view name, bool visible) {
     if (const auto binding = m_node_visibility.find(std::string(name));
         binding != m_node_visibility.end() && binding->second.value != nullptr) {
         binding->second.value->update(visible);
@@ -598,8 +586,7 @@ bool SceneRuntimeContext::SetNodeVisible(std::string_view name, bool visible)
     return true;
 }
 
-bool SceneRuntimeContext::SetNodeTranslate(std::string_view name, const Eigen::Vector3f& value)
-{
+bool SceneRuntimeContext::SetNodeTranslate(std::string_view name, const Eigen::Vector3f& value) {
     if (const auto binding = m_node_translate.find(std::string(name));
         binding != m_node_translate.end() && binding->second.value != nullptr) {
         binding->second.value->update(value);
@@ -610,8 +597,7 @@ bool SceneRuntimeContext::SetNodeTranslate(std::string_view name, const Eigen::V
     return true;
 }
 
-bool SceneRuntimeContext::SetNodeScale(std::string_view name, const Eigen::Vector3f& value)
-{
+bool SceneRuntimeContext::SetNodeScale(std::string_view name, const Eigen::Vector3f& value) {
     if (const auto binding = m_node_scale.find(std::string(name));
         binding != m_node_scale.end() && binding->second.value != nullptr) {
         binding->second.value->update(value);
@@ -622,8 +608,7 @@ bool SceneRuntimeContext::SetNodeScale(std::string_view name, const Eigen::Vecto
     return true;
 }
 
-bool SceneRuntimeContext::SetNodeRotation(std::string_view name, const Eigen::Vector3f& value)
-{
+bool SceneRuntimeContext::SetNodeRotation(std::string_view name, const Eigen::Vector3f& value) {
     if (const auto binding = m_node_rotation.find(std::string(name));
         binding != m_node_rotation.end() && binding->second.value != nullptr) {
         binding->second.value->update(value);
@@ -634,92 +619,80 @@ bool SceneRuntimeContext::SetNodeRotation(std::string_view name, const Eigen::Ve
     return true;
 }
 
-Eigen::Vector3f SceneRuntimeContext::NodeTranslate(std::string_view name) const
-{
+Eigen::Vector3f SceneRuntimeContext::NodeTranslate(std::string_view name) const {
     const auto iterator = m_nodes.find(std::string(name));
     if (iterator == m_nodes.end() || iterator->second == nullptr) return Eigen::Vector3f::Zero();
     return iterator->second->Translate();
 }
 
-Eigen::Vector3f SceneRuntimeContext::NodeScale(std::string_view name) const
-{
+Eigen::Vector3f SceneRuntimeContext::NodeScale(std::string_view name) const {
     const auto iterator = m_nodes.find(std::string(name));
     if (iterator == m_nodes.end() || iterator->second == nullptr) return Eigen::Vector3f::Zero();
     return iterator->second->Scale();
 }
 
-Eigen::Vector3f SceneRuntimeContext::NodeRotation(std::string_view name) const
-{
+Eigen::Vector3f SceneRuntimeContext::NodeRotation(std::string_view name) const {
     const auto iterator = m_nodes.find(std::string(name));
     if (iterator == m_nodes.end() || iterator->second == nullptr) return Eigen::Vector3f::Zero();
     return iterator->second->Rotation();
 }
 
-Eigen::Vector2f SceneRuntimeContext::NodeSize(std::string_view name) const
-{
+Eigen::Vector2f SceneRuntimeContext::NodeSize(std::string_view name) const {
     const auto iterator = m_node_size.find(std::string(name));
     if (iterator == m_node_size.end()) return Eigen::Vector2f::Zero();
     return iterator->second;
 }
 
-bool SceneRuntimeContext::NodeHasVideoTexture(std::string_view name) const
-{
+bool SceneRuntimeContext::NodeHasVideoTexture(std::string_view name) const {
     return m_node_video_textures.contains(std::string(name));
 }
 
-bool SceneRuntimeContext::PlayNodeVideoTexture(std::string_view name)
-{
+bool SceneRuntimeContext::PlayNodeVideoTexture(std::string_view name) {
     const auto iterator = m_node_video_textures.find(std::string(name));
     if (iterator == m_node_video_textures.end()) return false;
-    auto& playback = m_video_texture_playback[iterator->second];
+    auto& playback  = m_video_texture_playback[iterator->second];
     playback.paused = false;
     return true;
 }
 
-bool SceneRuntimeContext::PauseNodeVideoTexture(std::string_view name)
-{
+bool SceneRuntimeContext::PauseNodeVideoTexture(std::string_view name) {
     const auto iterator = m_node_video_textures.find(std::string(name));
     if (iterator == m_node_video_textures.end()) return false;
-    auto& playback = m_video_texture_playback[iterator->second];
+    auto& playback  = m_video_texture_playback[iterator->second];
     playback.paused = true;
     return true;
 }
 
-bool SceneRuntimeContext::SetNodeVideoTextureCurrentTime(std::string_view name, double seconds)
-{
+bool SceneRuntimeContext::SetNodeVideoTextureCurrentTime(std::string_view name, double seconds) {
     const auto iterator = m_node_video_textures.find(std::string(name));
     if (iterator == m_node_video_textures.end()) return false;
-    auto& playback = m_video_texture_playback[iterator->second];
-    playback.absolute_seconds =
-        playback.duration_seconds > 0.0
-        ? WrapSeconds(std::max(0.0, seconds), playback.duration_seconds)
-        : std::max(0.0, seconds);
+    auto& playback            = m_video_texture_playback[iterator->second];
+    playback.absolute_seconds = playback.duration_seconds > 0.0
+                                    ? WrapSeconds(std::max(0.0, seconds), playback.duration_seconds)
+                                    : std::max(0.0, seconds);
     return true;
 }
 
-double SceneRuntimeContext::NodeVideoTextureCurrentTime(std::string_view name) const
-{
+double SceneRuntimeContext::NodeVideoTextureCurrentTime(std::string_view name) const {
     const auto node_iterator = m_node_video_textures.find(std::string(name));
     if (node_iterator == m_node_video_textures.end()) return 0.0;
     const auto playback_iterator = m_video_texture_playback.find(node_iterator->second);
     if (playback_iterator == m_video_texture_playback.end()) return 0.0;
     const auto& playback = playback_iterator->second;
     return playback.duration_seconds > 0.0
-        ? WrapSeconds(playback.absolute_seconds, playback.duration_seconds)
-        : std::max(0.0, playback.absolute_seconds);
+               ? WrapSeconds(playback.absolute_seconds, playback.duration_seconds)
+               : std::max(0.0, playback.absolute_seconds);
 }
 
-bool SceneRuntimeContext::SetNodeVideoTextureRate(std::string_view name, float rate)
-{
+bool SceneRuntimeContext::SetNodeVideoTextureRate(std::string_view name, float rate) {
     const auto iterator = m_node_video_textures.find(std::string(name));
     if (iterator == m_node_video_textures.end()) return false;
     auto& playback = m_video_texture_playback[iterator->second];
-    playback.rate = std::max(0.0f, rate);
+    playback.rate  = std::max(0.0f, rate);
     return true;
 }
 
-float SceneRuntimeContext::NodeVideoTextureRate(std::string_view name) const
-{
+float SceneRuntimeContext::NodeVideoTextureRate(std::string_view name) const {
     const auto node_iterator = m_node_video_textures.find(std::string(name));
     if (node_iterator == m_node_video_textures.end()) return 1.0f;
     const auto playback_iterator = m_video_texture_playback.find(node_iterator->second);
@@ -727,8 +700,7 @@ float SceneRuntimeContext::NodeVideoTextureRate(std::string_view name) const
     return playback_iterator->second.rate;
 }
 
-double SceneRuntimeContext::NodeVideoTextureDuration(std::string_view name) const
-{
+double SceneRuntimeContext::NodeVideoTextureDuration(std::string_view name) const {
     const auto node_iterator = m_node_video_textures.find(std::string(name));
     if (node_iterator == m_node_video_textures.end()) return 0.0;
     const auto playback_iterator = m_video_texture_playback.find(node_iterator->second);
@@ -736,41 +708,48 @@ double SceneRuntimeContext::NodeVideoTextureDuration(std::string_view name) cons
     return playback_iterator->second.duration_seconds;
 }
 
-void SceneRuntimeContext::SetVideoTextureDuration(std::string_view texture_key, double seconds)
-{
-    if (texture_key.empty() || !std::isfinite(seconds) || seconds <= 0.0) return;
-    auto& playback = m_video_texture_playback[std::string(texture_key)];
+void SceneRuntimeContext::SetVideoTextureDuration(std::string_view texture_key, double seconds) {
+    if (texture_key.empty() || ! std::isfinite(seconds) || seconds <= 0.0) return;
+    auto& playback            = m_video_texture_playback[std::string(texture_key)];
     playback.duration_seconds = seconds;
     playback.absolute_seconds = WrapSeconds(playback.absolute_seconds, seconds);
 }
 
-video::VideoPlaybackState SceneRuntimeContext::ResolveVideoPlaybackState(
-    std::string_view texture_key,
-    double           fallback_scene_elapsed_seconds) const
-{
+video::VideoPlaybackState
+SceneRuntimeContext::ResolveVideoPlaybackState(std::string_view texture_key,
+                                               double fallback_scene_elapsed_seconds) const {
     video::VideoPlaybackState state {};
-    const auto iterator = m_video_texture_playback.find(std::string(texture_key));
+    const auto                iterator = m_video_texture_playback.find(std::string(texture_key));
     if (iterator == m_video_texture_playback.end()) {
         state.scene_elapsed_seconds = fallback_scene_elapsed_seconds;
         return state;
     }
 
-    const auto& playback = iterator->second;
-    state.paused = playback.paused;
-    state.rate = playback.rate;
+    const auto& playback        = iterator->second;
+    state.paused                = playback.paused;
+    state.rate                  = playback.rate;
     state.scene_elapsed_seconds = std::max(0.0, playback.absolute_seconds);
     return state;
+}
+
+std::shared_ptr<WPSoundStream> SceneRuntimeContext::LockSoundLayer(std::string_view name) const {
+    const auto iterator = m_sound_layers.find(std::string(name));
+    if (iterator == m_sound_layers.end()) return nullptr;
+    return iterator->second.lock();
+}
+
+void SceneRuntimeContext::DispatchMediaPlaybackChanged(std::string_view name, bool playing) {
+    (void)name;
+    (void)playing;
 }
 
 namespace
 {
 template<typename ScriptDispatch>
-void DispatchToScripts(
-    std::vector<wallpaper::ScriptedDynamicValue*>& scripted_values,
-    std::vector<std::unique_ptr<wallpaper::SceneScriptProgram>>& scene_scripts,
-    const wallpaper::ScriptHostContext& host_context,
-    ScriptDispatch&& dispatch)
-{
+void DispatchToScripts(std::vector<wallpaper::ScriptedDynamicValue*>&               scripted_values,
+                       std::vector<std::unique_ptr<wallpaper::SceneScriptProgram>>& scene_scripts,
+                       const wallpaper::ScriptHostContext&                          host_context,
+                       ScriptDispatch&&                                             dispatch) {
     for (auto* value : scripted_values) {
         if (value != nullptr) dispatch(*value, host_context);
     }
@@ -780,52 +759,50 @@ void DispatchToScripts(
 }
 } // namespace
 
-void SceneRuntimeContext::DispatchCursorClick()
-{
-    DispatchToScripts(m_scripted_values, m_scene_scripts, *m_host_context, [](auto& target, const auto& host) {
-        target.DispatchCursorClick(host);
-    });
+void SceneRuntimeContext::DispatchCursorClick() {
+    DispatchToScripts(
+        m_scripted_values, m_scene_scripts, *m_host_context, [](auto& target, const auto& host) {
+            target.DispatchCursorClick(host);
+        });
 }
 
-void SceneRuntimeContext::DispatchCursorDown()
-{
-    DispatchToScripts(m_scripted_values, m_scene_scripts, *m_host_context, [](auto& target, const auto& host) {
-        target.DispatchCursorDown(host);
-    });
+void SceneRuntimeContext::DispatchCursorDown() {
+    DispatchToScripts(
+        m_scripted_values, m_scene_scripts, *m_host_context, [](auto& target, const auto& host) {
+            target.DispatchCursorDown(host);
+        });
 }
 
-void SceneRuntimeContext::DispatchCursorEnter()
-{
-    DispatchToScripts(m_scripted_values, m_scene_scripts, *m_host_context, [](auto& target, const auto& host) {
-        target.DispatchCursorEnter(host);
-    });
+void SceneRuntimeContext::DispatchCursorEnter() {
+    DispatchToScripts(
+        m_scripted_values, m_scene_scripts, *m_host_context, [](auto& target, const auto& host) {
+            target.DispatchCursorEnter(host);
+        });
 }
 
-void SceneRuntimeContext::DispatchCursorLeave()
-{
-    DispatchToScripts(m_scripted_values, m_scene_scripts, *m_host_context, [](auto& target, const auto& host) {
-        target.DispatchCursorLeave(host);
-    });
+void SceneRuntimeContext::DispatchCursorLeave() {
+    DispatchToScripts(
+        m_scripted_values, m_scene_scripts, *m_host_context, [](auto& target, const auto& host) {
+            target.DispatchCursorLeave(host);
+        });
 }
 
-void SceneRuntimeContext::DispatchCursorMove()
-{
-    DispatchToScripts(m_scripted_values, m_scene_scripts, *m_host_context, [](auto& target, const auto& host) {
-        target.DispatchCursorMove(host);
-    });
+void SceneRuntimeContext::DispatchCursorMove() {
+    DispatchToScripts(
+        m_scripted_values, m_scene_scripts, *m_host_context, [](auto& target, const auto& host) {
+            target.DispatchCursorMove(host);
+        });
 }
 
-void SceneRuntimeContext::DispatchCursorUp()
-{
-    DispatchToScripts(m_scripted_values, m_scene_scripts, *m_host_context, [](auto& target, const auto& host) {
-        target.DispatchCursorUp(host);
-    });
+void SceneRuntimeContext::DispatchCursorUp() {
+    DispatchToScripts(
+        m_scripted_values, m_scene_scripts, *m_host_context, [](auto& target, const auto& host) {
+            target.DispatchCursorUp(host);
+        });
 }
 
-void SceneRuntimeContext::DispatchMediaThumbnailChanged(
-    const Eigen::Vector3f& primary_color,
-    const Eigen::Vector3f& text_color)
-{
+void SceneRuntimeContext::DispatchMediaThumbnailChanged(const Eigen::Vector3f& primary_color,
+                                                        const Eigen::Vector3f& text_color) {
     for (auto* value : m_scripted_values) {
         if (value != nullptr) value->DispatchMediaThumbnailChanged(primary_color, text_color);
     }
@@ -834,69 +811,68 @@ void SceneRuntimeContext::DispatchMediaThumbnailChanged(
     }
 }
 
-void SceneRuntimeContext::MarkSceneRequiresAudioResponse()
-{
+void SceneRuntimeContext::SetMediaIntegrationEnabled(bool enabled) {
+    m_media_integration_enabled = enabled;
+}
+
+bool SceneRuntimeContext::MediaIntegrationEnabled() const { return m_media_integration_enabled; }
+
+void SceneRuntimeContext::DispatchMediaEventJson(std::string_view event_json) {
+    if (! m_media_integration_enabled || event_json.empty()) return;
+
+    for (auto* value : m_scripted_values) {
+        if (value != nullptr) value->DispatchMediaEventJson(event_json);
+    }
+    for (auto& script : m_scene_scripts) {
+        if (script != nullptr) script->DispatchMediaEventJson(event_json);
+    }
+}
+
+void SceneRuntimeContext::MarkSceneRequiresAudioResponse() {
     m_scene_requires_audio_response = true;
 }
 
-bool SceneRuntimeContext::SceneRequiresAudioResponse() const
-{
+bool SceneRuntimeContext::SceneRequiresAudioResponse() const {
     return m_scene_requires_audio_response;
 }
 
-void SceneRuntimeContext::SetAudioResponseEnabled(bool enabled)
-{
+void SceneRuntimeContext::SetAudioResponseEnabled(bool enabled) {
     m_audio_response_enabled = enabled;
 }
 
-bool SceneRuntimeContext::AudioResponseEnabled() const
-{
-    return m_audio_response_enabled;
-}
+bool SceneRuntimeContext::AudioResponseEnabled() const { return m_audio_response_enabled; }
 
-bool SceneRuntimeContext::AudioResponseActive() const
-{
+bool SceneRuntimeContext::AudioResponseActive() const {
     return m_audio_response_enabled && m_scene_requires_audio_response;
 }
 
-bool SceneRuntimeContext::ConsumeSceneGraphMutationFlag()
-{
-    const bool mutated = m_scene_graph_mutated;
+bool SceneRuntimeContext::ConsumeSceneGraphMutationFlag() {
+    const bool mutated    = m_scene_graph_mutated;
     m_scene_graph_mutated = false;
     return mutated;
 }
 
-audio::AudioSpectrumSnapshot SceneRuntimeContext::CurrentAudioSpectrumSnapshot() const
-{
-    if (!AudioResponseActive()) {
+audio::AudioSpectrumSnapshot SceneRuntimeContext::CurrentAudioSpectrumSnapshot() const {
+    if (! AudioResponseActive()) {
         return {};
     }
     return audio::CurrentAudioSpectrumSnapshot();
 }
 
-void SceneRuntimeContext::RecordScriptError(std::string message)
-{
+void SceneRuntimeContext::RecordScriptError(std::string message) {
     if (message.empty()) return;
     m_script_errors.push_back(std::move(message));
 }
 
-std::size_t SceneRuntimeContext::scriptErrorCount() const
-{
-    return m_script_errors.size();
-}
+std::size_t SceneRuntimeContext::scriptErrorCount() const { return m_script_errors.size(); }
 
-const std::vector<std::string>& SceneRuntimeContext::scriptErrors() const
-{
+const std::vector<std::string>& SceneRuntimeContext::scriptErrors() const {
     return m_script_errors;
 }
 
-void SceneRuntimeContext::ClearScriptErrors()
-{
-    m_script_errors.clear();
-}
+void SceneRuntimeContext::ClearScriptErrors() { m_script_errors.clear(); }
 
-std::unique_ptr<SceneRuntimeContext> CreateSceneRuntimeContext(SceneRuntimeBootstrap bootstrap)
-{
+std::unique_ptr<SceneRuntimeContext> CreateSceneRuntimeContext(SceneRuntimeBootstrap bootstrap) {
     return std::make_unique<SceneRuntimeContext>(std::move(bootstrap));
 }
 
