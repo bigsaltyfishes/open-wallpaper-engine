@@ -268,6 +268,69 @@ extern "C" int owe_scene_wallpaper_set_property_string(
     return 0;
 }
 
+extern "C" int owe_scene_wallpaper_set_audio_volume(owe_scene_wallpaper* scene, float volume)
+{
+    clear_last_error();
+    if (!valid_scene(scene)) return finish_with_error("scene must not be null");
+    if (!std::isfinite(volume) || volume < 0.0f || volume > 1.0f) {
+        return finish_with_error("audio volume must be finite and between 0.0 and 1.0");
+    }
+
+    scene->scene.setPropertyFloat(wallpaper::PROPERTY_VOLUME, volume);
+    return 0;
+}
+
+extern "C" int owe_scene_wallpaper_set_audio_muted(owe_scene_wallpaper* scene, bool muted)
+{
+    clear_last_error();
+    if (!valid_scene(scene)) return finish_with_error("scene must not be null");
+
+    scene->scene.setPropertyBool(wallpaper::PROPERTY_MUTED, muted);
+    return 0;
+}
+
+extern "C" int owe_scene_wallpaper_submit_media_event_json(
+    owe_scene_wallpaper* scene,
+    const char* event_json)
+{
+    clear_last_error();
+    if (!valid_scene(scene)) return finish_with_error("scene must not be null");
+    if (event_json == nullptr || event_json[0] == '\0') {
+        return finish_with_error("media event json must not be empty");
+    }
+
+    scene->scene.setPropertyString(
+        wallpaper::PROPERTY_MEDIA_EVENT_JSON,
+        std::string(event_json));
+    return 0;
+}
+
+extern "C" int owe_scene_wallpaper_apply_system_media_artwork(
+    owe_scene_wallpaper* scene,
+    uint32_t width,
+    uint32_t height,
+    const uint8_t* rgba,
+    uintptr_t rgba_len)
+{
+    clear_last_error();
+    if (!valid_scene(scene)) return finish_with_error("scene must not be null");
+    if (width == 0 || height == 0) {
+        return finish_with_error("media artwork dimensions must be non-zero");
+    }
+    if (rgba == nullptr) return finish_with_error("media artwork rgba must not be null");
+    const std::size_t expected_len = static_cast<std::size_t>(width) * height * 4;
+    if (rgba_len != expected_len) {
+        return finish_with_error("media artwork rgba length must equal width * height * 4");
+    }
+
+    scene->scene.applySystemMediaArtwork(
+        width,
+        height,
+        rgba,
+        static_cast<std::size_t>(rgba_len));
+    return 0;
+}
+
 extern "C" const char* owe_property_scaling_mode(void)
 {
     return property_name(wallpaper::PROPERTY_SCALINGMODE);
@@ -281,6 +344,11 @@ extern "C" const char* owe_property_scaling_factor(void)
 extern "C" const char* owe_property_audio_response_enabled(void)
 {
     return property_name(wallpaper::PROPERTY_AUDIO_RESPONSE_ENABLED);
+}
+
+extern "C" const char* owe_property_media_integration_enabled(void)
+{
+    return property_name(wallpaper::PROPERTY_MEDIA_INTEGRATION_ENABLED);
 }
 
 extern "C" const char* owe_property_force_shader_refresh(void)

@@ -11,6 +11,7 @@
 
 #include "Utils/Logging.h"
 #include "Core/NoCopyMove.hpp"
+#include "Audio/SampleMath.h"
 
 #define MA_NO_WASAPI
 #define MA_NO_DSOUND
@@ -146,7 +147,7 @@ public:
     // bool IsStarted() const { return ma_device_is_started(&m_device); }
     // bool IsStopped() const { return ma_device_get_state(&m_device) == MA_STATE_STOPPED; }
     void Start() {
-        m_running = true;
+        m_running.store(true, std::memory_order_relaxed);
         /*
         if(!IsStopped()) return;
         LOG_INFO("state: %d", ma_device_get_state(&m_device));
@@ -157,7 +158,7 @@ public:
         */
     }
     void Stop() {
-        m_running = false;
+        m_running.store(false, std::memory_order_relaxed);
         /*
         if(!IsStarted()) return;
         LOG_INFO("state: %d", ma_device_get_state(&m_device));
@@ -165,11 +166,13 @@ public:
             LOG_ERROR("can't stop sound device");
         }*/
     }
-    float Volume() const { return m_volume; }
-    bool  Muted() const { return m_muted; }
-    void  SetMuted(bool v) { m_muted = v; }
+    float Volume() const { return m_volume.load(std::memory_order_relaxed); }
+    bool  Muted() const { return m_muted.load(std::memory_order_relaxed); }
+    void  SetMuted(bool v) { m_muted.store(v, std::memory_order_relaxed); }
 
-    void SetVolume(float v) { m_volume = v; };
+    void SetVolume(float v) {
+        m_volume.store(wallpaper::audio::ClampVolume(v), std::memory_order_relaxed);
+    }
     void MountChannel(std::shared_ptr<Channel> chn) {
         ChannelWrap chnw;
         chnw.chn = chn;
@@ -199,27 +202,35 @@ private:
     }
     void data_callback(void* pOutput, const void* pInput, ma_uint32 frameCount) {
         (void)pInput;
-        if (! m_running || m_muted) return;
-        const auto phyChannels    = m_device.playback.channels;
+        const auto phyChannels = m_device.playback.channels;
+        if (phyChannels == 0) return;
         const auto framesSize     = frameCount * phyChannels;
         const auto framesByteSize = framesSize * sizeof(float);
+        wallpaper::audio::ClearInterleavedF32(pOutput, framesSize);
+        if (! m_running.load(std::memory_order_relaxed) ||
+            m_muted.load(std::memory_order_relaxed)) {
+            return;
+        }
         {
             if (m_frameBuffer.size() < framesByteSize) m_frameBuffer.resize(framesByteSize);
-            // std::memset(pOutput, 0, framesByteSize);
         }
         {
             std::unique_lock<std::mutex> lock { m_mutex };
 
-            float* pOutput_float = static_cast<float*>(pOutput);
-            float* pBuffer_float = reinterpret_cast<float*>(m_frameBuffer.data());
+            float*      pOutput_float = static_cast<float*>(pOutput);
+            float*      pBuffer_float = reinterpret_cast<float*>(m_frameBuffer.data());
+            const float volume        = m_volume.load(std::memory_order_relaxed);
             for (ma_uint32 i = 0; i < m_channels.size(); i++) {
+                wallpaper::audio::ClearInterleavedF32(m_frameBuffer.data(), framesSize);
                 ma_uint64 framesReaded =
                     m_channels[i].chn->NextPcmData(m_frameBuffer.data(), frameCount);
                 if (framesReaded == 0) {
                     m_channels[i].end = true;
                 } else {
-                    for (size_t i = 0; i < framesSize; i++)
-                        pOutput_float[i] += m_volume * pBuffer_float[i];
+                    const auto framesToMix = static_cast<std::size_t>(
+                        std::min<ma_uint64>(framesReaded, frameCount) * phyChannels);
+                    wallpaper::audio::MixInterleavedF32(
+                        pOutput_float, pBuffer_float, framesToMix, volume);
                 }
             }
             m_channels.erase(std::remove_if(m_channels.begin(),
@@ -249,8 +260,8 @@ private:
     std::mutex        m_mutex;     // for operating channel vector
     std::atomic<bool> m_running { false };
 
-    float m_volume { 1.0f };
-    bool  m_muted { false };
+    std::atomic<float> m_volume { 1.0f };
+    std::atomic<bool>  m_muted { false };
 
     std::vector<ChannelWrap> m_channels;
     std::vector<uint8_t>     m_frameBuffer;

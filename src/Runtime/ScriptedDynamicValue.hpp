@@ -4,6 +4,7 @@
 
 #include <map>
 #include <string>
+#include <string_view>
 
 namespace wallpaper
 {
@@ -18,16 +19,13 @@ enum class ScriptedValueSemantic
     AnglesDegrees,
 };
 
-class ScriptedDynamicValue final : public DynamicValue
-{
+class ScriptedDynamicValue final : public DynamicValue {
 public:
-    ScriptedDynamicValue(
-        SceneRuntimeContext&                        runtime,
-        std::string                                 script_source,
-        std::string                                 current_layer_name,
-        std::map<std::string, DynamicValueUniquePtr> script_properties,
-        DynamicValue                                base_value,
-        ScriptedValueSemantic                       semantic = ScriptedValueSemantic::Generic);
+    ScriptedDynamicValue(SceneRuntimeContext& runtime, std::string script_source,
+                         std::string                                  current_layer_name,
+                         std::map<std::string, DynamicValueUniquePtr> script_properties,
+                         DynamicValue                                 base_value,
+                         ScriptedValueSemantic semantic = ScriptedValueSemantic::Generic);
     ~ScriptedDynamicValue() override;
 
     void reevaluate();
@@ -37,16 +35,16 @@ public:
     void DispatchCursorLeave(const ScriptHostContext& host_context);
     void DispatchCursorMove(const ScriptHostContext& host_context);
     void DispatchCursorUp(const ScriptHostContext& host_context);
-    void DispatchMediaThumbnailChanged(
-        const Eigen::Vector3f& primary_color,
-        const Eigen::Vector3f& text_color);
+    void DispatchMediaThumbnailChanged(const Eigen::Vector3f& primary_color,
+                                       const Eigen::Vector3f& text_color);
+    void DispatchMediaEventJson(std::string_view event_json);
 
 private:
-    SceneRuntimeContext*                           m_runtime = nullptr;
-    std::map<std::string, DynamicValueUniquePtr>   m_script_properties;
-    std::unique_ptr<PropertyScriptProgram>         m_program;
-    DynamicValue                                   m_base_value;
-    ScriptedValueSemantic                          m_semantic { ScriptedValueSemantic::Generic };
+    SceneRuntimeContext*                         m_runtime = nullptr;
+    std::map<std::string, DynamicValueUniquePtr> m_script_properties;
+    std::unique_ptr<PropertyScriptProgram>       m_program;
+    DynamicValue                                 m_base_value;
+    ScriptedValueSemantic                        m_semantic { ScriptedValueSemantic::Generic };
 };
 
 } // namespace wallpaper

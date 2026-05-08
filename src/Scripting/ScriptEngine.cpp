@@ -26,18 +26,11 @@ namespace
 {
 constexpr float kPi = 3.14159265358979323846f;
 
-Eigen::Vector3f DegreesToRadians(const Eigen::Vector3f& value)
-{
-    return value * (kPi / 180.0f);
-}
+Eigen::Vector3f DegreesToRadians(const Eigen::Vector3f& value) { return value * (kPi / 180.0f); }
 
-Eigen::Vector3f RadiansToDegrees(const Eigen::Vector3f& value)
-{
-    return value * (180.0f / kPi);
-}
+Eigen::Vector3f RadiansToDegrees(const Eigen::Vector3f& value) { return value * (180.0f / kPi); }
 
-struct SceneScriptBridgeState
-{
+struct SceneScriptBridgeState {
     SceneRuntimeContext* runtime = nullptr;
 };
 
@@ -47,44 +40,38 @@ enum class ScriptProgramMode
     Scene,
 };
 
-struct ScriptFrontEndResult
-{
+struct ScriptFrontEndResult {
     std::string              transformed_body;
     std::vector<std::string> imported_globals;
 };
 
-struct SerializedScriptTemplate
-{
+struct SerializedScriptTemplate {
     std::string          factory_source;
     std::vector<uint8_t> bytecode;
 };
 
-struct ContextScriptCacheState
-{
-    bool                                 shared_bindings_installed { false };
-    bool                                 shared_bootstrap_installed { false };
-    ScriptHostContext                    last_host_context {};
-    bool                                 has_last_host_context { false };
-    uint64_t                             last_audio_generation { 0 };
-    bool                                 has_last_audio_generation { false };
+struct ContextScriptCacheState {
+    bool                                     shared_bindings_installed { false };
+    bool                                     shared_bootstrap_installed { false };
+    ScriptHostContext                        last_host_context {};
+    bool                                     has_last_host_context { false };
+    uint64_t                                 last_audio_generation { 0 };
+    bool                                     has_last_audio_generation { false };
     std::unordered_map<std::string, JSValue> factories;
 };
 
 constexpr uint32_t kScriptPipelineRevision = 1;
 
-ScriptStartupMetrics g_script_startup_metrics;
+ScriptStartupMetrics                                      g_script_startup_metrics;
 std::unordered_map<std::string, SerializedScriptTemplate> g_serialized_script_templates;
-std::unordered_map<JSContext*, ContextScriptCacheState> g_context_script_caches;
+std::unordered_map<JSContext*, ContextScriptCacheState>   g_context_script_caches;
 
-double MeasureElapsedMs(const std::chrono::steady_clock::time_point started)
-{
-    return std::chrono::duration<double, std::milli>(
-               std::chrono::steady_clock::now() - started)
+double MeasureElapsedMs(const std::chrono::steady_clock::time_point started) {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started)
         .count();
 }
 
-std::string MakeScriptCacheKey(std::string_view source, ScriptProgramMode mode)
-{
+std::string MakeScriptCacheKey(std::string_view source, ScriptProgramMode mode) {
     std::string key_material;
     key_material.reserve(source.size() + 32);
     key_material += "rev:";
@@ -96,13 +83,11 @@ std::string MakeScriptCacheKey(std::string_view source, ScriptProgramMode mode)
     return utils::genSha1(key_material);
 }
 
-ContextScriptCacheState& GetContextScriptCache(JSContext* context)
-{
+ContextScriptCacheState& GetContextScriptCache(JSContext* context) {
     return g_context_script_caches[context];
 }
 
-void ReleaseContextScriptCache(JSContext* context)
-{
+void ReleaseContextScriptCache(JSContext* context) {
     const auto iterator = g_context_script_caches.find(context);
     if (iterator == g_context_script_caches.end()) return;
 
@@ -206,35 +191,27 @@ constexpr char kVectorBootstrap[] = R"JS(
 })();
 )JS";
 
-bool InstallScriptPrimitives(JSContext* context);
-JSValue CreateJsVectorObject(JSContext* context, const char* constructor_name, int argc, const double* values);
-JSValue CreateJsVec2(JSContext* context, double x, double y);
-JSValue CreateJsVec3(JSContext* context, double x, double y, double z);
-JSValue CreateJsVec4(JSContext* context, double x, double y, double z, double w);
+bool        InstallScriptPrimitives(JSContext* context);
+JSValue     CreateJsVectorObject(JSContext* context, const char* constructor_name, int argc,
+                                 const double* values);
+JSValue     CreateJsVec2(JSContext* context, double x, double y);
+JSValue     CreateJsVec3(JSContext* context, double x, double y, double z);
+JSValue     CreateJsVec4(JSContext* context, double x, double y, double z, double w);
 std::string QuoteJsString(const std::string& value);
-JSValue BuildScriptPropertiesObject(
-    JSContext* context,
-    const std::map<std::string, DynamicValue*>& script_properties);
-void UpdateScriptPropertiesObject(
-    JSContext* context,
-    JSValue    target,
-    const std::map<std::string, DynamicValue*>& script_properties);
-JSValue CallStoredExport(
-    JSContext*    context,
-    const char*   exports_object_name,
-    const char*   export_name,
-    int           argc,
-    JSValueConst* argv);
-void LogJsException(JSContext* context, const char* scope);
+JSValue     BuildScriptPropertiesObject(JSContext*                                  context,
+                                        const std::map<std::string, DynamicValue*>& script_properties);
+void        UpdateScriptPropertiesObject(JSContext* context, JSValue target,
+                                         const std::map<std::string, DynamicValue*>& script_properties);
+JSValue     CallStoredExport(JSContext* context, const char* exports_object_name,
+                             const char* export_name, int argc, JSValueConst* argv);
+void        LogJsException(JSContext* context, const char* scope);
 
-bool InstallScriptPrimitives(JSContext* context)
-{
-    JSValue result = JS_Eval(
-        context,
-        kVectorBootstrap,
-        sizeof(kVectorBootstrap) - 1,
-        "<script-primitives>",
-        JS_EVAL_TYPE_GLOBAL);
+bool InstallScriptPrimitives(JSContext* context) {
+    JSValue result = JS_Eval(context,
+                             kVectorBootstrap,
+                             sizeof(kVectorBootstrap) - 1,
+                             "<script-primitives>",
+                             JS_EVAL_TYPE_GLOBAL);
     if (JS_IsException(result)) {
         LogJsException(context, "InstallScriptPrimitives");
         JS_FreeValue(context, result);
@@ -245,12 +222,8 @@ bool InstallScriptPrimitives(JSContext* context)
     return true;
 }
 
-JSValue CreateJsVectorObject(
-    JSContext*   context,
-    const char*  constructor_name,
-    int          argc,
-    const double* values)
-{
+JSValue CreateJsVectorObject(JSContext* context, const char* constructor_name, int argc,
+                             const double* values) {
     JSValue global_object = JS_GetGlobalObject(context);
     JSValue constructor   = JS_GetPropertyStr(context, global_object, constructor_name);
     JS_FreeValue(context, global_object);
@@ -264,7 +237,7 @@ JSValue CreateJsVectorObject(
         return object;
     };
 
-    if (!JS_IsFunction(context, constructor)) {
+    if (! JS_IsFunction(context, constructor)) {
         JS_FreeValue(context, constructor);
         return make_plain_object();
     }
@@ -289,26 +262,22 @@ JSValue CreateJsVectorObject(
     return instance;
 }
 
-JSValue CreateJsVec2(JSContext* context, double x, double y)
-{
+JSValue CreateJsVec2(JSContext* context, double x, double y) {
     const double values[] = { x, y };
     return CreateJsVectorObject(context, "Vec2", 2, values);
 }
 
-JSValue CreateJsVec3(JSContext* context, double x, double y, double z)
-{
+JSValue CreateJsVec3(JSContext* context, double x, double y, double z) {
     const double values[] = { x, y, z };
     return CreateJsVectorObject(context, "Vec3", 3, values);
 }
 
-JSValue CreateJsVec4(JSContext* context, double x, double y, double z, double w)
-{
+JSValue CreateJsVec4(JSContext* context, double x, double y, double z, double w) {
     const double values[] = { x, y, z, w };
     return CreateJsVectorObject(context, "Vec4", 4, values);
 }
 
-JSValue DynamicValueToJS(JSContext* context, const DynamicValue& value)
-{
+JSValue DynamicValueToJS(JSContext* context, const DynamicValue& value) {
     switch (value.getType()) {
     case DynamicValue::Float: return JS_NewFloat64(context, value.getFloat());
     case DynamicValue::Int: return JS_NewInt32(context, value.getInt());
@@ -318,30 +287,29 @@ JSValue DynamicValueToJS(JSContext* context, const DynamicValue& value)
     case DynamicValue::Vec3:
         return CreateJsVec3(context, value.getVec3().x(), value.getVec3().y(), value.getVec3().z());
     case DynamicValue::Vec4:
-        return CreateJsVec4(
-            context,
-            value.getVec4().x(),
-            value.getVec4().y(),
-            value.getVec4().z(),
-            value.getVec4().w());
-    case DynamicValue::IVec2: return CreateJsVec2(context, value.getIVec2().x(), value.getIVec2().y());
+        return CreateJsVec4(context,
+                            value.getVec4().x(),
+                            value.getVec4().y(),
+                            value.getVec4().z(),
+                            value.getVec4().w());
+    case DynamicValue::IVec2:
+        return CreateJsVec2(context, value.getIVec2().x(), value.getIVec2().y());
     case DynamicValue::IVec3:
-        return CreateJsVec3(context, value.getIVec3().x(), value.getIVec3().y(), value.getIVec3().z());
+        return CreateJsVec3(
+            context, value.getIVec3().x(), value.getIVec3().y(), value.getIVec3().z());
     case DynamicValue::IVec4:
-        return CreateJsVec4(
-            context,
-            value.getIVec4().x(),
-            value.getIVec4().y(),
-            value.getIVec4().z(),
-            value.getIVec4().w());
+        return CreateJsVec4(context,
+                            value.getIVec4().x(),
+                            value.getIVec4().y(),
+                            value.getIVec4().z(),
+                            value.getIVec4().w());
     case DynamicValue::Null: return JS_NULL;
     }
 
     return JS_UNDEFINED;
 }
 
-JSValue RuntimeScalarValueToJS(JSContext* context, const RuntimeScalarValue& value)
-{
+JSValue RuntimeScalarValueToJS(JSContext* context, const RuntimeScalarValue& value) {
     switch (value.kind) {
     case RuntimeScalarValue::Kind::Bool: return JS_NewBool(context, value.asBool());
     case RuntimeScalarValue::Kind::Float: return JS_NewFloat64(context, value.asFloat());
@@ -351,11 +319,8 @@ JSValue RuntimeScalarValueToJS(JSContext* context, const RuntimeScalarValue& val
     return JS_UNDEFINED;
 }
 
-DynamicValueUniquePtr JsToDynamicValue(
-    JSContext*                    context,
-    JSValue                       value,
-    DynamicValue::UnderlyingType hint)
-{
+DynamicValueUniquePtr JsToDynamicValue(JSContext* context, JSValue value,
+                                       DynamicValue::UnderlyingType hint) {
     auto result = std::make_unique<DynamicValue>();
 
     if (JS_IsException(value)) return result;
@@ -393,7 +358,7 @@ DynamicValueUniquePtr JsToDynamicValue(
         const auto read_float = [&](const char* property_name) {
             JSValue property = JS_GetPropertyStr(context, value, property_name);
             double  scalar   = 0.0;
-            if (!JS_IsException(property) && !JS_IsUndefined(property)) {
+            if (! JS_IsException(property) && ! JS_IsUndefined(property)) {
                 JS_ToFloat64(context, &scalar, property);
             }
             JS_FreeValue(context, property);
@@ -403,7 +368,7 @@ DynamicValueUniquePtr JsToDynamicValue(
         const auto read_int = [&](const char* property_name) {
             JSValue property = JS_GetPropertyStr(context, value, property_name);
             int32_t scalar   = 0;
-            if (!JS_IsException(property) && !JS_IsUndefined(property)) {
+            if (! JS_IsException(property) && ! JS_IsUndefined(property)) {
                 JS_ToInt32(context, &scalar, property);
             }
             JS_FreeValue(context, property);
@@ -419,10 +384,7 @@ DynamicValueUniquePtr JsToDynamicValue(
             break;
         case DynamicValue::Vec4:
             result->update(Eigen::Vector4f(
-                read_float("x"),
-                read_float("y"),
-                read_float("z"),
-                read_float("w")));
+                read_float("x"), read_float("y"), read_float("z"), read_float("w")));
             break;
         case DynamicValue::IVec2:
             result->update(Eigen::Vector2i(read_int("x"), read_int("y")));
@@ -431,11 +393,8 @@ DynamicValueUniquePtr JsToDynamicValue(
             result->update(Eigen::Vector3i(read_int("x"), read_int("y"), read_int("z")));
             break;
         case DynamicValue::IVec4:
-            result->update(Eigen::Vector4i(
-                read_int("x"),
-                read_int("y"),
-                read_int("z"),
-                read_int("w")));
+            result->update(
+                Eigen::Vector4i(read_int("x"), read_int("y"), read_int("z"), read_int("w")));
             break;
         default:
             result->update(Eigen::Vector3f(read_float("x"), read_float("y"), read_float("z")));
@@ -451,13 +410,12 @@ DynamicValueUniquePtr JsToDynamicValue(
     return result;
 }
 
-void LogJsException(JSContext* context, const char* scope)
-{
+void LogJsException(JSContext* context, const char* scope) {
     JSValue exception = JS_GetException(context);
-    if (!JS_IsNull(exception) && !JS_IsUndefined(exception)) {
-        const char* message = JS_ToCString(context, exception);
-        JSValue      stack_value = JS_GetPropertyStr(context, exception, "stack");
-        const char*  stack = JS_IsString(stack_value) ? JS_ToCString(context, stack_value) : nullptr;
+    if (! JS_IsNull(exception) && ! JS_IsUndefined(exception)) {
+        const char* message     = JS_ToCString(context, exception);
+        JSValue     stack_value = JS_GetPropertyStr(context, exception, "stack");
+        const char* stack = JS_IsString(stack_value) ? JS_ToCString(context, stack_value) : nullptr;
         if (message != nullptr) {
             LOG_ERROR("ScriptEngine[%s]: %s", scope, message);
             if (stack != nullptr && std::strcmp(stack, message) != 0) {
@@ -465,8 +423,8 @@ void LogJsException(JSContext* context, const char* scope)
             }
             auto* bridge_state = static_cast<SceneScriptBridgeState*>(JS_GetContextOpaque(context));
             if (bridge_state != nullptr && bridge_state->runtime != nullptr) {
-                bridge_state->runtime->RecordScriptError(
-                    std::string(scope) + ": " + std::string(message));
+                bridge_state->runtime->RecordScriptError(std::string(scope) + ": " +
+                                                         std::string(message));
             }
             JS_FreeCString(context, message);
         }
@@ -476,65 +434,55 @@ void LogJsException(JSContext* context, const char* scope)
     JS_FreeValue(context, exception);
 }
 
-std::string TrimCopy(std::string_view value)
-{
+std::string TrimCopy(std::string_view value) {
     std::size_t begin = 0;
-    while (begin < value.size() &&
-           std::isspace(static_cast<unsigned char>(value[begin])) != 0) {
+    while (begin < value.size() && std::isspace(static_cast<unsigned char>(value[begin])) != 0) {
         begin++;
     }
 
     std::size_t end = value.size();
-    while (end > begin &&
-           std::isspace(static_cast<unsigned char>(value[end - 1])) != 0) {
+    while (end > begin && std::isspace(static_cast<unsigned char>(value[end - 1])) != 0) {
         end--;
     }
 
     return std::string(value.substr(begin, end - begin));
 }
 
-bool StartsWith(std::string_view value, std::string_view prefix)
-{
+bool StartsWith(std::string_view value, std::string_view prefix) {
     return value.size() >= prefix.size() &&
            std::memcmp(value.data(), prefix.data(), prefix.size()) == 0;
 }
 
-bool TryParseImportNamespace(
-    std::string_view line,
-    std::string*     alias_name,
-    std::string*     global_name)
-{
-    if (!StartsWith(line, "import")) return false;
+bool TryParseImportNamespace(std::string_view line, std::string* alias_name,
+                             std::string* global_name) {
+    if (! StartsWith(line, "import")) return false;
 
     std::size_t cursor = std::strlen("import");
-    while (cursor < line.size() &&
-           std::isspace(static_cast<unsigned char>(line[cursor])) != 0) {
+    while (cursor < line.size() && std::isspace(static_cast<unsigned char>(line[cursor])) != 0) {
         cursor++;
     }
     if (cursor >= line.size() || line[cursor] != '*') return false;
     cursor++;
-    while (cursor < line.size() &&
-           std::isspace(static_cast<unsigned char>(line[cursor])) != 0) {
+    while (cursor < line.size() && std::isspace(static_cast<unsigned char>(line[cursor])) != 0) {
         cursor++;
     }
-    if (!StartsWith(line.substr(cursor), "as")) return false;
+    if (! StartsWith(line.substr(cursor), "as")) return false;
     cursor += 2;
-    while (cursor < line.size() &&
-           std::isspace(static_cast<unsigned char>(line[cursor])) != 0) {
+    while (cursor < line.size() && std::isspace(static_cast<unsigned char>(line[cursor])) != 0) {
         cursor++;
     }
 
-    std::size_t from_pos = line.find(" from ", cursor);
+    std::size_t from_pos            = line.find(" from ", cursor);
     std::size_t from_keyword_offset = std::strlen(" from ");
     if (from_pos == std::string_view::npos) {
-        from_pos = line.find("from", cursor);
+        from_pos            = line.find("from", cursor);
         from_keyword_offset = std::strlen("from");
     }
     if (from_pos == std::string_view::npos) return false;
 
-    *alias_name = TrimCopy(line.substr(cursor, from_pos - cursor));
+    *alias_name           = TrimCopy(line.substr(cursor, from_pos - cursor));
     std::string specifier = TrimCopy(line.substr(from_pos + from_keyword_offset));
-    if (!specifier.empty() && specifier.back() == ';') specifier.pop_back();
+    if (! specifier.empty() && specifier.back() == ';') specifier.pop_back();
     specifier = TrimCopy(specifier);
     if (specifier.size() < 2) return false;
     if ((specifier.front() != '\'' && specifier.front() != '"') ||
@@ -543,27 +491,24 @@ bool TryParseImportNamespace(
     }
 
     *global_name = specifier.substr(1, specifier.size() - 2);
-    return !alias_name->empty() && !global_name->empty();
+    return ! alias_name->empty() && ! global_name->empty();
 }
 
-bool TryParseImportNamed(
-    std::string_view line,
-    std::string*     members,
-    std::string*     global_name)
-{
-    if (!StartsWith(line, "import {")) return false;
-    const std::size_t close_brace = line.find('}');
-    std::size_t from_pos = line.find(" from ", close_brace);
-    std::size_t from_keyword_offset = std::strlen(" from ");
+bool TryParseImportNamed(std::string_view line, std::string* members, std::string* global_name) {
+    if (! StartsWith(line, "import {")) return false;
+    const std::size_t close_brace         = line.find('}');
+    std::size_t       from_pos            = line.find(" from ", close_brace);
+    std::size_t       from_keyword_offset = std::strlen(" from ");
     if (from_pos == std::string_view::npos) {
-        from_pos = line.find("from", close_brace);
+        from_pos            = line.find("from", close_brace);
         from_keyword_offset = std::strlen("from");
     }
     if (close_brace == std::string_view::npos || from_pos == std::string_view::npos) return false;
 
-    *members = TrimCopy(line.substr(std::strlen("import {"), close_brace - std::strlen("import {")));
+    *members =
+        TrimCopy(line.substr(std::strlen("import {"), close_brace - std::strlen("import {")));
     std::string specifier = TrimCopy(line.substr(from_pos + from_keyword_offset));
-    if (!specifier.empty() && specifier.back() == ';') specifier.pop_back();
+    if (! specifier.empty() && specifier.back() == ';') specifier.pop_back();
     specifier = TrimCopy(specifier);
     if (specifier.size() < 2) return false;
     if ((specifier.front() != '\'' && specifier.front() != '"') ||
@@ -572,31 +517,25 @@ bool TryParseImportNamed(
     }
 
     *global_name = specifier.substr(1, specifier.size() - 2);
-    return !members->empty() && !global_name->empty();
+    return ! members->empty() && ! global_name->empty();
 }
 
-bool IsSideEffectImport(std::string_view line)
-{
-    if (!StartsWith(line, "import ")) return false;
+bool IsSideEffectImport(std::string_view line) {
+    if (! StartsWith(line, "import ")) return false;
     return line.find(" from ") == std::string_view::npos;
 }
 
-bool IsIdentifierPart(char character)
-{
-    return std::isalnum(static_cast<unsigned char>(character)) != 0 ||
-           character == '_' ||
+bool IsIdentifierPart(char character) {
+    return std::isalnum(static_cast<unsigned char>(character)) != 0 || character == '_' ||
            character == '$';
 }
 
-bool IsIdentifierStart(char character)
-{
-    return std::isalpha(static_cast<unsigned char>(character)) != 0 ||
-           character == '_' ||
+bool IsIdentifierStart(char character) {
+    return std::isalpha(static_cast<unsigned char>(character)) != 0 || character == '_' ||
            character == '$';
 }
 
-std::size_t SkipJsWhitespaceAndComments(std::string_view source, std::size_t position)
-{
+std::size_t SkipJsWhitespaceAndComments(std::string_view source, std::size_t position) {
     while (position < source.size()) {
         const char character = source[position];
         if (std::isspace(static_cast<unsigned char>(character)) != 0) {
@@ -613,7 +552,7 @@ std::size_t SkipJsWhitespaceAndComments(std::string_view source, std::size_t pos
             if (source[position + 1] == '*') {
                 position += 2;
                 while (position + 1 < source.size() &&
-                       !(source[position] == '*' && source[position + 1] == '/')) {
+                       ! (source[position] == '*' && source[position + 1] == '/')) {
                     ++position;
                 }
                 if (position + 1 < source.size()) position += 2;
@@ -627,8 +566,7 @@ std::size_t SkipJsWhitespaceAndComments(std::string_view source, std::size_t pos
     return position;
 }
 
-std::size_t SkipJsStringLiteral(std::string_view source, std::size_t position)
-{
+std::size_t SkipJsStringLiteral(std::string_view source, std::size_t position) {
     if (position >= source.size()) return position;
     const char quote = source[position];
     if (quote != '\'' && quote != '"' && quote != '`') return position;
@@ -645,8 +583,7 @@ std::size_t SkipJsStringLiteral(std::string_view source, std::size_t position)
     return position;
 }
 
-bool ConsumeJsKeyword(std::string_view source, std::size_t* position, std::string_view keyword)
-{
+bool ConsumeJsKeyword(std::string_view source, std::size_t* position, std::string_view keyword) {
     std::size_t current = SkipJsWhitespaceAndComments(source, *position);
     if (current + keyword.size() > source.size()) return false;
     if (source.compare(current, keyword.size(), keyword) != 0) return false;
@@ -656,42 +593,40 @@ bool ConsumeJsKeyword(std::string_view source, std::size_t* position, std::strin
     return true;
 }
 
-bool ParseJsIdentifier(std::string_view source, std::size_t* position, std::string* identifier)
-{
+bool ParseJsIdentifier(std::string_view source, std::size_t* position, std::string* identifier) {
     std::size_t current = SkipJsWhitespaceAndComments(source, *position);
-    if (current >= source.size() || !IsIdentifierStart(source[current])) return false;
+    if (current >= source.size() || ! IsIdentifierStart(source[current])) return false;
 
     const std::size_t start = current++;
     while (current < source.size() && IsIdentifierPart(source[current])) ++current;
     *identifier = std::string(source.substr(start, current - start));
-    *position = current;
+    *position   = current;
     return true;
 }
 
-bool ParseJsStringLiteral(std::string_view source, std::size_t* position, std::string* literal)
-{
+bool ParseJsStringLiteral(std::string_view source, std::size_t* position, std::string* literal) {
     std::size_t current = SkipJsWhitespaceAndComments(source, *position);
-    if (current >= source.size() || (source[current] != '\'' && source[current] != '"')) return false;
+    if (current >= source.size() || (source[current] != '\'' && source[current] != '"'))
+        return false;
 
     const std::size_t start = current;
-    current = SkipJsStringLiteral(source, current);
+    current                 = SkipJsStringLiteral(source, current);
     if (current <= start + 1 || current > source.size()) return false;
 
-    *literal = std::string(source.substr(start, current - start));
+    *literal  = std::string(source.substr(start, current - start));
     *position = current;
     return true;
 }
 
-int HexDigitValue(char character)
-{
+int HexDigitValue(char character) {
     if (character >= '0' && character <= '9') return character - '0';
     if (character >= 'a' && character <= 'f') return character - 'a' + 10;
     if (character >= 'A' && character <= 'F') return character - 'A' + 10;
     return -1;
 }
 
-bool TryReadHex(std::string_view source, std::size_t position, std::size_t digits, uint32_t* value)
-{
+bool TryReadHex(std::string_view source, std::size_t position, std::size_t digits,
+                uint32_t* value) {
     uint32_t result = 0;
     for (std::size_t index = 0; index < digits; ++index) {
         if (position + index >= source.size()) return false;
@@ -703,8 +638,7 @@ bool TryReadHex(std::string_view source, std::size_t position, std::size_t digit
     return true;
 }
 
-std::string DecodeJsStringLiteralForProperty(std::string_view literal)
-{
+std::string DecodeJsStringLiteralForProperty(std::string_view literal) {
     if (literal.size() < 2) return std::string(literal);
 
     std::string output;
@@ -749,32 +683,24 @@ std::string DecodeJsStringLiteralForProperty(std::string_view literal)
             }
             break;
         }
-        default:
-            output.push_back(escaped);
-            break;
+        default: output.push_back(escaped); break;
         }
     }
 
     return output;
 }
 
-std::size_t ConsumeImportStatementTail(std::string_view source, std::size_t position)
-{
+std::size_t ConsumeImportStatementTail(std::string_view source, std::size_t position) {
     position = SkipJsWhitespaceAndComments(source, position);
     if (position < source.size() && source[position] == ';') return position + 1;
     return position;
 }
 
-bool TryTransformImportDeclaration(
-    std::string_view source,
-    std::size_t      import_position,
-    std::size_t*     end_position,
-    std::string*     replacement)
-{
+bool TryTransformImportDeclaration(std::string_view source, std::size_t import_position,
+                                   std::size_t* end_position, std::string* replacement) {
     const bool boundary_before =
-        import_position == 0 || !IsIdentifierPart(source[import_position - 1]);
-    if (!boundary_before ||
-        import_position + std::strlen("import") > source.size() ||
+        import_position == 0 || ! IsIdentifierPart(source[import_position - 1]);
+    if (! boundary_before || import_position + std::strlen("import") > source.size() ||
         source.compare(import_position, std::strlen("import"), "import") != 0) {
         return false;
     }
@@ -786,7 +712,7 @@ bool TryTransformImportDeclaration(
 
     std::string literal;
     if (source[current] == '\'' || source[current] == '"') {
-        if (!ParseJsStringLiteral(source, &current, &literal)) return false;
+        if (! ParseJsStringLiteral(source, &current, &literal)) return false;
         *end_position = ConsumeImportStatementTail(source, current);
         replacement->clear();
         return true;
@@ -794,40 +720,42 @@ bool TryTransformImportDeclaration(
 
     if (source[current] == '*') {
         ++current;
-        if (!ConsumeJsKeyword(source, &current, "as")) return false;
+        if (! ConsumeJsKeyword(source, &current, "as")) return false;
 
         std::string alias;
-        if (!ParseJsIdentifier(source, &current, &alias)) return false;
-        if (!ConsumeJsKeyword(source, &current, "from")) return false;
-        if (!ParseJsStringLiteral(source, &current, &literal)) return false;
+        if (! ParseJsIdentifier(source, &current, &alias)) return false;
+        if (! ConsumeJsKeyword(source, &current, "from")) return false;
+        if (! ParseJsStringLiteral(source, &current, &literal)) return false;
 
         *end_position = ConsumeImportStatementTail(source, current);
-        *replacement = "const " + alias + " = globalThis[" +
-            QuoteJsString(DecodeJsStringLiteralForProperty(literal)) + "];";
+        *replacement  = "const " + alias + " = globalThis[" +
+                       QuoteJsString(DecodeJsStringLiteralForProperty(literal)) + "];";
         return true;
     }
 
     if (source[current] == '{') {
         const std::size_t members_start = ++current;
-        int brace_depth = 1;
+        int               brace_depth   = 1;
         while (current < source.size() && brace_depth > 0) {
             if (source[current] == '\'' || source[current] == '"' || source[current] == '`') {
                 current = SkipJsStringLiteral(source, current);
                 continue;
             }
-            if (source[current] == '{') ++brace_depth;
-            else if (source[current] == '}') --brace_depth;
+            if (source[current] == '{')
+                ++brace_depth;
+            else if (source[current] == '}')
+                --brace_depth;
             ++current;
         }
         if (brace_depth != 0) return false;
 
         const std::size_t members_end = current - 1;
-        if (!ConsumeJsKeyword(source, &current, "from")) return false;
-        if (!ParseJsStringLiteral(source, &current, &literal)) return false;
+        if (! ConsumeJsKeyword(source, &current, "from")) return false;
+        if (! ParseJsStringLiteral(source, &current, &literal)) return false;
 
         *end_position = ConsumeImportStatementTail(source, current);
-        *replacement = "const {" +
-            std::string(source.substr(members_start, members_end - members_start)) +
+        *replacement =
+            "const {" + std::string(source.substr(members_start, members_end - members_start)) +
             "} = globalThis[" + QuoteJsString(DecodeJsStringLiteralForProperty(literal)) + "];";
         return true;
     }
@@ -835,8 +763,7 @@ bool TryTransformImportDeclaration(
     return false;
 }
 
-std::string TransformInlineImportDeclarations(std::string_view source)
-{
+std::string TransformInlineImportDeclarations(std::string_view source) {
     std::string output;
     output.reserve(source.size());
 
@@ -861,7 +788,7 @@ std::string TransformInlineImportDeclarations(std::string_view source)
                 const std::size_t start = position;
                 position += 2;
                 while (position + 1 < source.size() &&
-                       !(source[position] == '*' && source[position + 1] == '/')) {
+                       ! (source[position] == '*' && source[position + 1] == '/')) {
                     ++position;
                 }
                 if (position + 1 < source.size()) position += 2;
@@ -885,8 +812,7 @@ std::string TransformInlineImportDeclarations(std::string_view source)
     return output;
 }
 
-ScriptFrontEndResult RunScriptFrontEnd(std::string_view source)
-{
+ScriptFrontEndResult RunScriptFrontEnd(std::string_view source) {
     const auto started = std::chrono::steady_clock::now();
 
     std::string normalized(source);
@@ -896,9 +822,9 @@ ScriptFrontEndResult RunScriptFrontEnd(std::string_view source)
     normalized.erase(std::remove(normalized.begin(), normalized.end(), '\r'), normalized.end());
 
     ScriptFrontEndResult result;
-    std::ostringstream output;
-    std::istringstream input(normalized);
-    std::string line;
+    std::ostringstream   output;
+    std::istringstream   input(normalized);
+    std::string          line;
 
     while (std::getline(input, line)) {
         const std::string trimmed = TrimCopy(line);
@@ -916,7 +842,8 @@ ScriptFrontEndResult RunScriptFrontEnd(std::string_view source)
         if (TryParseImportNamespace(trimmed, &alias_name, &global_name)) {
             global_name = DecodeJsStringLiteralForProperty("'" + global_name + "'");
             result.imported_globals.push_back(global_name);
-            output << "const " << alias_name << " = globalThis[" << QuoteJsString(global_name) << "];\n";
+            output << "const " << alias_name << " = globalThis[" << QuoteJsString(global_name)
+                   << "];\n";
             continue;
         }
 
@@ -924,7 +851,8 @@ ScriptFrontEndResult RunScriptFrontEnd(std::string_view source)
         if (TryParseImportNamed(trimmed, &members, &global_name)) {
             global_name = DecodeJsStringLiteralForProperty("'" + global_name + "'");
             result.imported_globals.push_back(global_name);
-            output << "const {" << members << "} = globalThis[" << QuoteJsString(global_name) << "];\n";
+            output << "const {" << members << "} = globalThis[" << QuoteJsString(global_name)
+                   << "];\n";
             continue;
         }
 
@@ -942,15 +870,17 @@ ScriptFrontEndResult RunScriptFrontEnd(std::string_view source)
 
     result.transformed_body = output.str();
     result.transformed_body = TransformInlineImportDeclarations(result.transformed_body);
-    std::size_t export_pos = 0;
-    while ((export_pos = result.transformed_body.find("export ", export_pos)) != std::string::npos) {
+    std::size_t export_pos  = 0;
+    while ((export_pos = result.transformed_body.find("export ", export_pos)) !=
+           std::string::npos) {
         const bool boundary_before =
             export_pos == 0 ||
-            std::isspace(static_cast<unsigned char>(result.transformed_body[export_pos - 1])) != 0 ||
+            std::isspace(static_cast<unsigned char>(result.transformed_body[export_pos - 1])) !=
+                0 ||
             result.transformed_body[export_pos - 1] == ';' ||
             result.transformed_body[export_pos - 1] == '{' ||
             result.transformed_body[export_pos - 1] == '}';
-        if (!boundary_before) {
+        if (! boundary_before) {
             export_pos += std::strlen("export ");
             continue;
         }
@@ -961,30 +891,33 @@ ScriptFrontEndResult RunScriptFrontEnd(std::string_view source)
     return result;
 }
 
-void AppendScriptPropertiesBuilder(std::ostringstream& wrapper)
-{
+void AppendScriptPropertiesBuilder(std::ostringstream& wrapper) {
     wrapper << "  function createScriptProperties() {\n"
             << "    var builder = {\n"
-            << "      addSlider: function(opts) { if (!(opts.name in __props)) __props[opts.name] = opts.value; return builder; },\n"
-            << "      addCheckbox: function(opts) { if (!(opts.name in __props)) __props[opts.name] = opts.value; return builder; },\n"
+            << "      addSlider: function(opts) { if (!(opts.name in __props)) __props[opts.name] "
+               "= opts.value; return builder; },\n"
+            << "      addCheckbox: function(opts) { if (!(opts.name in __props)) "
+               "__props[opts.name] = opts.value; return builder; },\n"
             << "      addCombo: function(opts) {\n"
             << "        if (!(opts.name in __props)) {\n"
             << "          if ('value' in opts) __props[opts.name] = opts.value;\n"
-            << "          else if (opts.options && opts.options.length > 0) __props[opts.name] = opts.options[0].value;\n"
+            << "          else if (opts.options && opts.options.length > 0) __props[opts.name] = "
+               "opts.options[0].value;\n"
             << "          else __props[opts.name] = undefined;\n"
             << "        }\n"
             << "        return builder;\n"
             << "      },\n"
-            << "      addColor: function(opts) { if (!(opts.name in __props)) __props[opts.name] = opts.value; return builder; },\n"
-            << "      addText: function(opts) { if (!(opts.name in __props)) __props[opts.name] = opts.value; return builder; },\n"
+            << "      addColor: function(opts) { if (!(opts.name in __props)) __props[opts.name] = "
+               "opts.value; return builder; },\n"
+            << "      addText: function(opts) { if (!(opts.name in __props)) __props[opts.name] = "
+               "opts.value; return builder; },\n"
             << "      finish: function() { return __props; }\n"
             << "    };\n"
             << "    return builder;\n"
             << "  }\n";
 }
 
-void AppendCommonHostBootstrap(std::ostringstream& wrapper)
-{
+void AppendCommonHostBootstrap(std::ostringstream& wrapper) {
     const auto started = std::chrono::steady_clock::now();
     wrapper
         << "  var __consoleNoop = function() {};\n"
@@ -1007,11 +940,14 @@ void AppendCommonHostBootstrap(std::ostringstream& wrapper)
         << "  globalThis.shared = globalThis.shared || {};\n"
         << "  globalThis.shared.STARTS_WITH = 0;\n"
         << "  globalThis.shared.END_WITH = 1;\n"
-        << "  globalThis.shared.userPropertyCategories = globalThis.shared.userPropertyCategories || new Map();\n"
-        << "  globalThis.__localStorageData = globalThis.__localStorageData || Object.create(null);\n"
+        << "  globalThis.shared.userPropertyCategories = globalThis.shared.userPropertyCategories "
+           "|| new Map();\n"
+        << "  globalThis.__localStorageData = globalThis.__localStorageData || "
+           "Object.create(null);\n"
         << "  globalThis.localStorage = globalThis.localStorage || {\n"
         << "    get: function(key) { return globalThis.__localStorageData[String(key)]; },\n"
-        << "    set: function(key, value) { globalThis.__localStorageData[String(key)] = value; return value; },\n"
+        << "    set: function(key, value) { globalThis.__localStorageData[String(key)] = value; "
+           "return value; },\n"
         << "    remove: function(key) { delete globalThis.__localStorageData[String(key)]; },\n"
         << "    clear: function() { globalThis.__localStorageData = Object.create(null); }\n"
         << "  };\n"
@@ -1049,7 +985,8 @@ void AppendCommonHostBootstrap(std::ostringstream& wrapper)
         << "  globalThis.logInterrupts = false;\n"
         << "  globalThis.tips = false;\n"
         << "  globalThis.canvasSize = engine.canvasSize;\n"
-        << "  engine.on = engine.on || function(event, fn) { __registerCallback(globalThis.__callbacks, event, fn); };\n"
+        << "  engine.on = engine.on || function(event, fn) { "
+           "__registerCallback(globalThis.__callbacks, event, fn); };\n"
         << "  globalThis.input = globalThis.input || {};\n"
         << "  globalThis.input.cursorWorldPosition = globalThis.__cursorWorldPosition;\n"
         << "  globalThis.__timeouts = globalThis.__timeouts || [];\n"
@@ -1081,10 +1018,12 @@ void AppendCommonHostBootstrap(std::ostringstream& wrapper)
         << "  };\n"
         << "  globalThis.__layerCache = globalThis.__layerCache || Object.create(null);\n"
         << "  globalThis.__layerOrder = globalThis.__layerOrder || [];\n"
-        << "  globalThis.__videoTextureCache = globalThis.__videoTextureCache || Object.create(null);\n"
+        << "  globalThis.__videoTextureCache = globalThis.__videoTextureCache || "
+           "Object.create(null);\n"
         << "  globalThis.__nextGeneratedLayerId = globalThis.__nextGeneratedLayerId || 1;\n"
         << "  function __rememberLayer(name) {\n"
-        << "    if (globalThis.__layerOrder.indexOf(name) < 0) globalThis.__layerOrder.push(name);\n"
+        << "    if (globalThis.__layerOrder.indexOf(name) < 0) "
+           "globalThis.__layerOrder.push(name);\n"
         << "  }\n"
         << "  function __resolveLayerName(layerOrName) {\n"
         << "    if (typeof layerOrName === 'string') return layerOrName;\n"
@@ -1105,8 +1044,10 @@ void AppendCommonHostBootstrap(std::ostringstream& wrapper)
         << "      stop: function() {},\n"
         << "      setFrame: function(frame) { this._frame = Number(frame) || 0; },\n"
         << "      getCurrentTime: function() { return 0; },\n"
-        << "      addEndedCallback: function(callback) { if (typeof callback === 'function') this._endedCallbacks.push(callback); },\n"
-        << "      removeEndedCallback: function(callback) { this._endedCallbacks = this._endedCallbacks.filter(function(item) { return item !== callback; }); }\n"
+        << "      addEndedCallback: function(callback) { if (typeof callback === 'function') "
+           "this._endedCallbacks.push(callback); },\n"
+        << "      removeEndedCallback: function(callback) { this._endedCallbacks = "
+           "this._endedCallbacks.filter(function(item) { return item !== callback; }); }\n"
         << "    };\n"
         << "  }\n"
         << "  function __makeVideoTexture(name) {\n"
@@ -1132,7 +1073,8 @@ void AppendCommonHostBootstrap(std::ostringstream& wrapper)
         << "      animationLayers: Object.create(null),\n"
         << "      callbacks: Object.create(null),\n"
         << "      playing: false,\n"
-        << "      volume: 1\n"
+        << "      volume: 1,\n"
+        << "      muted: false\n"
         << "    };\n"
         << "    var originalOrigin = __layerGetOrigin(name);\n"
         << "    return {\n"
@@ -1149,17 +1091,54 @@ void AppendCommonHostBootstrap(std::ostringstream& wrapper)
         << "      get size() { return __layerGetSize(name); },\n"
         << "      get alpha() { return state.alpha; },\n"
         << "      set alpha(v) { state.alpha = Number(v) || 0; },\n"
-        << "      play: function() { state.playing = true; },\n"
-        << "      pause: function() { state.playing = false; },\n"
-        << "      stop: function() { state.playing = false; },\n"
-        << "      isPlaying: function() { return !!state.playing; },\n"
+        << "      play: function() {\n"
+        << "        if (__soundKnown(name)) {\n"
+        << "          __soundPlay(name);\n"
+        << "          return;\n"
+        << "        }\n"
+        << "        state.playing = true;\n"
+        << "      },\n"
+        << "      pause: function() {\n"
+        << "        if (__soundKnown(name)) {\n"
+        << "          __soundPause(name);\n"
+        << "          return;\n"
+        << "        }\n"
+        << "        state.playing = false;\n"
+        << "      },\n"
+        << "      stop: function() {\n"
+        << "        if (__soundKnown(name)) {\n"
+        << "          __soundStop(name);\n"
+        << "          return;\n"
+        << "        }\n"
+        << "        state.playing = false;\n"
+        << "      },\n"
+        << "      isPlaying: function() { return __soundKnown(name) ? __soundIsPlaying(name) : "
+           "!!state.playing; },\n"
         << "      on: function(event, fn) { __registerCallback(state.callbacks, event, fn); },\n"
         << "      emit: function(event, payload) {\n"
         << "        var callbacks = state.callbacks[event] || [];\n"
         << "        for (var i = 0; i < callbacks.length; ++i) callbacks[i](payload);\n"
         << "      },\n"
-        << "      get volume() { return state.volume; },\n"
-        << "      set volume(v) { state.volume = Number(v) || 0; },\n"
+        << "      get volume() { return __soundKnown(name) ? __soundGetVolume(name) : "
+           "state.volume; },\n"
+        << "      set volume(v) {\n"
+        << "        var numeric = Number(v);\n"
+        << "        if (!Number.isFinite(numeric)) numeric = 0;\n"
+        << "        if (__soundKnown(name)) {\n"
+        << "          __soundSetVolume(name, numeric);\n"
+        << "        } else {\n"
+        << "          state.volume = numeric;\n"
+        << "        }\n"
+        << "      },\n"
+        << "      get muted() { return __soundKnown(name) ? __soundGetMuted(name) : !!state.muted; "
+           "},\n"
+        << "      set muted(v) {\n"
+        << "        if (__soundKnown(name)) {\n"
+        << "          __soundSetMuted(name, !!v);\n"
+        << "        } else {\n"
+        << "          state.muted = !!v;\n"
+        << "        }\n"
+        << "      },\n"
         << "      getAnimation: function(animationName) {\n"
         << "        var key = animationName || '__default';\n"
         << "        if (!state.animations[key]) state.animations[key] = __makeAnimation(key);\n"
@@ -1167,10 +1146,12 @@ void AppendCommonHostBootstrap(std::ostringstream& wrapper)
         << "      },\n"
         << "      getAnimationLayer: function(layerName) {\n"
         << "        var key = String(layerName);\n"
-        << "        if (!state.animationLayers[key]) state.animationLayers[key] = __makeAnimation(key);\n"
+        << "        if (!state.animationLayers[key]) state.animationLayers[key] = "
+           "__makeAnimation(key);\n"
         << "        return state.animationLayers[key];\n"
         << "      },\n"
-        << "      getAnimationLayerCount: function() { return Object.keys(state.animationLayers).length; },\n"
+        << "      getAnimationLayerCount: function() { return "
+           "Object.keys(state.animationLayers).length; },\n"
         << "      getVideoTexture: function() { return __makeVideoTexture(name); }\n"
         << "    };\n"
         << "  }\n"
@@ -1179,7 +1160,8 @@ void AppendCommonHostBootstrap(std::ostringstream& wrapper)
         << "      __registerCallback(globalThis.__callbacks, event, fn);\n"
         << "    },\n"
         << "    getLayer: function(name) {\n"
-        << "      if (!globalThis.__layerCache[name]) globalThis.__layerCache[name] = __createLayer(name);\n"
+        << "      if (!globalThis.__layerCache[name]) globalThis.__layerCache[name] = "
+           "__createLayer(name);\n"
         << "      return globalThis.__layerCache[name];\n"
         << "    },\n"
         << "    getObject: function(name) {\n"
@@ -1193,7 +1175,8 @@ void AppendCommonHostBootstrap(std::ostringstream& wrapper)
         << "    get: function(target, prop) {\n"
         << "      if (prop in target) return target[prop];\n"
         << "      var key = String(prop).toLowerCase();\n"
-        << "      if (globalThis.__sceneProps && key in globalThis.__sceneProps) return globalThis.__sceneProps[key];\n"
+        << "      if (globalThis.__sceneProps && key in globalThis.__sceneProps) return "
+           "globalThis.__sceneProps[key];\n"
         << "      return target[prop];\n"
         << "    },\n"
         << "    set: function(target, prop, value) { target[String(prop)] = value; return true; }\n"
@@ -1201,7 +1184,8 @@ void AppendCommonHostBootstrap(std::ostringstream& wrapper)
         << "  __sceneBase.getLayerIndex = function(layerOrName) {\n"
         << "    var name = __resolveLayerName(layerOrName);\n"
         << "    if (!name) return -1;\n"
-        << "    if (!globalThis.__layerCache[name]) globalThis.__layerCache[name] = __createLayer(name);\n"
+        << "    if (!globalThis.__layerCache[name]) globalThis.__layerCache[name] = "
+           "__createLayer(name);\n"
         << "    var nativeIndex = __layerGetIndex(name);\n"
         << "    if (nativeIndex >= 0) return nativeIndex;\n"
         << "    return globalThis.__layerOrder.indexOf(name);\n"
@@ -1209,7 +1193,8 @@ void AppendCommonHostBootstrap(std::ostringstream& wrapper)
         << "  __sceneBase.__createLayerFor = function(currentLayerName, sourcePath) {\n"
         << "    var templateName = String(sourcePath || '');\n"
         << "    var generatedName = __layerCreate(templateName, String(currentLayerName || ''));\n"
-        << "    if (!generatedName) generatedName = '__generated_layer_' + (globalThis.__nextGeneratedLayerId++) + ':' + templateName;\n"
+        << "    if (!generatedName) generatedName = '__generated_layer_' + "
+           "(globalThis.__nextGeneratedLayerId++) + ':' + templateName;\n"
         << "    if (!globalThis.__layerCache[generatedName]) {\n"
         << "      var generated = __createLayer(generatedName);\n"
         << "      generated.template = templateName;\n"
@@ -1223,13 +1208,15 @@ void AppendCommonHostBootstrap(std::ostringstream& wrapper)
         << "  __sceneBase.sortLayer = function(layerOrName, index) {\n"
         << "    var name = __resolveLayerName(layerOrName);\n"
         << "    if (!name) return;\n"
-        << "    if (!globalThis.__layerCache[name]) globalThis.__layerCache[name] = __createLayer(name);\n"
+        << "    if (!globalThis.__layerCache[name]) globalThis.__layerCache[name] = "
+           "__createLayer(name);\n"
         << "    var currentIndex = globalThis.__layerOrder.indexOf(name);\n"
         << "    if (currentIndex >= 0) globalThis.__layerOrder.splice(currentIndex, 1);\n"
         << "    var requestedIndex = Math.floor(Number(index) || 0);\n"
         << "    if (requestedIndex < 0) requestedIndex = 0;\n"
         << "    var targetIndex = requestedIndex;\n"
-        << "    if (targetIndex > globalThis.__layerOrder.length) targetIndex = globalThis.__layerOrder.length;\n"
+        << "    if (targetIndex > globalThis.__layerOrder.length) targetIndex = "
+           "globalThis.__layerOrder.length;\n"
         << "    globalThis.__layerOrder.splice(targetIndex, 0, name);\n"
         << "    __layerSort(name, requestedIndex);\n"
         << "  };\n"
@@ -1240,24 +1227,20 @@ void AppendCommonHostBootstrap(std::ostringstream& wrapper)
     g_script_startup_metrics.bootstrap_build_ms += MeasureElapsedMs(started);
 }
 
-JSValue CreateCanvasSizeObject(JSContext* context, const ScriptHostContext& host_context)
-{
+JSValue CreateCanvasSizeObject(JSContext* context, const ScriptHostContext& host_context) {
     return CreateJsVec2(context, host_context.canvas_size.x(), host_context.canvas_size.y());
 }
 
-JSValue CreateCursorWorldPositionObject(JSContext* context, const ScriptHostContext& host_context)
-{
-    return CreateJsVec3(
-        context,
-        host_context.cursor_world_position.x(),
-        host_context.cursor_world_position.y(),
-        host_context.cursor_world_position.z());
+JSValue CreateCursorWorldPositionObject(JSContext* context, const ScriptHostContext& host_context) {
+    return CreateJsVec3(context,
+                        host_context.cursor_world_position.x(),
+                        host_context.cursor_world_position.y(),
+                        host_context.cursor_world_position.z());
 }
 
 SceneScriptBridgeState* GetBridgeState(JSContext* context);
 
-JSValue CreateAudioArray(JSContext* context, uint32_t resolution)
-{
+JSValue CreateAudioArray(JSContext* context, uint32_t resolution) {
     JSValue array = JS_NewArray(context);
     for (uint32_t index = 0; index < resolution; ++index) {
         JS_SetPropertyUint32(context, array, index, JS_NewFloat64(context, 0.0));
@@ -1265,8 +1248,7 @@ JSValue CreateAudioArray(JSContext* context, uint32_t resolution)
     return array;
 }
 
-JSValue CreateAudioBufferObject(JSContext* context, uint32_t resolution)
-{
+JSValue CreateAudioBufferObject(JSContext* context, uint32_t resolution) {
     JSValue buffer = JS_NewObject(context);
     JS_SetPropertyStr(context, buffer, "left", CreateAudioArray(context, resolution));
     JS_SetPropertyStr(context, buffer, "right", CreateAudioArray(context, resolution));
@@ -1275,8 +1257,7 @@ JSValue CreateAudioBufferObject(JSContext* context, uint32_t resolution)
     return buffer;
 }
 
-JSValue JsRegisterAudioBuffers(JSContext* context, JSValueConst, int argc, JSValueConst* argv)
-{
+JSValue JsRegisterAudioBuffers(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
     uint32_t resolution = 64;
     if (argc > 0) {
         uint32_t requested = 64;
@@ -1292,21 +1273,18 @@ JSValue JsRegisterAudioBuffers(JSContext* context, JSValueConst, int argc, JSVal
     }
 
     JSValue global_object = JS_GetGlobalObject(context);
-    JSValue registry = JS_GetPropertyStr(context, global_object, "__registeredAudioBuffers");
-    if (!JS_IsObject(registry)) {
+    JSValue registry      = JS_GetPropertyStr(context, global_object, "__registeredAudioBuffers");
+    if (! JS_IsObject(registry)) {
         JS_FreeValue(context, registry);
         registry = JS_NewArray(context);
         JS_SetPropertyStr(
-            context,
-            global_object,
-            "__registeredAudioBuffers",
-            JS_DupValue(context, registry));
+            context, global_object, "__registeredAudioBuffers", JS_DupValue(context, registry));
     }
 
     JSValue buffer = CreateAudioBufferObject(context, resolution);
 
-    uint32_t length = 0;
-    JSValue length_value = JS_GetPropertyStr(context, registry, "length");
+    uint32_t length       = 0;
+    JSValue  length_value = JS_GetPropertyStr(context, registry, "length");
     JS_ToUint32(context, &length, length_value);
     JS_FreeValue(context, length_value);
 
@@ -1317,39 +1295,31 @@ JSValue JsRegisterAudioBuffers(JSContext* context, JSValueConst, int argc, JSVal
     return buffer;
 }
 
-JSValue JsEngineIsRunningInEditor(JSContext* context, JSValueConst, int, JSValueConst*)
-{
+JSValue JsEngineIsRunningInEditor(JSContext* context, JSValueConst, int, JSValueConst*) {
     return JS_NewBool(context, false);
 }
 
-JSValue JsRegisterAsset(JSContext* context, JSValueConst, int argc, JSValueConst* argv)
-{
+JSValue JsRegisterAsset(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
     if (argc < 1) return JS_NewString(context, "");
     return JS_DupValue(context, argv[0]);
 }
 
-JSValue BuildScriptPropertiesObject(
-    JSContext* context,
-    const std::map<std::string, DynamicValue*>& script_properties)
-{
+JSValue BuildScriptPropertiesObject(JSContext*                                  context,
+                                    const std::map<std::string, DynamicValue*>& script_properties) {
     JSValue object = JS_NewObject(context);
     UpdateScriptPropertiesObject(context, object, script_properties);
     return object;
 }
 
-void UpdateScriptPropertiesObject(
-    JSContext* context,
-    JSValue    target,
-    const std::map<std::string, DynamicValue*>& script_properties)
-{
+void UpdateScriptPropertiesObject(JSContext* context, JSValue target,
+                                  const std::map<std::string, DynamicValue*>& script_properties) {
     for (const auto& [name, value] : script_properties) {
         if (value == nullptr) continue;
         JS_SetPropertyStr(context, target, name.c_str(), DynamicValueToJS(context, *value));
     }
 }
 
-std::string QuoteJsString(const std::string& value)
-{
+std::string QuoteJsString(const std::string& value) {
     std::string result;
     result.reserve(value.size() + 2);
     result.push_back('"');
@@ -1367,54 +1337,59 @@ std::string QuoteJsString(const std::string& value)
     return result;
 }
 
-void PopulateEngineObject(
-    JSContext*               context,
-    JSValue                  engine_object,
-    const ScriptHostContext& host_context)
-{
-    JS_SetPropertyStr(context, engine_object, "canvasSize", CreateCanvasSizeObject(context, host_context));
-    JS_SetPropertyStr(context, engine_object, "frametime", JS_NewFloat64(context, host_context.frame_time));
-    JS_SetPropertyStr(context, engine_object, "runtime", JS_NewFloat64(context, host_context.runtime_seconds));
+void PopulateEngineObject(JSContext* context, JSValue engine_object,
+                          const ScriptHostContext& host_context) {
     JS_SetPropertyStr(
-        context,
-        engine_object,
-        "isRunningInEditor",
-        JS_NewCFunction(context, JsEngineIsRunningInEditor, "isRunningInEditor", 0));
+        context, engine_object, "canvasSize", CreateCanvasSizeObject(context, host_context));
+    JS_SetPropertyStr(
+        context, engine_object, "frametime", JS_NewFloat64(context, host_context.frame_time));
+    JS_SetPropertyStr(
+        context, engine_object, "runtime", JS_NewFloat64(context, host_context.runtime_seconds));
+    JS_SetPropertyStr(context,
+                      engine_object,
+                      "isRunningInEditor",
+                      JS_NewCFunction(context, JsEngineIsRunningInEditor, "isRunningInEditor", 0));
     JS_SetPropertyStr(context, engine_object, "userProperties", JS_NewObject(context));
     JS_SetPropertyStr(context, engine_object, "AUDIO_RESOLUTION_16", JS_NewInt32(context, 16));
     JS_SetPropertyStr(context, engine_object, "AUDIO_RESOLUTION_32", JS_NewInt32(context, 32));
     JS_SetPropertyStr(context, engine_object, "AUDIO_RESOLUTION_64", JS_NewInt32(context, 64));
-    JS_SetPropertyStr(
-        context,
-        engine_object,
-        "registerAudioBuffers",
-        JS_NewCFunction(context, JsRegisterAudioBuffers, "registerAudioBuffers", 1));
-    JS_SetPropertyStr(
-        context,
-        engine_object,
-        "registerAsset",
-        JS_NewCFunction(context, JsRegisterAsset, "registerAsset", 1));
+    JS_SetPropertyStr(context,
+                      engine_object,
+                      "registerAudioBuffers",
+                      JS_NewCFunction(context, JsRegisterAudioBuffers, "registerAudioBuffers", 1));
+    JS_SetPropertyStr(context,
+                      engine_object,
+                      "registerAsset",
+                      JS_NewCFunction(context, JsRegisterAsset, "registerAsset", 1));
 }
 
-void UpdateEngineObject(
-    JSContext*               context,
-    JSValue                  global_object,
-    const ScriptHostContext& host_context)
-{
-    auto& cache_state = GetContextScriptCache(context);
+void UpdateEngineObject(JSContext* context, JSValue global_object,
+                        const ScriptHostContext& host_context) {
+    auto&      cache_state = GetContextScriptCache(context);
     const bool host_changed =
-        !cache_state.has_last_host_context ||
+        ! cache_state.has_last_host_context ||
         std::abs(cache_state.last_host_context.frame_time - host_context.frame_time) > 1.0e-9 ||
-        std::abs(cache_state.last_host_context.runtime_seconds - host_context.runtime_seconds) > 1.0e-9 ||
-        !cache_state.last_host_context.canvas_size.isApprox(host_context.canvas_size, 1.0e-6f) ||
-        !cache_state.last_host_context.cursor_world_position.isApprox(host_context.cursor_world_position, 1.0e-6f);
+        std::abs(cache_state.last_host_context.runtime_seconds - host_context.runtime_seconds) >
+            1.0e-9 ||
+        ! cache_state.last_host_context.canvas_size.isApprox(host_context.canvas_size, 1.0e-6f) ||
+        ! cache_state.last_host_context.cursor_world_position.isApprox(
+            host_context.cursor_world_position, 1.0e-6f);
 
     JSValue engine_object = JS_GetPropertyStr(context, global_object, "engine");
     if (JS_IsObject(engine_object)) {
         if (host_changed) {
-            JS_SetPropertyStr(context, engine_object, "canvasSize", CreateCanvasSizeObject(context, host_context));
-            JS_SetPropertyStr(context, engine_object, "frametime", JS_NewFloat64(context, host_context.frame_time));
-            JS_SetPropertyStr(context, engine_object, "runtime", JS_NewFloat64(context, host_context.runtime_seconds));
+            JS_SetPropertyStr(context,
+                              engine_object,
+                              "canvasSize",
+                              CreateCanvasSizeObject(context, host_context));
+            JS_SetPropertyStr(context,
+                              engine_object,
+                              "frametime",
+                              JS_NewFloat64(context, host_context.frame_time));
+            JS_SetPropertyStr(context,
+                              engine_object,
+                              "runtime",
+                              JS_NewFloat64(context, host_context.runtime_seconds));
         }
     }
     JS_FreeValue(context, engine_object);
@@ -1422,27 +1397,25 @@ void UpdateEngineObject(
     JSValue input_object = JS_GetPropertyStr(context, global_object, "input");
     if (JS_IsObject(input_object)) {
         if (host_changed) {
-            JS_SetPropertyStr(
-                context,
-                input_object,
-                "cursorWorldPosition",
-                CreateCursorWorldPositionObject(context, host_context));
+            JS_SetPropertyStr(context,
+                              input_object,
+                              "cursorWorldPosition",
+                              CreateCursorWorldPositionObject(context, host_context));
         }
     }
     JS_FreeValue(context, input_object);
 
     JSValue registry = JS_GetPropertyStr(context, global_object, "__registeredAudioBuffers");
     if (JS_IsObject(registry)) {
-        const auto* bridge = GetBridgeState(context);
-        const auto snapshot = (bridge != nullptr && bridge->runtime != nullptr)
-            ? bridge->runtime->CurrentAudioSpectrumSnapshot()
-            : wallpaper::audio::AudioSpectrumSnapshot {};
-        const bool audio_changed =
-            !cache_state.has_last_audio_generation ||
-            cache_state.last_audio_generation != snapshot.generation;
+        const auto* bridge        = GetBridgeState(context);
+        const auto  snapshot      = (bridge != nullptr && bridge->runtime != nullptr)
+                                        ? bridge->runtime->CurrentAudioSpectrumSnapshot()
+                                        : wallpaper::audio::AudioSpectrumSnapshot {};
+        const bool  audio_changed = ! cache_state.has_last_audio_generation ||
+                                   cache_state.last_audio_generation != snapshot.generation;
 
-        uint32_t length = 0;
-        JSValue length_value = JS_GetPropertyStr(context, registry, "length");
+        uint32_t length       = 0;
+        JSValue  length_value = JS_GetPropertyStr(context, registry, "length");
         JS_ToUint32(context, &length, length_value);
         JS_FreeValue(context, length_value);
 
@@ -1450,8 +1423,8 @@ void UpdateEngineObject(
             for (uint32_t index = 0; index < length; ++index) {
                 JSValue buffer = JS_GetPropertyUint32(context, registry, index);
 
-                uint32_t resolution = 64;
-                JSValue resolution_value = JS_GetPropertyStr(context, buffer, "__resolution");
+                uint32_t resolution       = 64;
+                JSValue  resolution_value = JS_GetPropertyStr(context, buffer, "__resolution");
                 JS_ToUint32(context, &resolution, resolution_value);
                 JS_FreeValue(context, resolution_value);
 
@@ -1459,10 +1432,7 @@ void UpdateEngineObject(
                     JSValue array = JS_GetPropertyStr(context, buffer, name);
                     for (uint32_t band = 0; band < resolution; ++band) {
                         JS_SetPropertyUint32(
-                            context,
-                            array,
-                            band,
-                            JS_NewFloat64(context, values[band]));
+                            context, array, band, JS_NewFloat64(context, values[band]));
                     }
                     JS_FreeValue(context, array);
                 };
@@ -1485,29 +1455,28 @@ void UpdateEngineObject(
             }
         }
 
-        cache_state.last_audio_generation = snapshot.generation;
+        cache_state.last_audio_generation     = snapshot.generation;
         cache_state.has_last_audio_generation = true;
     }
     JS_FreeValue(context, registry);
 
     if (host_changed) {
-        JS_SetPropertyStr(
-            context,
-            global_object,
-            "__cursorWorldPosition",
-            CreateCursorWorldPositionObject(context, host_context));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__cursorWorldPosition",
+                          CreateCursorWorldPositionObject(context, host_context));
 
         JSValue canvas_size = CreateCanvasSizeObject(context, host_context);
         JS_SetPropertyStr(context, global_object, "canvasSize", JS_DupValue(context, canvas_size));
         JS_SetPropertyStr(context, global_object, "__canvasSize", canvas_size);
 
-        cache_state.last_host_context = host_context;
+        cache_state.last_host_context     = host_context;
         cache_state.has_last_host_context = true;
     }
 }
 
-JSValue CreateScenePropertiesObject(JSContext* context, const ProjectProperties& project_properties)
-{
+JSValue CreateScenePropertiesObject(JSContext*               context,
+                                    const ProjectProperties& project_properties) {
     JSValue object = JS_NewObject(context);
     for (const auto& [name, value] : project_properties) {
         std::string lowered = name;
@@ -1519,8 +1488,8 @@ JSValue CreateScenePropertiesObject(JSContext* context, const ProjectProperties&
     return object;
 }
 
-JSValue CreateUserPropertiesObject(JSContext* context, const ProjectProperties& project_properties)
-{
+JSValue CreateUserPropertiesObject(JSContext*               context,
+                                   const ProjectProperties& project_properties) {
     JSValue object = JS_NewObject(context);
     for (const auto& [name, value] : project_properties) {
         JS_SetPropertyStr(context, object, name.c_str(), RuntimeScalarValueToJS(context, value));
@@ -1528,8 +1497,8 @@ JSValue CreateUserPropertiesObject(JSContext* context, const ProjectProperties& 
     return object;
 }
 
-JSValue CreateChangedPropertiesObject(JSContext* context, const ProjectProperties& project_properties)
-{
+JSValue CreateChangedPropertiesObject(JSContext*               context,
+                                      const ProjectProperties& project_properties) {
     JSValue object = JS_NewObject(context);
     for (const auto& [name, value] : project_properties) {
         JS_SetPropertyStr(context, object, name.c_str(), RuntimeScalarValueToJS(context, value));
@@ -1537,34 +1506,24 @@ JSValue CreateChangedPropertiesObject(JSContext* context, const ProjectPropertie
     return object;
 }
 
-void SetEngineUserProperties(
-    JSContext*               context,
-    JSValue                  global_object,
-    const ProjectProperties& project_properties)
-{
+void SetEngineUserProperties(JSContext* context, JSValue global_object,
+                             const ProjectProperties& project_properties) {
     JSValue engine_object = JS_GetPropertyStr(context, global_object, "engine");
     if (JS_IsObject(engine_object)) {
-        JS_SetPropertyStr(
-            context,
-            engine_object,
-            "userProperties",
-            CreateUserPropertiesObject(context, project_properties));
+        JS_SetPropertyStr(context,
+                          engine_object,
+                          "userProperties",
+                          CreateUserPropertiesObject(context, project_properties));
     }
     JS_FreeValue(context, engine_object);
 }
 
-SceneScriptBridgeState* GetBridgeState(JSContext* context)
-{
+SceneScriptBridgeState* GetBridgeState(JSContext* context) {
     return static_cast<SceneScriptBridgeState*>(JS_GetContextOpaque(context));
 }
 
-JSValue CallStoredExport(
-    JSContext*    context,
-    const char*   exports_object_name,
-    const char*   export_name,
-    int           argc,
-    JSValueConst* argv)
-{
+JSValue CallStoredExport(JSContext* context, const char* exports_object_name,
+                         const char* export_name, int argc, JSValueConst* argv) {
     JSValue global_object = JS_GetGlobalObject(context);
     JSValue exports       = JS_GetPropertyStr(context, global_object, exports_object_name);
     JSValue function      = JS_GetPropertyStr(context, exports, export_name);
@@ -1583,26 +1542,24 @@ JSValue CallStoredExport(
     return result;
 }
 
-JSValue JsLayerGetVisible(JSContext* context, JSValueConst, int argc, JSValueConst* argv)
-{
+JSValue JsLayerGetVisible(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
     if (argc < 1) return JS_NewBool(context, false);
     auto* bridge = GetBridgeState(context);
     if (bridge == nullptr || bridge->runtime == nullptr) return JS_NewBool(context, false);
 
     const char* layer_name = JS_ToCString(context, argv[0]);
-    const bool  visible = layer_name != nullptr && bridge->runtime->NodeVisible(layer_name);
+    const bool  visible    = layer_name != nullptr && bridge->runtime->NodeVisible(layer_name);
     if (layer_name != nullptr) JS_FreeCString(context, layer_name);
     return JS_NewBool(context, visible);
 }
 
-JSValue JsLayerSetVisible(JSContext* context, JSValueConst, int argc, JSValueConst* argv)
-{
+JSValue JsLayerSetVisible(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
     if (argc < 2) return JS_UNDEFINED;
     auto* bridge = GetBridgeState(context);
     if (bridge == nullptr || bridge->runtime == nullptr) return JS_UNDEFINED;
 
     const char* layer_name = JS_ToCString(context, argv[0]);
-    const bool  visible = JS_ToBool(context, argv[1]) != 0;
+    const bool  visible    = JS_ToBool(context, argv[1]) != 0;
     if (layer_name != nullptr) {
         bridge->runtime->SetNodeVisible(layer_name, visible);
         JS_FreeCString(context, layer_name);
@@ -1610,22 +1567,20 @@ JSValue JsLayerSetVisible(JSContext* context, JSValueConst, int argc, JSValueCon
     return JS_UNDEFINED;
 }
 
-JSValue JsLayerGetOrigin(JSContext* context, JSValueConst, int argc, JSValueConst* argv)
-{
+JSValue JsLayerGetOrigin(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
     if (argc < 1) return CreateJsVec3(context, 0.0, 0.0, 0.0);
     auto* bridge = GetBridgeState(context);
-    if (bridge == nullptr || bridge->runtime == nullptr) return CreateJsVec3(context, 0.0, 0.0, 0.0);
+    if (bridge == nullptr || bridge->runtime == nullptr)
+        return CreateJsVec3(context, 0.0, 0.0, 0.0);
 
     const char* layer_name = JS_ToCString(context, argv[0]);
-    const auto  value = layer_name != nullptr
-        ? bridge->runtime->NodeTranslate(layer_name)
-        : Eigen::Vector3f::Zero();
+    const auto  value      = layer_name != nullptr ? bridge->runtime->NodeTranslate(layer_name)
+                                                   : Eigen::Vector3f::Zero();
     if (layer_name != nullptr) JS_FreeCString(context, layer_name);
     return CreateJsVec3(context, value.x(), value.y(), value.z());
 }
 
-JSValue JsLayerSetOrigin(JSContext* context, JSValueConst, int argc, JSValueConst* argv)
-{
+JSValue JsLayerSetOrigin(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
     if (argc < 2) return JS_UNDEFINED;
     auto* bridge = GetBridgeState(context);
     if (bridge == nullptr || bridge->runtime == nullptr) return JS_UNDEFINED;
@@ -1642,22 +1597,20 @@ JSValue JsLayerSetOrigin(JSContext* context, JSValueConst, int argc, JSValueCons
     return JS_UNDEFINED;
 }
 
-JSValue JsLayerGetScale(JSContext* context, JSValueConst, int argc, JSValueConst* argv)
-{
+JSValue JsLayerGetScale(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
     if (argc < 1) return CreateJsVec3(context, 1.0, 1.0, 1.0);
     auto* bridge = GetBridgeState(context);
-    if (bridge == nullptr || bridge->runtime == nullptr) return CreateJsVec3(context, 1.0, 1.0, 1.0);
+    if (bridge == nullptr || bridge->runtime == nullptr)
+        return CreateJsVec3(context, 1.0, 1.0, 1.0);
 
     const char* layer_name = JS_ToCString(context, argv[0]);
-    const auto  value = layer_name != nullptr
-        ? bridge->runtime->NodeScale(layer_name)
-        : Eigen::Vector3f::Ones();
+    const auto  value =
+        layer_name != nullptr ? bridge->runtime->NodeScale(layer_name) : Eigen::Vector3f::Ones();
     if (layer_name != nullptr) JS_FreeCString(context, layer_name);
     return CreateJsVec3(context, value.x(), value.y(), value.z());
 }
 
-JSValue JsLayerSetScale(JSContext* context, JSValueConst, int argc, JSValueConst* argv)
-{
+JSValue JsLayerSetScale(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
     if (argc < 2) return JS_UNDEFINED;
     auto* bridge = GetBridgeState(context);
     if (bridge == nullptr || bridge->runtime == nullptr) return JS_UNDEFINED;
@@ -1674,22 +1627,21 @@ JSValue JsLayerSetScale(JSContext* context, JSValueConst, int argc, JSValueConst
     return JS_UNDEFINED;
 }
 
-JSValue JsLayerGetAngles(JSContext* context, JSValueConst, int argc, JSValueConst* argv)
-{
+JSValue JsLayerGetAngles(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
     if (argc < 1) return CreateJsVec3(context, 0.0, 0.0, 0.0);
     auto* bridge = GetBridgeState(context);
-    if (bridge == nullptr || bridge->runtime == nullptr) return CreateJsVec3(context, 0.0, 0.0, 0.0);
+    if (bridge == nullptr || bridge->runtime == nullptr)
+        return CreateJsVec3(context, 0.0, 0.0, 0.0);
 
     const char* layer_name = JS_ToCString(context, argv[0]);
-    const auto  value = layer_name != nullptr
-        ? RadiansToDegrees(bridge->runtime->NodeRotation(layer_name))
-        : Eigen::Vector3f::Zero();
+    const auto  value      = layer_name != nullptr
+                                 ? RadiansToDegrees(bridge->runtime->NodeRotation(layer_name))
+                                 : Eigen::Vector3f::Zero();
     if (layer_name != nullptr) JS_FreeCString(context, layer_name);
     return CreateJsVec3(context, value.x(), value.y(), value.z());
 }
 
-JSValue JsLayerSetAngles(JSContext* context, JSValueConst, int argc, JSValueConst* argv)
-{
+JSValue JsLayerSetAngles(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
     if (argc < 2) return JS_UNDEFINED;
     auto* bridge = GetBridgeState(context);
     if (bridge == nullptr || bridge->runtime == nullptr) return JS_UNDEFINED;
@@ -1706,61 +1658,53 @@ JSValue JsLayerSetAngles(JSContext* context, JSValueConst, int argc, JSValueCons
     return JS_UNDEFINED;
 }
 
-JSValue JsLayerGetSize(JSContext* context, JSValueConst, int argc, JSValueConst* argv)
-{
+JSValue JsLayerGetSize(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
     if (argc < 1) return CreateJsVec2(context, 0.0, 0.0);
     auto* bridge = GetBridgeState(context);
     if (bridge == nullptr || bridge->runtime == nullptr) return CreateJsVec2(context, 0.0, 0.0);
 
     const char* layer_name = JS_ToCString(context, argv[0]);
-    const auto  value = layer_name != nullptr
-        ? bridge->runtime->NodeSize(layer_name)
-        : Eigen::Vector2f::Zero();
+    const auto  value =
+        layer_name != nullptr ? bridge->runtime->NodeSize(layer_name) : Eigen::Vector2f::Zero();
     if (layer_name != nullptr) JS_FreeCString(context, layer_name);
     return CreateJsVec2(context, value.x(), value.y());
 }
 
-JSValue JsLayerCreate(JSContext* context, JSValueConst, int argc, JSValueConst* argv)
-{
+JSValue JsLayerCreate(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
     if (argc < 2) return JS_NewString(context, "");
     auto* bridge = GetBridgeState(context);
     if (bridge == nullptr || bridge->runtime == nullptr) return JS_NewString(context, "");
 
-    const char* template_name = JS_ToCString(context, argv[0]);
+    const char* template_name      = JS_ToCString(context, argv[0]);
     const char* current_layer_name = JS_ToCString(context, argv[1]);
     std::string generated_name;
     if (template_name != nullptr) {
         generated_name = bridge->runtime->CreateLayerFromTemplate(
-            template_name,
-            current_layer_name != nullptr ? current_layer_name : "");
+            template_name, current_layer_name != nullptr ? current_layer_name : "");
     }
     if (template_name != nullptr) JS_FreeCString(context, template_name);
     if (current_layer_name != nullptr) JS_FreeCString(context, current_layer_name);
     return JS_NewString(context, generated_name.c_str());
 }
 
-JSValue JsLayerGetIndex(JSContext* context, JSValueConst, int argc, JSValueConst* argv)
-{
+JSValue JsLayerGetIndex(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
     if (argc < 1) return JS_NewInt32(context, -1);
     auto* bridge = GetBridgeState(context);
     if (bridge == nullptr || bridge->runtime == nullptr) return JS_NewInt32(context, -1);
 
     const char* layer_name = JS_ToCString(context, argv[0]);
-    const int   index = layer_name != nullptr
-        ? bridge->runtime->NodeSiblingIndex(layer_name)
-        : -1;
+    const int   index = layer_name != nullptr ? bridge->runtime->NodeSiblingIndex(layer_name) : -1;
     if (layer_name != nullptr) JS_FreeCString(context, layer_name);
     return JS_NewInt32(context, index);
 }
 
-JSValue JsLayerSort(JSContext* context, JSValueConst, int argc, JSValueConst* argv)
-{
+JSValue JsLayerSort(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
     if (argc < 2) return JS_UNDEFINED;
     auto* bridge = GetBridgeState(context);
     if (bridge == nullptr || bridge->runtime == nullptr) return JS_UNDEFINED;
 
     const char* layer_name = JS_ToCString(context, argv[0]);
-    int32_t index = 0;
+    int32_t     index      = 0;
     JS_ToInt32(context, &index, argv[1]);
     if (layer_name != nullptr) {
         bridge->runtime->SortNode(layer_name, static_cast<int>(index));
@@ -1769,8 +1713,113 @@ JSValue JsLayerSort(JSContext* context, JSValueConst, int argc, JSValueConst* ar
     return JS_UNDEFINED;
 }
 
-JSValue JsVideoPlay(JSContext* context, JSValueConst, int argc, JSValueConst* argv)
-{
+JSValue JsSoundKnown(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
+    auto* bridge = GetBridgeState(context);
+    if (bridge == nullptr || bridge->runtime == nullptr || argc < 1)
+        return JS_NewBool(context, false);
+
+    const char* layer_name = JS_ToCString(context, argv[0]);
+    const bool  known      = layer_name != nullptr && bridge->runtime->HasSoundLayer(layer_name);
+    if (layer_name != nullptr) JS_FreeCString(context, layer_name);
+    return JS_NewBool(context, known);
+}
+
+JSValue JsSoundPlay(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
+    auto* bridge = GetBridgeState(context);
+    if (bridge == nullptr || bridge->runtime == nullptr || argc < 1)
+        return JS_NewBool(context, false);
+
+    const char* layer_name = JS_ToCString(context, argv[0]);
+    const bool  played     = layer_name != nullptr && bridge->runtime->PlaySoundLayer(layer_name);
+    if (layer_name != nullptr) JS_FreeCString(context, layer_name);
+    return JS_NewBool(context, played);
+}
+
+JSValue JsSoundPause(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
+    auto* bridge = GetBridgeState(context);
+    if (bridge == nullptr || bridge->runtime == nullptr || argc < 1)
+        return JS_NewBool(context, false);
+
+    const char* layer_name = JS_ToCString(context, argv[0]);
+    const bool  paused     = layer_name != nullptr && bridge->runtime->PauseSoundLayer(layer_name);
+    if (layer_name != nullptr) JS_FreeCString(context, layer_name);
+    return JS_NewBool(context, paused);
+}
+
+JSValue JsSoundStop(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
+    auto* bridge = GetBridgeState(context);
+    if (bridge == nullptr || bridge->runtime == nullptr || argc < 1)
+        return JS_NewBool(context, false);
+
+    const char* layer_name = JS_ToCString(context, argv[0]);
+    const bool  stopped    = layer_name != nullptr && bridge->runtime->StopSoundLayer(layer_name);
+    if (layer_name != nullptr) JS_FreeCString(context, layer_name);
+    return JS_NewBool(context, stopped);
+}
+
+JSValue JsSoundIsPlaying(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
+    auto* bridge = GetBridgeState(context);
+    if (bridge == nullptr || bridge->runtime == nullptr || argc < 1)
+        return JS_NewBool(context, false);
+
+    const char* layer_name = JS_ToCString(context, argv[0]);
+    const bool  playing = layer_name != nullptr && bridge->runtime->SoundLayerPlaying(layer_name);
+    if (layer_name != nullptr) JS_FreeCString(context, layer_name);
+    return JS_NewBool(context, playing);
+}
+
+JSValue JsSoundGetVolume(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
+    auto* bridge = GetBridgeState(context);
+    if (bridge == nullptr || bridge->runtime == nullptr || argc < 1)
+        return JS_NewFloat64(context, 0.0);
+
+    const char* layer_name = JS_ToCString(context, argv[0]);
+    const float volume =
+        layer_name != nullptr ? bridge->runtime->SoundLayerVolume(layer_name) : 0.0f;
+    if (layer_name != nullptr) JS_FreeCString(context, layer_name);
+    return JS_NewFloat64(context, volume);
+}
+
+JSValue JsSoundSetVolume(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
+    auto* bridge = GetBridgeState(context);
+    if (bridge == nullptr || bridge->runtime == nullptr || argc < 2)
+        return JS_NewBool(context, false);
+
+    const char* layer_name = JS_ToCString(context, argv[0]);
+    double      volume     = 0.0;
+    const bool  parsed     = JS_ToFloat64(context, &volume, argv[1]) == 0;
+    const bool  updated =
+        layer_name != nullptr && parsed &&
+        bridge->runtime->SetSoundLayerVolume(layer_name, static_cast<float>(volume));
+    if (layer_name != nullptr) JS_FreeCString(context, layer_name);
+    return JS_NewBool(context, updated);
+}
+
+JSValue JsSoundGetMuted(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
+    auto* bridge = GetBridgeState(context);
+    if (bridge == nullptr || bridge->runtime == nullptr || argc < 1)
+        return JS_NewBool(context, false);
+
+    const char* layer_name = JS_ToCString(context, argv[0]);
+    const bool  muted      = layer_name != nullptr && bridge->runtime->SoundLayerMuted(layer_name);
+    if (layer_name != nullptr) JS_FreeCString(context, layer_name);
+    return JS_NewBool(context, muted);
+}
+
+JSValue JsSoundSetMuted(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
+    auto* bridge = GetBridgeState(context);
+    if (bridge == nullptr || bridge->runtime == nullptr || argc < 2)
+        return JS_NewBool(context, false);
+
+    const char* layer_name = JS_ToCString(context, argv[0]);
+    const bool  muted      = JS_ToBool(context, argv[1]) != 0;
+    const bool  updated =
+        layer_name != nullptr && bridge->runtime->SetSoundLayerMuted(layer_name, muted);
+    if (layer_name != nullptr) JS_FreeCString(context, layer_name);
+    return JS_NewBool(context, updated);
+}
+
+JSValue JsVideoPlay(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
     if (argc < 1) return JS_UNDEFINED;
     auto* bridge = GetBridgeState(context);
     if (bridge == nullptr || bridge->runtime == nullptr) return JS_UNDEFINED;
@@ -1783,8 +1832,7 @@ JSValue JsVideoPlay(JSContext* context, JSValueConst, int argc, JSValueConst* ar
     return JS_UNDEFINED;
 }
 
-JSValue JsVideoPause(JSContext* context, JSValueConst, int argc, JSValueConst* argv)
-{
+JSValue JsVideoPause(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
     if (argc < 1) return JS_UNDEFINED;
     auto* bridge = GetBridgeState(context);
     if (bridge == nullptr || bridge->runtime == nullptr) return JS_UNDEFINED;
@@ -1797,14 +1845,13 @@ JSValue JsVideoPause(JSContext* context, JSValueConst, int argc, JSValueConst* a
     return JS_UNDEFINED;
 }
 
-JSValue JsVideoGetCurrentTime(JSContext* context, JSValueConst, int argc, JSValueConst* argv)
-{
+JSValue JsVideoGetCurrentTime(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
     if (argc < 1) return JS_NewFloat64(context, 0.0);
     auto* bridge = GetBridgeState(context);
     if (bridge == nullptr || bridge->runtime == nullptr) return JS_NewFloat64(context, 0.0);
 
     const char* layer_name = JS_ToCString(context, argv[0]);
-    double      seconds = 0.0;
+    double      seconds    = 0.0;
     if (layer_name != nullptr) {
         seconds = bridge->runtime->NodeVideoTextureCurrentTime(layer_name);
         JS_FreeCString(context, layer_name);
@@ -1812,14 +1859,13 @@ JSValue JsVideoGetCurrentTime(JSContext* context, JSValueConst, int argc, JSValu
     return JS_NewFloat64(context, seconds);
 }
 
-JSValue JsVideoSetCurrentTime(JSContext* context, JSValueConst, int argc, JSValueConst* argv)
-{
+JSValue JsVideoSetCurrentTime(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
     if (argc < 2) return JS_UNDEFINED;
     auto* bridge = GetBridgeState(context);
     if (bridge == nullptr || bridge->runtime == nullptr) return JS_UNDEFINED;
 
     const char* layer_name = JS_ToCString(context, argv[0]);
-    double      seconds = 0.0;
+    double      seconds    = 0.0;
     JS_ToFloat64(context, &seconds, argv[1]);
     if (layer_name != nullptr) {
         bridge->runtime->SetNodeVideoTextureCurrentTime(layer_name, seconds);
@@ -1828,14 +1874,13 @@ JSValue JsVideoSetCurrentTime(JSContext* context, JSValueConst, int argc, JSValu
     return JS_UNDEFINED;
 }
 
-JSValue JsVideoGetRate(JSContext* context, JSValueConst, int argc, JSValueConst* argv)
-{
+JSValue JsVideoGetRate(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
     if (argc < 1) return JS_NewFloat64(context, 1.0);
     auto* bridge = GetBridgeState(context);
     if (bridge == nullptr || bridge->runtime == nullptr) return JS_NewFloat64(context, 1.0);
 
     const char* layer_name = JS_ToCString(context, argv[0]);
-    double      rate = 1.0;
+    double      rate       = 1.0;
     if (layer_name != nullptr) {
         rate = static_cast<double>(bridge->runtime->NodeVideoTextureRate(layer_name));
         JS_FreeCString(context, layer_name);
@@ -1843,14 +1888,13 @@ JSValue JsVideoGetRate(JSContext* context, JSValueConst, int argc, JSValueConst*
     return JS_NewFloat64(context, rate);
 }
 
-JSValue JsVideoSetRate(JSContext* context, JSValueConst, int argc, JSValueConst* argv)
-{
+JSValue JsVideoSetRate(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
     if (argc < 2) return JS_UNDEFINED;
     auto* bridge = GetBridgeState(context);
     if (bridge == nullptr || bridge->runtime == nullptr) return JS_UNDEFINED;
 
     const char* layer_name = JS_ToCString(context, argv[0]);
-    double      rate = 1.0;
+    double      rate       = 1.0;
     JS_ToFloat64(context, &rate, argv[1]);
     if (layer_name != nullptr) {
         bridge->runtime->SetNodeVideoTextureRate(layer_name, static_cast<float>(rate));
@@ -1859,14 +1903,13 @@ JSValue JsVideoSetRate(JSContext* context, JSValueConst, int argc, JSValueConst*
     return JS_UNDEFINED;
 }
 
-JSValue JsVideoGetDuration(JSContext* context, JSValueConst, int argc, JSValueConst* argv)
-{
+JSValue JsVideoGetDuration(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
     if (argc < 1) return JS_NewFloat64(context, 0.0);
     auto* bridge = GetBridgeState(context);
     if (bridge == nullptr || bridge->runtime == nullptr) return JS_NewFloat64(context, 0.0);
 
     const char* layer_name = JS_ToCString(context, argv[0]);
-    double      duration = 0.0;
+    double      duration   = 0.0;
     if (layer_name != nullptr) {
         duration = bridge->runtime->NodeVideoTextureDuration(layer_name);
         JS_FreeCString(context, layer_name);
@@ -1874,10 +1917,9 @@ JSValue JsVideoGetDuration(JSContext* context, JSValueConst, int argc, JSValueCo
     return JS_NewFloat64(context, duration);
 }
 
-void ProcessScheduledCallbacks(JSContext* context)
-{
+void ProcessScheduledCallbacks(JSContext* context) {
     JSValue global_object = JS_GetGlobalObject(context);
-    JSValue process = JS_GetPropertyStr(context, global_object, "__processTimeouts");
+    JSValue process       = JS_GetPropertyStr(context, global_object, "__processTimeouts");
     if (JS_IsFunction(context, process)) {
         JSValue result = JS_Call(context, process, JS_UNDEFINED, 0, nullptr);
         if (JS_IsException(result)) {
@@ -1889,36 +1931,33 @@ void ProcessScheduledCallbacks(JSContext* context)
     JS_FreeValue(context, global_object);
 }
 
-JSValue BuildCursorEventObject(JSContext* context, const ScriptHostContext& host_context)
-{
-    JSValue event = JS_NewObject(context);
+JSValue BuildCursorEventObject(JSContext* context, const ScriptHostContext& host_context) {
+    JSValue event          = JS_NewObject(context);
     JSValue world_position = CreateCursorWorldPositionObject(context, host_context);
     JS_SetPropertyStr(context, event, "worldPosition", JS_DupValue(context, world_position));
     JS_SetPropertyStr(context, event, "position", world_position);
     return event;
 }
 
-void CallPropertyExport(JSContext* context, const char* export_name, int argc, JSValueConst* argv)
-{
+void CallPropertyExport(JSContext* context, const char* export_name, int argc, JSValueConst* argv) {
     JSValue result = CallStoredExport(context, "__propertyExports", export_name, argc, argv);
     JS_FreeValue(context, result);
 }
 
-void CallSceneExport(JSContext* context, const char* export_name, int argc, JSValueConst* argv)
-{
+void CallSceneExport(JSContext* context, const char* export_name, int argc, JSValueConst* argv) {
     JSValue result = CallStoredExport(context, "__sceneExports", export_name, argc, argv);
     JS_FreeValue(context, result);
 }
 
-void RunSceneCallbacks(JSContext* context, const char* event_name, JSValueConst payload = JS_UNDEFINED)
-{
+void RunSceneCallbacks(JSContext* context, const char* event_name,
+                       JSValueConst payload = JS_UNDEFINED) {
     JSValue global_object = JS_GetGlobalObject(context);
-    JSValue runner = JS_GetPropertyStr(context, global_object, "__runSceneCallbacks");
+    JSValue runner        = JS_GetPropertyStr(context, global_object, "__runSceneCallbacks");
 
     if (JS_IsFunction(context, runner)) {
-        JSValue event = JS_NewString(context, event_name);
+        JSValue                     event = JS_NewString(context, event_name);
         std::array<JSValueConst, 2> argv { event, payload };
-        JSValue result = JS_Call(context, runner, JS_UNDEFINED, 2, argv.data());
+        JSValue                     result = JS_Call(context, runner, JS_UNDEFINED, 2, argv.data());
         if (JS_IsException(result)) {
             LogJsException(context, "__runSceneCallbacks");
         }
@@ -1930,8 +1969,47 @@ void RunSceneCallbacks(JSContext* context, const char* event_name, JSValueConst 
     JS_FreeValue(context, global_object);
 }
 
-std::string BuildCommonHostBootstrapSource()
-{
+void DispatchMediaEventJsonToScript(JSContext* context, const std::string& exports_object_name,
+                                    std::string_view event_json, bool run_scene_callbacks) {
+    if (context == nullptr || event_json.empty()) return;
+
+    JSValue event_object =
+        JS_ParseJSON(context, event_json.data(), event_json.size(), "<media-event>");
+    if (JS_IsException(event_object)) {
+        LogJsException(context, "media event parse");
+        JS_FreeValue(context, event_object);
+        return;
+    }
+
+    JSValue type_value = JS_GetPropertyStr(context, event_object, "type");
+    if (JS_IsException(type_value)) {
+        LogJsException(context, "media event type");
+        JS_FreeValue(context, type_value);
+        JS_FreeValue(context, event_object);
+        return;
+    }
+
+    const char* type = JS_ToCString(context, type_value);
+    if (type == nullptr && JS_HasException(context)) {
+        LogJsException(context, "media event type");
+        JS_FreeValue(context, type_value);
+        JS_FreeValue(context, event_object);
+        return;
+    }
+    if (type != nullptr && type[0] != '\0') {
+        JSValueConst argv[] = { event_object };
+        JSValue      result = CallStoredExport(context, exports_object_name.c_str(), type, 1, argv);
+        JS_FreeValue(context, result);
+        if (run_scene_callbacks) {
+            RunSceneCallbacks(context, type, event_object);
+        }
+    }
+    if (type != nullptr) JS_FreeCString(context, type);
+    JS_FreeValue(context, type_value);
+    JS_FreeValue(context, event_object);
+}
+
+std::string BuildCommonHostBootstrapSource() {
     std::ostringstream wrapper;
     wrapper << "(function() {\n";
     AppendCommonHostBootstrap(wrapper);
@@ -1939,16 +2017,17 @@ std::string BuildCommonHostBootstrapSource()
     return wrapper.str();
 }
 
-std::string BuildPropertyScriptFactorySource(const ScriptFrontEndResult& front_end)
-{
-    const auto started = std::chrono::steady_clock::now();
+std::string BuildPropertyScriptFactorySource(const ScriptFrontEndResult& front_end) {
+    const auto         started = std::chrono::steady_clock::now();
     std::ostringstream wrapper;
     wrapper << "(function(__scriptContext) {\n"
             << "  var __props = globalThis[__scriptContext.propsName];\n";
     AppendScriptPropertiesBuilder(wrapper);
     wrapper << "  const thisScene = Object.create(globalThis.scene);\n"
-            << "  thisScene.createLayer = function(sourcePath) { return globalThis.scene.__createLayerFor(__scriptContext.layerName, sourcePath); };\n"
-            << "  let thisLayer = __scriptContext.layerName ? globalThis.scene.getLayer(__scriptContext.layerName) : undefined;\n"
+            << "  thisScene.createLayer = function(sourcePath) { return "
+               "globalThis.scene.__createLayerFor(__scriptContext.layerName, sourcePath); };\n"
+            << "  let thisLayer = __scriptContext.layerName ? "
+               "globalThis.scene.getLayer(__scriptContext.layerName) : undefined;\n"
             << "  let thisObject = thisLayer;\n"
             << front_end.transformed_body << "\n"
             << "  globalThis[__scriptContext.exportsName] = {\n"
@@ -1960,8 +2039,18 @@ std::string BuildPropertyScriptFactorySource(const ScriptFrontEndResult& front_e
             << "    cursorLeave: (typeof cursorLeave === 'function') ? cursorLeave : null,\n"
             << "    cursorMove: (typeof cursorMove === 'function') ? cursorMove : null,\n"
             << "    cursorUp: (typeof cursorUp === 'function') ? cursorUp : null,\n"
-            << "    mediaThumbnailChanged: (typeof mediaThumbnailChanged === 'function') ? mediaThumbnailChanged : null,\n"
-            << "    applyUserProperties: (typeof applyUserProperties === 'function') ? applyUserProperties : null\n"
+            << "    mediaPlaybackChanged: (typeof mediaPlaybackChanged === 'function') ? "
+               "mediaPlaybackChanged : null,\n"
+            << "    mediaPropertiesChanged: (typeof mediaPropertiesChanged === 'function') ? "
+               "mediaPropertiesChanged : null,\n"
+            << "    mediaStatusChanged: (typeof mediaStatusChanged === 'function') ? "
+               "mediaStatusChanged : null,\n"
+            << "    mediaTimelineChanged: (typeof mediaTimelineChanged === 'function') ? "
+               "mediaTimelineChanged : null,\n"
+            << "    mediaThumbnailChanged: (typeof mediaThumbnailChanged === 'function') ? "
+               "mediaThumbnailChanged : null,\n"
+            << "    applyUserProperties: (typeof applyUserProperties === 'function') ? "
+               "applyUserProperties : null\n"
             << "  };\n"
             << "})\n";
 
@@ -1970,16 +2059,17 @@ std::string BuildPropertyScriptFactorySource(const ScriptFrontEndResult& front_e
     return result;
 }
 
-std::string BuildSceneScriptFactorySource(const ScriptFrontEndResult& front_end)
-{
-    const auto started = std::chrono::steady_clock::now();
+std::string BuildSceneScriptFactorySource(const ScriptFrontEndResult& front_end) {
+    const auto         started = std::chrono::steady_clock::now();
     std::ostringstream wrapper;
     wrapper << "(function(__scriptContext) {\n"
             << "  var __props = globalThis.__scriptProps || {};\n";
     AppendScriptPropertiesBuilder(wrapper);
     wrapper << "  const thisScene = Object.create(globalThis.scene);\n"
-            << "  thisScene.createLayer = function(sourcePath) { return globalThis.scene.__createLayerFor(__scriptContext.layerName, sourcePath); };\n"
-            << "  let thisLayer = __scriptContext.layerName ? globalThis.scene.getLayer(__scriptContext.layerName) : undefined;\n"
+            << "  thisScene.createLayer = function(sourcePath) { return "
+               "globalThis.scene.__createLayerFor(__scriptContext.layerName, sourcePath); };\n"
+            << "  let thisLayer = __scriptContext.layerName ? "
+               "globalThis.scene.getLayer(__scriptContext.layerName) : undefined;\n"
             << "  let thisObject = thisLayer;\n"
             << front_end.transformed_body << "\n"
             << "  globalThis[__scriptContext.exportsName] = {\n"
@@ -1991,8 +2081,18 @@ std::string BuildSceneScriptFactorySource(const ScriptFrontEndResult& front_end)
             << "    cursorLeave: (typeof cursorLeave === 'function') ? cursorLeave : null,\n"
             << "    cursorMove: (typeof cursorMove === 'function') ? cursorMove : null,\n"
             << "    cursorUp: (typeof cursorUp === 'function') ? cursorUp : null,\n"
-            << "    applyUserProperties: (typeof applyUserProperties === 'function') ? applyUserProperties : null,\n"
-            << "    mediaThumbnailChanged: (typeof mediaThumbnailChanged === 'function') ? mediaThumbnailChanged : null\n"
+            << "    applyUserProperties: (typeof applyUserProperties === 'function') ? "
+               "applyUserProperties : null,\n"
+            << "    mediaPlaybackChanged: (typeof mediaPlaybackChanged === 'function') ? "
+               "mediaPlaybackChanged : null,\n"
+            << "    mediaPropertiesChanged: (typeof mediaPropertiesChanged === 'function') ? "
+               "mediaPropertiesChanged : null,\n"
+            << "    mediaStatusChanged: (typeof mediaStatusChanged === 'function') ? "
+               "mediaStatusChanged : null,\n"
+            << "    mediaTimelineChanged: (typeof mediaTimelineChanged === 'function') ? "
+               "mediaTimelineChanged : null,\n"
+            << "    mediaThumbnailChanged: (typeof mediaThumbnailChanged === 'function') ? "
+               "mediaThumbnailChanged : null\n"
             << "  };\n"
             << "})\n";
 
@@ -2001,13 +2101,10 @@ std::string BuildSceneScriptFactorySource(const ScriptFrontEndResult& front_end)
     return result;
 }
 
-bool EnsureSharedHostBindings(
-    JSContext*               context,
-    SceneRuntimeContext*     runtime,
-    const ScriptHostContext& host_context,
-    const ProjectProperties* project_properties)
-{
-    auto& cache_state = GetContextScriptCache(context);
+bool EnsureSharedHostBindings(JSContext* context, SceneRuntimeContext* runtime,
+                              const ScriptHostContext& host_context,
+                              const ProjectProperties* project_properties) {
+    auto& cache_state  = GetContextScriptCache(context);
     auto* bridge_state = static_cast<SceneScriptBridgeState*>(JS_GetContextOpaque(context));
     if (bridge_state == nullptr) {
         bridge_state = new SceneScriptBridgeState {
@@ -2018,105 +2115,124 @@ bool EnsureSharedHostBindings(
         bridge_state->runtime = runtime;
     }
 
-    JSValue global_object = JS_GetGlobalObject(context);
+    JSValue    global_object        = JS_GetGlobalObject(context);
     const auto registration_started = std::chrono::steady_clock::now();
 
-    if (!cache_state.shared_bindings_installed) {
+    if (! cache_state.shared_bindings_installed) {
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__layerGetVisible",
+                          JS_NewCFunction(context, JsLayerGetVisible, "__layerGetVisible", 1));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__layerSetVisible",
+                          JS_NewCFunction(context, JsLayerSetVisible, "__layerSetVisible", 2));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__layerGetOrigin",
+                          JS_NewCFunction(context, JsLayerGetOrigin, "__layerGetOrigin", 1));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__layerSetOrigin",
+                          JS_NewCFunction(context, JsLayerSetOrigin, "__layerSetOrigin", 2));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__layerGetScale",
+                          JS_NewCFunction(context, JsLayerGetScale, "__layerGetScale", 1));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__layerSetScale",
+                          JS_NewCFunction(context, JsLayerSetScale, "__layerSetScale", 2));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__layerGetAngles",
+                          JS_NewCFunction(context, JsLayerGetAngles, "__layerGetAngles", 1));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__layerSetAngles",
+                          JS_NewCFunction(context, JsLayerSetAngles, "__layerSetAngles", 2));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__layerGetSize",
+                          JS_NewCFunction(context, JsLayerGetSize, "__layerGetSize", 1));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__layerCreate",
+                          JS_NewCFunction(context, JsLayerCreate, "__layerCreate", 2));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__layerGetIndex",
+                          JS_NewCFunction(context, JsLayerGetIndex, "__layerGetIndex", 1));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__layerSort",
+                          JS_NewCFunction(context, JsLayerSort, "__layerSort", 2));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__soundKnown",
+                          JS_NewCFunction(context, JsSoundKnown, "__soundKnown", 1));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__soundPlay",
+                          JS_NewCFunction(context, JsSoundPlay, "__soundPlay", 1));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__soundPause",
+                          JS_NewCFunction(context, JsSoundPause, "__soundPause", 1));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__soundStop",
+                          JS_NewCFunction(context, JsSoundStop, "__soundStop", 1));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__soundIsPlaying",
+                          JS_NewCFunction(context, JsSoundIsPlaying, "__soundIsPlaying", 1));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__soundGetVolume",
+                          JS_NewCFunction(context, JsSoundGetVolume, "__soundGetVolume", 1));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__soundSetVolume",
+                          JS_NewCFunction(context, JsSoundSetVolume, "__soundSetVolume", 2));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__soundGetMuted",
+                          JS_NewCFunction(context, JsSoundGetMuted, "__soundGetMuted", 1));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__soundSetMuted",
+                          JS_NewCFunction(context, JsSoundSetMuted, "__soundSetMuted", 2));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__videoPlay",
+                          JS_NewCFunction(context, JsVideoPlay, "__videoPlay", 1));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__videoPause",
+                          JS_NewCFunction(context, JsVideoPause, "__videoPause", 1));
         JS_SetPropertyStr(
             context,
             global_object,
-            "__layerGetVisible",
-            JS_NewCFunction(context, JsLayerGetVisible, "__layerGetVisible", 1));
+            "__videoGetCurrentTime",
+            JS_NewCFunction(context, JsVideoGetCurrentTime, "__videoGetCurrentTime", 1));
         JS_SetPropertyStr(
             context,
             global_object,
-            "__layerSetVisible",
-            JS_NewCFunction(context, JsLayerSetVisible, "__layerSetVisible", 2));
-        JS_SetPropertyStr(
-            context,
-            global_object,
-            "__layerGetOrigin",
-            JS_NewCFunction(context, JsLayerGetOrigin, "__layerGetOrigin", 1));
-        JS_SetPropertyStr(
-            context,
-            global_object,
-            "__layerSetOrigin",
-            JS_NewCFunction(context, JsLayerSetOrigin, "__layerSetOrigin", 2));
-        JS_SetPropertyStr(
-            context,
-            global_object,
-            "__layerGetScale",
-            JS_NewCFunction(context, JsLayerGetScale, "__layerGetScale", 1));
-        JS_SetPropertyStr(
-            context,
-            global_object,
-            "__layerSetScale",
-            JS_NewCFunction(context, JsLayerSetScale, "__layerSetScale", 2));
-        JS_SetPropertyStr(
-            context,
-            global_object,
-            "__layerGetAngles",
-            JS_NewCFunction(context, JsLayerGetAngles, "__layerGetAngles", 1));
-        JS_SetPropertyStr(
-            context,
-            global_object,
-            "__layerSetAngles",
-            JS_NewCFunction(context, JsLayerSetAngles, "__layerSetAngles", 2));
-        JS_SetPropertyStr(
-            context,
-            global_object,
-            "__layerGetSize",
-            JS_NewCFunction(context, JsLayerGetSize, "__layerGetSize", 1));
-        JS_SetPropertyStr(
-            context,
-            global_object,
-            "__layerCreate",
-            JS_NewCFunction(context, JsLayerCreate, "__layerCreate", 2));
-        JS_SetPropertyStr(
-            context,
-            global_object,
-            "__layerGetIndex",
-            JS_NewCFunction(context, JsLayerGetIndex, "__layerGetIndex", 1));
-        JS_SetPropertyStr(
-            context,
-            global_object,
-            "__layerSort",
-            JS_NewCFunction(context, JsLayerSort, "__layerSort", 2));
-        JS_SetPropertyStr(
-            context,
-            global_object,
-            "__videoPlay",
-            JS_NewCFunction(context, JsVideoPlay, "__videoPlay", 1));
-    JS_SetPropertyStr(
-        context,
-        global_object,
-        "__videoPause",
-        JS_NewCFunction(context, JsVideoPause, "__videoPause", 1));
-    JS_SetPropertyStr(
-        context,
-        global_object,
-        "__videoGetCurrentTime",
-        JS_NewCFunction(context, JsVideoGetCurrentTime, "__videoGetCurrentTime", 1));
-    JS_SetPropertyStr(
-        context,
-        global_object,
-        "__videoSetCurrentTime",
-        JS_NewCFunction(context, JsVideoSetCurrentTime, "__videoSetCurrentTime", 2));
-    JS_SetPropertyStr(
-        context,
-        global_object,
-        "__videoGetRate",
-        JS_NewCFunction(context, JsVideoGetRate, "__videoGetRate", 1));
-    JS_SetPropertyStr(
-        context,
-        global_object,
-        "__videoSetRate",
-        JS_NewCFunction(context, JsVideoSetRate, "__videoSetRate", 2));
-    JS_SetPropertyStr(
-        context,
-        global_object,
-        "__videoGetDuration",
-        JS_NewCFunction(context, JsVideoGetDuration, "__videoGetDuration", 1));
+            "__videoSetCurrentTime",
+            JS_NewCFunction(context, JsVideoSetCurrentTime, "__videoSetCurrentTime", 2));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__videoGetRate",
+                          JS_NewCFunction(context, JsVideoGetRate, "__videoGetRate", 1));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__videoSetRate",
+                          JS_NewCFunction(context, JsVideoSetRate, "__videoSetRate", 2));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__videoGetDuration",
+                          JS_NewCFunction(context, JsVideoGetDuration, "__videoGetDuration", 1));
         JSValue engine_object = JS_NewObject(context);
         PopulateEngineObject(context, engine_object, host_context);
         JS_SetPropertyStr(context, global_object, "engine", engine_object);
@@ -2125,35 +2241,33 @@ bool EnsureSharedHostBindings(
 
     UpdateEngineObject(context, global_object, host_context);
     const ProjectProperties empty_project_properties {};
-    JS_SetPropertyStr(
-        context,
-        global_object,
-        "__sceneProps",
-        CreateScenePropertiesObject(
-            context,
-            project_properties != nullptr ? *project_properties : empty_project_properties));
-    SetEngineUserProperties(
-        context,
-        global_object,
-        project_properties != nullptr ? *project_properties : empty_project_properties);
+    JS_SetPropertyStr(context,
+                      global_object,
+                      "__sceneProps",
+                      CreateScenePropertiesObject(context,
+                                                  project_properties != nullptr
+                                                      ? *project_properties
+                                                      : empty_project_properties));
+    SetEngineUserProperties(context,
+                            global_object,
+                            project_properties != nullptr ? *project_properties
+                                                          : empty_project_properties);
 
-    g_script_startup_metrics.callback_registration_ms +=
-        MeasureElapsedMs(registration_started);
+    g_script_startup_metrics.callback_registration_ms += MeasureElapsedMs(registration_started);
 
-    if (!cache_state.shared_bootstrap_installed) {
-        if (!InstallScriptPrimitives(context)) {
+    if (! cache_state.shared_bootstrap_installed) {
+        if (! InstallScriptPrimitives(context)) {
             JS_FreeValue(context, global_object);
             return false;
         }
 
         const std::string bootstrap_source = BuildCommonHostBootstrapSource();
-        const auto eval_started = std::chrono::steady_clock::now();
-        JSValue bootstrap_result = JS_Eval(
-            context,
-            bootstrap_source.c_str(),
-            bootstrap_source.size(),
-            "<script-bootstrap>",
-            JS_EVAL_TYPE_GLOBAL);
+        const auto        eval_started     = std::chrono::steady_clock::now();
+        JSValue           bootstrap_result = JS_Eval(context,
+                                           bootstrap_source.c_str(),
+                                           bootstrap_source.size(),
+                                           "<script-bootstrap>",
+                                           JS_EVAL_TYPE_GLOBAL);
         g_script_startup_metrics.eval_ms += MeasureElapsedMs(eval_started);
         if (JS_IsException(bootstrap_result)) {
             LogJsException(context, "InstallSceneScriptBootstrap");
@@ -2170,13 +2284,10 @@ bool EnsureSharedHostBindings(
     return true;
 }
 
-JSValue AcquireScriptFactory(
-    JSContext*         context,
-    const std::string& script_source,
-    ScriptProgramMode  mode)
-{
-    auto& context_cache = GetContextScriptCache(context);
-    const std::string cache_key = MakeScriptCacheKey(script_source, mode);
+JSValue AcquireScriptFactory(JSContext* context, const std::string& script_source,
+                             ScriptProgramMode mode) {
+    auto&             context_cache = GetContextScriptCache(context);
+    const std::string cache_key     = MakeScriptCacheKey(script_source, mode);
 
     if (const auto iterator = context_cache.factories.find(cache_key);
         iterator != context_cache.factories.end()) {
@@ -2185,16 +2296,14 @@ JSValue AcquireScriptFactory(
 
     JSValue factory = JS_UNDEFINED;
     if (const auto iterator = g_serialized_script_templates.find(cache_key);
-        iterator != g_serialized_script_templates.end() &&
-        !iterator->second.bytecode.empty()) {
-        JSValue compiled = JS_ReadObject(
-            context,
-            iterator->second.bytecode.data(),
-            iterator->second.bytecode.size(),
-            JS_READ_OBJ_BYTECODE);
-        if (!JS_IsException(compiled)) {
+        iterator != g_serialized_script_templates.end() && ! iterator->second.bytecode.empty()) {
+        JSValue compiled = JS_ReadObject(context,
+                                         iterator->second.bytecode.data(),
+                                         iterator->second.bytecode.size(),
+                                         JS_READ_OBJ_BYTECODE);
+        if (! JS_IsException(compiled)) {
             const auto eval_started = std::chrono::steady_clock::now();
-            factory = JS_EvalFunction(context, compiled);
+            factory                 = JS_EvalFunction(context, compiled);
             g_script_startup_metrics.eval_ms += MeasureElapsedMs(eval_started);
         } else {
             LogJsException(context, "JS_ReadObject");
@@ -2207,47 +2316,46 @@ JSValue AcquireScriptFactory(
             JS_FreeValue(context, factory);
         }
 
-        ScriptFrontEndResult front_end = RunScriptFrontEnd(script_source);
-        const std::string factory_source =
-            mode == ScriptProgramMode::Property
-                ? BuildPropertyScriptFactorySource(front_end)
-                : BuildSceneScriptFactorySource(front_end);
+        ScriptFrontEndResult front_end      = RunScriptFrontEnd(script_source);
+        const std::string    factory_source = mode == ScriptProgramMode::Property
+                                                  ? BuildPropertyScriptFactorySource(front_end)
+                                                  : BuildSceneScriptFactorySource(front_end);
 
         const auto compile_started = std::chrono::steady_clock::now();
-        JSValue compiled = JS_Eval(
-            context,
-            factory_source.c_str(),
-            factory_source.size(),
-            mode == ScriptProgramMode::Property ? "<property-script-factory>" : "<scene-script-factory>",
-            JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
+        JSValue    compiled        = JS_Eval(context,
+                                   factory_source.c_str(),
+                                   factory_source.size(),
+                                   mode == ScriptProgramMode::Property ? "<property-script-factory>"
+                                                                                 : "<scene-script-factory>",
+                                   JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
         g_script_startup_metrics.eval_ms += MeasureElapsedMs(compile_started);
         if (JS_IsException(compiled)) {
-            LogJsException(
-                context,
-                mode == ScriptProgramMode::Property ? "PropertyScriptFactoryCompile" : "SceneScriptFactoryCompile");
+            LogJsException(context,
+                           mode == ScriptProgramMode::Property ? "PropertyScriptFactoryCompile"
+                                                               : "SceneScriptFactoryCompile");
             return JS_EXCEPTION;
         }
 
-        size_t bytecode_size = 0;
-        uint8_t* bytecode = JS_WriteObject(
-            context,
-            &bytecode_size,
-            compiled,
-            JS_WRITE_OBJ_BYTECODE | JS_WRITE_OBJ_STRIP_SOURCE | JS_WRITE_OBJ_STRIP_DEBUG);
+        size_t   bytecode_size = 0;
+        uint8_t* bytecode      = JS_WriteObject(context,
+                                           &bytecode_size,
+                                           compiled,
+                                           JS_WRITE_OBJ_BYTECODE | JS_WRITE_OBJ_STRIP_SOURCE |
+                                               JS_WRITE_OBJ_STRIP_DEBUG);
         if (bytecode != nullptr && bytecode_size > 0) {
-            auto& serialized = g_serialized_script_templates[cache_key];
+            auto& serialized          = g_serialized_script_templates[cache_key];
             serialized.factory_source = factory_source;
             serialized.bytecode.assign(bytecode, bytecode + bytecode_size);
             js_free(context, bytecode);
         }
 
         const auto eval_started = std::chrono::steady_clock::now();
-        factory = JS_EvalFunction(context, compiled);
+        factory                 = JS_EvalFunction(context, compiled);
         g_script_startup_metrics.eval_ms += MeasureElapsedMs(eval_started);
         if (JS_IsException(factory)) {
-            LogJsException(
-                context,
-                mode == ScriptProgramMode::Property ? "PropertyScriptFactoryEval" : "SceneScriptFactoryEval");
+            LogJsException(context,
+                           mode == ScriptProgramMode::Property ? "PropertyScriptFactoryEval"
+                                                               : "SceneScriptFactoryEval");
             return JS_EXCEPTION;
         }
         g_script_startup_metrics.script_compiles++;
@@ -2257,26 +2365,27 @@ JSValue AcquireScriptFactory(
     return factory;
 }
 
-bool ExecuteScriptFactory(
-    JSContext*              context,
-    JSValue                 factory,
-    const std::string&      exports_object_name,
-    const std::string&      current_layer_name,
-    const std::string_view  props_name,
-    const char*             scope)
-{
+bool ExecuteScriptFactory(JSContext* context, JSValue factory,
+                          const std::string& exports_object_name,
+                          const std::string& current_layer_name, const std::string_view props_name,
+                          const char* scope) {
     JSValue script_context = JS_NewObject(context);
-    JS_SetPropertyStr(context, script_context, "exportsName", JS_NewString(context, exports_object_name.c_str()));
-    JS_SetPropertyStr(context, script_context, "layerName", JS_NewString(context, current_layer_name.c_str()));
-    if (!props_name.empty()) {
-        JS_SetPropertyStr(context, script_context, "propsName", JS_NewStringLen(context, props_name.data(), props_name.size()));
+    JS_SetPropertyStr(
+        context, script_context, "exportsName", JS_NewString(context, exports_object_name.c_str()));
+    JS_SetPropertyStr(
+        context, script_context, "layerName", JS_NewString(context, current_layer_name.c_str()));
+    if (! props_name.empty()) {
+        JS_SetPropertyStr(context,
+                          script_context,
+                          "propsName",
+                          JS_NewStringLen(context, props_name.data(), props_name.size()));
     } else {
         JS_SetPropertyStr(context, script_context, "propsName", JS_NewString(context, ""));
     }
 
-    JSValueConst argv[] = { script_context };
-    const auto eval_started = std::chrono::steady_clock::now();
-    JSValue result = JS_Call(context, factory, JS_UNDEFINED, 1, argv);
+    JSValueConst argv[]       = { script_context };
+    const auto   eval_started = std::chrono::steady_clock::now();
+    JSValue      result       = JS_Call(context, factory, JS_UNDEFINED, 1, argv);
     g_script_startup_metrics.eval_ms += MeasureElapsedMs(eval_started);
     JS_FreeValue(context, script_context);
     if (JS_IsException(result)) {
@@ -2291,24 +2400,17 @@ bool ExecuteScriptFactory(
 } // namespace
 
 PropertyScriptProgram::PropertyScriptProgram(
-    SceneRuntimeContext*                 runtime,
-    std::string                          script_source,
-    std::string                          current_layer_name,
-    std::map<std::string, DynamicValue*> script_properties,
-    DynamicValue                         initial_value,
-    ScriptHostContext                    host_context,
-    JSRuntime*                           shared_runtime,
-    JSContext*                           shared_context,
-    std::string                          exports_object_name,
-    std::string                          script_properties_name,
-    PropertyScriptValueSemantic          semantic) :
-    m_script_properties(std::move(script_properties)),
-    m_runtime(runtime),
-    m_current_layer_name(std::move(current_layer_name)),
-    m_exports_object_name(std::move(exports_object_name)),
-    m_script_properties_name(std::move(script_properties_name)),
-    m_semantic(semantic)
-{
+    SceneRuntimeContext* runtime, std::string script_source, std::string current_layer_name,
+    std::map<std::string, DynamicValue*> script_properties, DynamicValue initial_value,
+    ScriptHostContext host_context, JSRuntime* shared_runtime, JSContext* shared_context,
+    std::string exports_object_name, std::string script_properties_name,
+    PropertyScriptValueSemantic semantic)
+    : m_script_properties(std::move(script_properties)),
+      m_runtime(runtime),
+      m_current_layer_name(std::move(current_layer_name)),
+      m_exports_object_name(std::move(exports_object_name)),
+      m_script_properties_name(std::move(script_properties_name)),
+      m_semantic(semantic) {
     auto* runtime_handle = shared_runtime;
     if (runtime_handle == nullptr) {
         LOG_ERROR("PropertyScriptProgram: failed to create JS runtime");
@@ -2325,35 +2427,30 @@ PropertyScriptProgram::PropertyScriptProgram(
     m_impl_context = context_handle;
     m_owns_context = false;
 
-    const ProjectProperties* project_properties = runtime != nullptr ? &runtime->projectProperties() : nullptr;
-    if (!EnsureSharedHostBindings(context_handle, runtime, host_context, project_properties)) {
+    const ProjectProperties* project_properties =
+        runtime != nullptr ? &runtime->projectProperties() : nullptr;
+    if (! EnsureSharedHostBindings(context_handle, runtime, host_context, project_properties)) {
         return;
     }
 
     JSValue global_object       = JS_GetGlobalObject(context_handle);
     JSValue script_props_object = BuildScriptPropertiesObject(context_handle, m_script_properties);
     JS_SetPropertyStr(
-        context_handle,
-        global_object,
-        m_script_properties_name.c_str(),
-        script_props_object);
+        context_handle, global_object, m_script_properties_name.c_str(), script_props_object);
 
-    JSValue factory = AcquireScriptFactory(
-        context_handle,
-        script_source,
-        ScriptProgramMode::Property);
+    JSValue factory =
+        AcquireScriptFactory(context_handle, script_source, ScriptProgramMode::Property);
     if (JS_IsException(factory)) {
         JS_FreeValue(context_handle, global_object);
         return;
     }
 
-    if (!ExecuteScriptFactory(
-            context_handle,
-            factory,
-            m_exports_object_name,
-            m_current_layer_name,
-            m_script_properties_name,
-            "PropertyScriptProgram")) {
+    if (! ExecuteScriptFactory(context_handle,
+                               factory,
+                               m_exports_object_name,
+                               m_current_layer_name,
+                               m_script_properties_name,
+                               "PropertyScriptProgram")) {
         JS_FreeValue(context_handle, factory);
         JS_FreeValue(context_handle, global_object);
         return;
@@ -2364,25 +2461,21 @@ PropertyScriptProgram::PropertyScriptProgram(
     m_valid = true;
 }
 
-PropertyScriptProgram::~PropertyScriptProgram()
-{
+PropertyScriptProgram::~PropertyScriptProgram() {
     auto* context_handle = static_cast<JSContext*>(m_impl_context);
     auto* runtime_handle = static_cast<JSRuntime*>(m_impl_runtime);
     if (m_owns_context && context_handle != nullptr) {
-        auto* bridge_state = static_cast<SceneScriptBridgeState*>(JS_GetContextOpaque(context_handle));
+        auto* bridge_state =
+            static_cast<SceneScriptBridgeState*>(JS_GetContextOpaque(context_handle));
         delete bridge_state;
         JS_FreeContext(context_handle);
     }
     if (m_owns_context && runtime_handle != nullptr) JS_FreeRuntime(runtime_handle);
 }
 
-bool PropertyScriptProgram::Valid() const
-{
-    return m_valid;
-}
+bool PropertyScriptProgram::Valid() const { return m_valid; }
 
-void PropertyScriptProgram::UpdateHostContext(const ScriptHostContext& host_context)
-{
+void PropertyScriptProgram::UpdateHostContext(const ScriptHostContext& host_context) {
     auto* context_handle = static_cast<JSContext*>(m_impl_context);
     if (context_handle == nullptr) return;
 
@@ -2391,16 +2484,13 @@ void PropertyScriptProgram::UpdateHostContext(const ScriptHostContext& host_cont
     JS_FreeValue(context_handle, global_object);
 }
 
-void PropertyScriptProgram::UpdateScriptProperties()
-{
+void PropertyScriptProgram::UpdateScriptProperties() {
     auto* context_handle = static_cast<JSContext*>(m_impl_context);
     if (context_handle == nullptr) return;
 
     JSValue global_object = JS_GetGlobalObject(context_handle);
-    JSValue props_object  = JS_GetPropertyStr(
-        context_handle,
-        global_object,
-        m_script_properties_name.c_str());
+    JSValue props_object =
+        JS_GetPropertyStr(context_handle, global_object, m_script_properties_name.c_str());
     if (JS_IsObject(props_object)) {
         UpdateScriptPropertiesObject(context_handle, props_object, m_script_properties);
     }
@@ -2408,45 +2498,37 @@ void PropertyScriptProgram::UpdateScriptProperties()
     JS_FreeValue(context_handle, global_object);
 }
 
-DynamicValueUniquePtr PropertyScriptProgram::Evaluate(
-    const ScriptHostContext& host_context,
-    const DynamicValue&      current_value)
-{
+DynamicValueUniquePtr PropertyScriptProgram::Evaluate(const ScriptHostContext& host_context,
+                                                      const DynamicValue&      current_value) {
     auto* context_handle = static_cast<JSContext*>(m_impl_context);
-    if (!m_valid || context_handle == nullptr) return nullptr;
+    if (! m_valid || context_handle == nullptr) return nullptr;
 
     UpdateHostContext(host_context);
     UpdateScriptProperties();
     ProcessScheduledCallbacks(context_handle);
 
-    if (!m_init_called) {
+    if (! m_init_called) {
         DynamicValue init_input = current_value;
         if (m_semantic == PropertyScriptValueSemantic::AnglesDegrees &&
             init_input.getType() == DynamicValue::Vec3) {
             init_input.update(RadiansToDegrees(init_input.getVec3()));
         }
 
-        JSValue initial_value_js = DynamicValueToJS(context_handle, init_input);
-        JSValueConst init_argv[] = { initial_value_js };
-        JSValue init_result = CallStoredExport(
-            context_handle,
-            m_exports_object_name.c_str(),
-            "init",
-            1,
-            init_argv);
+        JSValue      initial_value_js = DynamicValueToJS(context_handle, init_input);
+        JSValueConst init_argv[]      = { initial_value_js };
+        JSValue      init_result =
+            CallStoredExport(context_handle, m_exports_object_name.c_str(), "init", 1, init_argv);
         JS_FreeValue(context_handle, init_result);
         JS_FreeValue(context_handle, initial_value_js);
         if (m_runtime != nullptr) {
-            JSValue changed_properties = CreateChangedPropertiesObject(
-                context_handle,
-                m_runtime->projectProperties());
+            JSValue changed_properties =
+                CreateChangedPropertiesObject(context_handle, m_runtime->projectProperties());
             JSValueConst changed_argv[] = { changed_properties };
-            JSValue apply_result = CallStoredExport(
-                context_handle,
-                m_exports_object_name.c_str(),
-                "applyUserProperties",
-                1,
-                changed_argv);
+            JSValue      apply_result   = CallStoredExport(context_handle,
+                                                    m_exports_object_name.c_str(),
+                                                    "applyUserProperties",
+                                                    1,
+                                                    changed_argv);
             JS_FreeValue(context_handle, apply_result);
             JS_FreeValue(context_handle, changed_properties);
         }
@@ -2459,14 +2541,10 @@ DynamicValueUniquePtr PropertyScriptProgram::Evaluate(
         script_input.update(RadiansToDegrees(script_input.getVec3()));
     }
 
-    JSValue current_value_js = DynamicValueToJS(context_handle, script_input);
-    JSValueConst argv[]      = { current_value_js };
-    JSValue result = CallStoredExport(
-        context_handle,
-        m_exports_object_name.c_str(),
-        "update",
-        1,
-        argv);
+    JSValue      current_value_js = DynamicValueToJS(context_handle, script_input);
+    JSValueConst argv[]           = { current_value_js };
+    JSValue      result =
+        CallStoredExport(context_handle, m_exports_object_name.c_str(), "update", 1, argv);
     JS_FreeValue(context_handle, current_value_js);
 
     if (JS_IsException(result)) {
@@ -2484,8 +2562,7 @@ DynamicValueUniquePtr PropertyScriptProgram::Evaluate(
     }
 
     auto dynamic_result = JsToDynamicValue(context_handle, result, current_value.getType());
-    if (dynamic_result != nullptr &&
-        m_semantic == PropertyScriptValueSemantic::AnglesDegrees &&
+    if (dynamic_result != nullptr && m_semantic == PropertyScriptValueSemantic::AnglesDegrees &&
         dynamic_result->getType() == DynamicValue::Vec3) {
         dynamic_result->update(DegreesToRadians(dynamic_result->getVec3()));
     }
@@ -2493,95 +2570,93 @@ DynamicValueUniquePtr PropertyScriptProgram::Evaluate(
     return dynamic_result;
 }
 
-void PropertyScriptProgram::DispatchCursorClick(const ScriptHostContext& host_context)
-{
-    if (!m_valid) return;
+void PropertyScriptProgram::DispatchCursorClick(const ScriptHostContext& host_context) {
+    if (! m_valid) return;
     auto* context_handle = static_cast<JSContext*>(m_impl_context);
     if (context_handle == nullptr) return;
 
     UpdateHostContext(host_context);
-    JSValue event_object = BuildCursorEventObject(context_handle, host_context);
-    JSValueConst argv[] = { event_object };
-    JSValue result = CallStoredExport(context_handle, m_exports_object_name.c_str(), "cursorClick", 1, argv);
+    JSValue      event_object = BuildCursorEventObject(context_handle, host_context);
+    JSValueConst argv[]       = { event_object };
+    JSValue      result =
+        CallStoredExport(context_handle, m_exports_object_name.c_str(), "cursorClick", 1, argv);
     JS_FreeValue(context_handle, result);
     JS_FreeValue(context_handle, event_object);
 }
 
-void PropertyScriptProgram::DispatchCursorDown(const ScriptHostContext& host_context)
-{
-    if (!m_valid) return;
+void PropertyScriptProgram::DispatchCursorDown(const ScriptHostContext& host_context) {
+    if (! m_valid) return;
     auto* context_handle = static_cast<JSContext*>(m_impl_context);
     if (context_handle == nullptr) return;
 
     UpdateHostContext(host_context);
-    JSValue event_object = BuildCursorEventObject(context_handle, host_context);
-    JSValueConst argv[] = { event_object };
-    JSValue result = CallStoredExport(context_handle, m_exports_object_name.c_str(), "cursorDown", 1, argv);
+    JSValue      event_object = BuildCursorEventObject(context_handle, host_context);
+    JSValueConst argv[]       = { event_object };
+    JSValue      result =
+        CallStoredExport(context_handle, m_exports_object_name.c_str(), "cursorDown", 1, argv);
     JS_FreeValue(context_handle, result);
     JS_FreeValue(context_handle, event_object);
 }
 
-void PropertyScriptProgram::DispatchCursorEnter(const ScriptHostContext& host_context)
-{
-    if (!m_valid) return;
+void PropertyScriptProgram::DispatchCursorEnter(const ScriptHostContext& host_context) {
+    if (! m_valid) return;
     auto* context_handle = static_cast<JSContext*>(m_impl_context);
     if (context_handle == nullptr) return;
 
     UpdateHostContext(host_context);
-    JSValue event_object = BuildCursorEventObject(context_handle, host_context);
-    JSValueConst argv[] = { event_object };
-    JSValue result = CallStoredExport(context_handle, m_exports_object_name.c_str(), "cursorEnter", 1, argv);
+    JSValue      event_object = BuildCursorEventObject(context_handle, host_context);
+    JSValueConst argv[]       = { event_object };
+    JSValue      result =
+        CallStoredExport(context_handle, m_exports_object_name.c_str(), "cursorEnter", 1, argv);
     JS_FreeValue(context_handle, result);
     JS_FreeValue(context_handle, event_object);
 }
 
-void PropertyScriptProgram::DispatchCursorLeave(const ScriptHostContext& host_context)
-{
-    if (!m_valid) return;
+void PropertyScriptProgram::DispatchCursorLeave(const ScriptHostContext& host_context) {
+    if (! m_valid) return;
     auto* context_handle = static_cast<JSContext*>(m_impl_context);
     if (context_handle == nullptr) return;
 
     UpdateHostContext(host_context);
-    JSValue event_object = BuildCursorEventObject(context_handle, host_context);
-    JSValueConst argv[] = { event_object };
-    JSValue result = CallStoredExport(context_handle, m_exports_object_name.c_str(), "cursorLeave", 1, argv);
+    JSValue      event_object = BuildCursorEventObject(context_handle, host_context);
+    JSValueConst argv[]       = { event_object };
+    JSValue      result =
+        CallStoredExport(context_handle, m_exports_object_name.c_str(), "cursorLeave", 1, argv);
     JS_FreeValue(context_handle, result);
     JS_FreeValue(context_handle, event_object);
 }
 
-void PropertyScriptProgram::DispatchCursorMove(const ScriptHostContext& host_context)
-{
-    if (!m_valid) return;
+void PropertyScriptProgram::DispatchCursorMove(const ScriptHostContext& host_context) {
+    if (! m_valid) return;
     auto* context_handle = static_cast<JSContext*>(m_impl_context);
     if (context_handle == nullptr) return;
 
     UpdateHostContext(host_context);
-    JSValue event_object = BuildCursorEventObject(context_handle, host_context);
-    JSValueConst argv[] = { event_object };
-    JSValue result = CallStoredExport(context_handle, m_exports_object_name.c_str(), "cursorMove", 1, argv);
+    JSValue      event_object = BuildCursorEventObject(context_handle, host_context);
+    JSValueConst argv[]       = { event_object };
+    JSValue      result =
+        CallStoredExport(context_handle, m_exports_object_name.c_str(), "cursorMove", 1, argv);
     JS_FreeValue(context_handle, result);
     JS_FreeValue(context_handle, event_object);
 }
 
-void PropertyScriptProgram::DispatchCursorUp(const ScriptHostContext& host_context)
-{
-    if (!m_valid) return;
+void PropertyScriptProgram::DispatchCursorUp(const ScriptHostContext& host_context) {
+    if (! m_valid) return;
     auto* context_handle = static_cast<JSContext*>(m_impl_context);
     if (context_handle == nullptr) return;
 
     UpdateHostContext(host_context);
-    JSValue event_object = BuildCursorEventObject(context_handle, host_context);
-    JSValueConst argv[] = { event_object };
-    JSValue result = CallStoredExport(context_handle, m_exports_object_name.c_str(), "cursorUp", 1, argv);
+    JSValue      event_object = BuildCursorEventObject(context_handle, host_context);
+    JSValueConst argv[]       = { event_object };
+    JSValue      result =
+        CallStoredExport(context_handle, m_exports_object_name.c_str(), "cursorUp", 1, argv);
     JS_FreeValue(context_handle, result);
     JS_FreeValue(context_handle, event_object);
 }
 
-void PropertyScriptProgram::DispatchMediaThumbnailChanged(
-    const Eigen::Vector3f& primary_color,
-    const Eigen::Vector3f& text_color)
-{
-    if (!m_valid) return;
+void PropertyScriptProgram::DispatchMediaThumbnailChanged(const Eigen::Vector3f& primary_color,
+                                                          const Eigen::Vector3f& text_color) {
+    if (! m_valid) return;
     auto* context_handle = static_cast<JSContext*>(m_impl_context);
     if (context_handle == nullptr) return;
 
@@ -2591,39 +2666,38 @@ void PropertyScriptProgram::DispatchMediaThumbnailChanged(
         event_object,
         "primaryColor",
         CreateJsVec3(context_handle, primary_color.x(), primary_color.y(), primary_color.z()));
+    JS_SetPropertyStr(context_handle,
+                      event_object,
+                      "textColor",
+                      CreateJsVec3(context_handle, text_color.x(), text_color.y(), text_color.z()));
     JS_SetPropertyStr(
-        context_handle,
-        event_object,
-        "textColor",
-        CreateJsVec3(context_handle, text_color.x(), text_color.y(), text_color.z()));
-    JS_SetPropertyStr(context_handle, event_object, "hasThumbnail", JS_NewBool(context_handle, true));
+        context_handle, event_object, "hasThumbnail", JS_NewBool(context_handle, true));
 
     JSValueConst argv[] = { event_object };
-    JSValue result = CallStoredExport(
-        context_handle,
-        m_exports_object_name.c_str(),
-        "mediaThumbnailChanged",
-        1,
-        argv);
+    JSValue      result = CallStoredExport(
+        context_handle, m_exports_object_name.c_str(), "mediaThumbnailChanged", 1, argv);
     JS_FreeValue(context_handle, result);
     JS_FreeValue(context_handle, event_object);
 }
 
-SceneScriptProgram::SceneScriptProgram(
-    SceneRuntimeContext& runtime,
-    std::string          script_source,
-    std::string          current_layer_name,
-    ProjectProperties    project_properties,
-    ScriptHostContext    host_context,
-    JSRuntime*           shared_runtime,
-    JSContext*           shared_context,
-    std::string          exports_object_name) :
-    m_runtime(&runtime),
-    m_script_source(std::move(script_source)),
-    m_current_layer_name(std::move(current_layer_name)),
-    m_project_properties(std::move(project_properties)),
-    m_exports_object_name(std::move(exports_object_name))
-{
+void PropertyScriptProgram::DispatchMediaEventJson(std::string_view event_json) {
+    if (! m_valid) return;
+    auto* context_handle = static_cast<JSContext*>(m_impl_context);
+    if (context_handle == nullptr) return;
+
+    DispatchMediaEventJsonToScript(context_handle, m_exports_object_name, event_json, false);
+}
+
+SceneScriptProgram::SceneScriptProgram(SceneRuntimeContext& runtime, std::string script_source,
+                                       std::string       current_layer_name,
+                                       ProjectProperties project_properties,
+                                       ScriptHostContext host_context, JSRuntime* shared_runtime,
+                                       JSContext* shared_context, std::string exports_object_name)
+    : m_runtime(&runtime),
+      m_script_source(std::move(script_source)),
+      m_current_layer_name(std::move(current_layer_name)),
+      m_project_properties(std::move(project_properties)),
+      m_exports_object_name(std::move(exports_object_name)) {
     auto* runtime_handle = shared_runtime;
     if (runtime_handle == nullptr) {
         LOG_ERROR("SceneScriptProgram: failed to create JS runtime");
@@ -2640,31 +2714,24 @@ SceneScriptProgram::SceneScriptProgram(
     m_impl_context = context_handle;
     m_owns_context = false;
 
-    if (!EnsureSharedHostBindings(
-            context_handle,
-            &runtime,
-            host_context,
-            &m_project_properties)) {
+    if (! EnsureSharedHostBindings(context_handle, &runtime, host_context, &m_project_properties)) {
         return;
     }
 
     JSValue global_object = JS_GetGlobalObject(context_handle);
-    JSValue factory = AcquireScriptFactory(
-        context_handle,
-        m_script_source,
-        ScriptProgramMode::Scene);
+    JSValue factory =
+        AcquireScriptFactory(context_handle, m_script_source, ScriptProgramMode::Scene);
     if (JS_IsException(factory)) {
         JS_FreeValue(context_handle, global_object);
         return;
     }
 
-    if (!ExecuteScriptFactory(
-            context_handle,
-            factory,
-            m_exports_object_name,
-            m_current_layer_name,
-            {},
-            "SceneScriptProgram")) {
+    if (! ExecuteScriptFactory(context_handle,
+                               factory,
+                               m_exports_object_name,
+                               m_current_layer_name,
+                               {},
+                               "SceneScriptProgram")) {
         JS_FreeValue(context_handle, factory);
         JS_FreeValue(context_handle, global_object);
         return;
@@ -2673,32 +2740,29 @@ SceneScriptProgram::SceneScriptProgram(
     JS_FreeValue(context_handle, global_object);
 
     UpdateHostContext(host_context);
-    JSValue init_result = CallStoredExport(context_handle, m_exports_object_name.c_str(), "init", 0, nullptr);
+    JSValue init_result =
+        CallStoredExport(context_handle, m_exports_object_name.c_str(), "init", 0, nullptr);
     JS_FreeValue(context_handle, init_result);
     ApplyUserProperties(m_project_properties);
     RunSceneCallbacks(context_handle, "load");
     m_valid = true;
 }
 
-SceneScriptProgram::~SceneScriptProgram()
-{
+SceneScriptProgram::~SceneScriptProgram() {
     auto* context_handle = static_cast<JSContext*>(m_impl_context);
     auto* runtime_handle = static_cast<JSRuntime*>(m_impl_runtime);
     if (m_owns_context && context_handle != nullptr) {
-        auto* bridge_state = static_cast<SceneScriptBridgeState*>(JS_GetContextOpaque(context_handle));
+        auto* bridge_state =
+            static_cast<SceneScriptBridgeState*>(JS_GetContextOpaque(context_handle));
         delete bridge_state;
         JS_FreeContext(context_handle);
     }
     if (m_owns_context && runtime_handle != nullptr) JS_FreeRuntime(runtime_handle);
 }
 
-bool SceneScriptProgram::Valid() const
-{
-    return m_valid;
-}
+bool SceneScriptProgram::Valid() const { return m_valid; }
 
-void SceneScriptProgram::UpdateHostContext(const ScriptHostContext& host_context)
-{
+void SceneScriptProgram::UpdateHostContext(const ScriptHostContext& host_context) {
     auto* context_handle = static_cast<JSContext*>(m_impl_context);
     if (context_handle == nullptr) return;
 
@@ -2707,146 +2771,137 @@ void SceneScriptProgram::UpdateHostContext(const ScriptHostContext& host_context
     JS_FreeValue(context_handle, global_object);
 }
 
-void SceneScriptProgram::ApplyUserProperties(const ProjectProperties& project_properties)
-{
+void SceneScriptProgram::ApplyUserProperties(const ProjectProperties& project_properties) {
     auto* context_handle = static_cast<JSContext*>(m_impl_context);
     if (context_handle == nullptr) return;
 
     JSValue global_object = JS_GetGlobalObject(context_handle);
-    JS_SetPropertyStr(
-        context_handle,
-        global_object,
-        "__sceneProps",
-        CreateScenePropertiesObject(context_handle, project_properties));
+    JS_SetPropertyStr(context_handle,
+                      global_object,
+                      "__sceneProps",
+                      CreateScenePropertiesObject(context_handle, project_properties));
     SetEngineUserProperties(context_handle, global_object, project_properties);
 
     JSValue changed_properties = CreateChangedPropertiesObject(context_handle, project_properties);
-    JSValueConst argv[] = { changed_properties };
-    JSValue result = CallStoredExport(
-        context_handle,
-        m_exports_object_name.c_str(),
-        "applyUserProperties",
-        1,
-        argv);
+    JSValueConst argv[]        = { changed_properties };
+    JSValue      result        = CallStoredExport(
+        context_handle, m_exports_object_name.c_str(), "applyUserProperties", 1, argv);
     JS_FreeValue(context_handle, result);
     JS_FreeValue(context_handle, changed_properties);
     JS_FreeValue(context_handle, global_object);
 }
 
-void SceneScriptProgram::ApplyProjectProperties(const ProjectProperties& project_properties)
-{
+void SceneScriptProgram::ApplyProjectProperties(const ProjectProperties& project_properties) {
     m_project_properties = project_properties;
     ApplyUserProperties(m_project_properties);
 }
 
-void SceneScriptProgram::Tick(const ScriptHostContext& host_context)
-{
-    if (!m_valid) return;
+void SceneScriptProgram::Tick(const ScriptHostContext& host_context) {
+    if (! m_valid) return;
     auto* context_handle = static_cast<JSContext*>(m_impl_context);
     if (context_handle == nullptr) return;
 
     UpdateHostContext(host_context);
     ProcessScheduledCallbacks(context_handle);
-    JSValue result = CallStoredExport(context_handle, m_exports_object_name.c_str(), "update", 0, nullptr);
+    JSValue result =
+        CallStoredExport(context_handle, m_exports_object_name.c_str(), "update", 0, nullptr);
     JS_FreeValue(context_handle, result);
     RunSceneCallbacks(context_handle, "update");
 }
 
-void SceneScriptProgram::DispatchCursorClick(const ScriptHostContext& host_context)
-{
-    if (!m_valid) return;
+void SceneScriptProgram::DispatchCursorClick(const ScriptHostContext& host_context) {
+    if (! m_valid) return;
     auto* context_handle = static_cast<JSContext*>(m_impl_context);
     if (context_handle == nullptr) return;
 
     UpdateHostContext(host_context);
-    JSValue event_object = BuildCursorEventObject(context_handle, host_context);
-    JSValueConst argv[] = { event_object };
-    JSValue result = CallStoredExport(context_handle, m_exports_object_name.c_str(), "cursorClick", 1, argv);
+    JSValue      event_object = BuildCursorEventObject(context_handle, host_context);
+    JSValueConst argv[]       = { event_object };
+    JSValue      result =
+        CallStoredExport(context_handle, m_exports_object_name.c_str(), "cursorClick", 1, argv);
     JS_FreeValue(context_handle, result);
     RunSceneCallbacks(context_handle, "cursorClick", event_object);
     JS_FreeValue(context_handle, event_object);
 }
 
-void SceneScriptProgram::DispatchCursorDown(const ScriptHostContext& host_context)
-{
-    if (!m_valid) return;
+void SceneScriptProgram::DispatchCursorDown(const ScriptHostContext& host_context) {
+    if (! m_valid) return;
     auto* context_handle = static_cast<JSContext*>(m_impl_context);
     if (context_handle == nullptr) return;
 
     UpdateHostContext(host_context);
-    JSValue event_object = BuildCursorEventObject(context_handle, host_context);
-    JSValueConst argv[] = { event_object };
-    JSValue result = CallStoredExport(context_handle, m_exports_object_name.c_str(), "cursorDown", 1, argv);
+    JSValue      event_object = BuildCursorEventObject(context_handle, host_context);
+    JSValueConst argv[]       = { event_object };
+    JSValue      result =
+        CallStoredExport(context_handle, m_exports_object_name.c_str(), "cursorDown", 1, argv);
     JS_FreeValue(context_handle, result);
     RunSceneCallbacks(context_handle, "cursorDown", event_object);
     JS_FreeValue(context_handle, event_object);
 }
 
-void SceneScriptProgram::DispatchCursorEnter(const ScriptHostContext& host_context)
-{
-    if (!m_valid) return;
+void SceneScriptProgram::DispatchCursorEnter(const ScriptHostContext& host_context) {
+    if (! m_valid) return;
     auto* context_handle = static_cast<JSContext*>(m_impl_context);
     if (context_handle == nullptr) return;
 
     UpdateHostContext(host_context);
-    JSValue event_object = BuildCursorEventObject(context_handle, host_context);
-    JSValueConst argv[] = { event_object };
-    JSValue result = CallStoredExport(context_handle, m_exports_object_name.c_str(), "cursorEnter", 1, argv);
+    JSValue      event_object = BuildCursorEventObject(context_handle, host_context);
+    JSValueConst argv[]       = { event_object };
+    JSValue      result =
+        CallStoredExport(context_handle, m_exports_object_name.c_str(), "cursorEnter", 1, argv);
     JS_FreeValue(context_handle, result);
     RunSceneCallbacks(context_handle, "cursorEnter", event_object);
     JS_FreeValue(context_handle, event_object);
 }
 
-void SceneScriptProgram::DispatchCursorLeave(const ScriptHostContext& host_context)
-{
-    if (!m_valid) return;
+void SceneScriptProgram::DispatchCursorLeave(const ScriptHostContext& host_context) {
+    if (! m_valid) return;
     auto* context_handle = static_cast<JSContext*>(m_impl_context);
     if (context_handle == nullptr) return;
 
     UpdateHostContext(host_context);
-    JSValue event_object = BuildCursorEventObject(context_handle, host_context);
-    JSValueConst argv[] = { event_object };
-    JSValue result = CallStoredExport(context_handle, m_exports_object_name.c_str(), "cursorLeave", 1, argv);
+    JSValue      event_object = BuildCursorEventObject(context_handle, host_context);
+    JSValueConst argv[]       = { event_object };
+    JSValue      result =
+        CallStoredExport(context_handle, m_exports_object_name.c_str(), "cursorLeave", 1, argv);
     JS_FreeValue(context_handle, result);
     RunSceneCallbacks(context_handle, "cursorLeave", event_object);
     JS_FreeValue(context_handle, event_object);
 }
 
-void SceneScriptProgram::DispatchCursorMove(const ScriptHostContext& host_context)
-{
-    if (!m_valid) return;
+void SceneScriptProgram::DispatchCursorMove(const ScriptHostContext& host_context) {
+    if (! m_valid) return;
     auto* context_handle = static_cast<JSContext*>(m_impl_context);
     if (context_handle == nullptr) return;
 
     UpdateHostContext(host_context);
-    JSValue event_object = BuildCursorEventObject(context_handle, host_context);
-    JSValueConst argv[] = { event_object };
-    JSValue result = CallStoredExport(context_handle, m_exports_object_name.c_str(), "cursorMove", 1, argv);
+    JSValue      event_object = BuildCursorEventObject(context_handle, host_context);
+    JSValueConst argv[]       = { event_object };
+    JSValue      result =
+        CallStoredExport(context_handle, m_exports_object_name.c_str(), "cursorMove", 1, argv);
     JS_FreeValue(context_handle, result);
     RunSceneCallbacks(context_handle, "cursorMove", event_object);
     JS_FreeValue(context_handle, event_object);
 }
 
-void SceneScriptProgram::DispatchCursorUp(const ScriptHostContext& host_context)
-{
-    if (!m_valid) return;
+void SceneScriptProgram::DispatchCursorUp(const ScriptHostContext& host_context) {
+    if (! m_valid) return;
     auto* context_handle = static_cast<JSContext*>(m_impl_context);
     if (context_handle == nullptr) return;
 
     UpdateHostContext(host_context);
-    JSValue event_object = BuildCursorEventObject(context_handle, host_context);
-    JSValueConst argv[] = { event_object };
-    JSValue result = CallStoredExport(context_handle, m_exports_object_name.c_str(), "cursorUp", 1, argv);
+    JSValue      event_object = BuildCursorEventObject(context_handle, host_context);
+    JSValueConst argv[]       = { event_object };
+    JSValue      result =
+        CallStoredExport(context_handle, m_exports_object_name.c_str(), "cursorUp", 1, argv);
     JS_FreeValue(context_handle, result);
     RunSceneCallbacks(context_handle, "cursorUp", event_object);
     JS_FreeValue(context_handle, event_object);
 }
 
-void SceneScriptProgram::DispatchMediaThumbnailChanged(
-    const Eigen::Vector3f& primary_color,
-    const Eigen::Vector3f& text_color)
-{
-    if (!m_valid) return;
+void SceneScriptProgram::DispatchMediaThumbnailChanged(const Eigen::Vector3f& primary_color,
+                                                       const Eigen::Vector3f& text_color) {
+    if (! m_valid) return;
     auto* context_handle = static_cast<JSContext*>(m_impl_context);
     if (context_handle == nullptr) return;
 
@@ -2856,27 +2911,30 @@ void SceneScriptProgram::DispatchMediaThumbnailChanged(
         event_object,
         "primaryColor",
         CreateJsVec3(context_handle, primary_color.x(), primary_color.y(), primary_color.z()));
+    JS_SetPropertyStr(context_handle,
+                      event_object,
+                      "textColor",
+                      CreateJsVec3(context_handle, text_color.x(), text_color.y(), text_color.z()));
     JS_SetPropertyStr(
-        context_handle,
-        event_object,
-        "textColor",
-        CreateJsVec3(context_handle, text_color.x(), text_color.y(), text_color.z()));
-    JS_SetPropertyStr(context_handle, event_object, "hasThumbnail", JS_NewBool(context_handle, true));
+        context_handle, event_object, "hasThumbnail", JS_NewBool(context_handle, true));
 
     JSValueConst argv[] = { event_object };
-    JSValue result = CallStoredExport(
-        context_handle,
-        m_exports_object_name.c_str(),
-        "mediaThumbnailChanged",
-        1,
-        argv);
+    JSValue      result = CallStoredExport(
+        context_handle, m_exports_object_name.c_str(), "mediaThumbnailChanged", 1, argv);
     JS_FreeValue(context_handle, result);
     RunSceneCallbacks(context_handle, "mediaThumbnailChanged", event_object);
     JS_FreeValue(context_handle, event_object);
 }
 
-ScriptEngine::ScriptEngine()
-{
+void SceneScriptProgram::DispatchMediaEventJson(std::string_view event_json) {
+    if (! m_valid) return;
+    auto* context_handle = static_cast<JSContext*>(m_impl_context);
+    if (context_handle == nullptr) return;
+
+    DispatchMediaEventJsonToScript(context_handle, m_exports_object_name, event_json, true);
+}
+
+ScriptEngine::ScriptEngine() {
     m_runtime = JS_NewRuntime();
     if (m_runtime == nullptr) {
         LOG_ERROR("ScriptEngine: failed to create JS runtime");
@@ -2891,8 +2949,7 @@ ScriptEngine::ScriptEngine()
     }
 }
 
-ScriptEngine::~ScriptEngine()
-{
+ScriptEngine::~ScriptEngine() {
     if (m_context != nullptr) {
         ReleaseContextScriptCache(m_context);
     }
@@ -2905,30 +2962,17 @@ ScriptEngine::~ScriptEngine()
     if (m_runtime != nullptr) JS_FreeRuntime(m_runtime);
 }
 
-void ScriptEngine::ResetStartupMetrics()
-{
-    g_script_startup_metrics = {};
-}
+void ScriptEngine::ResetStartupMetrics() { g_script_startup_metrics = {}; }
 
-ScriptStartupMetrics ScriptEngine::GetStartupMetrics()
-{
-    return g_script_startup_metrics;
-}
+ScriptStartupMetrics ScriptEngine::GetStartupMetrics() { return g_script_startup_metrics; }
 
-DynamicValueUniquePtr ScriptEngine::Evaluate(
-    const std::string&                           script_source,
-    const std::map<std::string, DynamicValue*>& script_properties,
-    const DynamicValue&                          current_value,
-    const ScriptHostContext&                     host_context)
-{
+DynamicValueUniquePtr
+ScriptEngine::Evaluate(const std::string&                          script_source,
+                       const std::map<std::string, DynamicValue*>& script_properties,
+                       const DynamicValue& current_value, const ScriptHostContext& host_context) {
     auto program = CreatePropertyScriptProgram(
-        nullptr,
-        script_source,
-        "",
-        script_properties,
-        current_value,
-        host_context);
-    if (program == nullptr || !program->Valid()) {
+        nullptr, script_source, "", script_properties, current_value, host_context);
+    if (program == nullptr || ! program->Valid()) {
         auto fallback = std::make_unique<DynamicValue>();
         fallback->update(current_value);
         return fallback;
@@ -2938,51 +2982,42 @@ DynamicValueUniquePtr ScriptEngine::Evaluate(
 }
 
 std::unique_ptr<PropertyScriptProgram> ScriptEngine::CreatePropertyScriptProgram(
-    SceneRuntimeContext*                 runtime,
-    std::string                          script_source,
-    std::string                          current_layer_name,
-    std::map<std::string, DynamicValue*> script_properties,
-    DynamicValue                         initial_value,
-    ScriptHostContext                    host_context,
-    PropertyScriptValueSemantic          semantic)
-{
+    SceneRuntimeContext* runtime, std::string script_source, std::string current_layer_name,
+    std::map<std::string, DynamicValue*> script_properties, DynamicValue initial_value,
+    ScriptHostContext host_context, PropertyScriptValueSemantic semantic) {
     if (m_context == nullptr || m_runtime == nullptr) return nullptr;
     const auto program_id = ++m_next_program_id;
-    auto program = std::make_unique<PropertyScriptProgram>(
-        runtime,
-        std::move(script_source),
-        std::move(current_layer_name),
-        std::move(script_properties),
-        std::move(initial_value),
-        host_context,
-        m_runtime,
-        m_context,
-        "__propertyExports_" + std::to_string(program_id),
-        "__scriptProps_" + std::to_string(program_id),
-        semantic);
-    if (!program->Valid()) return nullptr;
+    auto       program =
+        std::make_unique<PropertyScriptProgram>(runtime,
+                                                std::move(script_source),
+                                                std::move(current_layer_name),
+                                                std::move(script_properties),
+                                                std::move(initial_value),
+                                                host_context,
+                                                m_runtime,
+                                                m_context,
+                                                "__propertyExports_" + std::to_string(program_id),
+                                                "__scriptProps_" + std::to_string(program_id),
+                                                semantic);
+    if (! program->Valid()) return nullptr;
     return program;
 }
 
 std::unique_ptr<SceneScriptProgram> ScriptEngine::CreateSceneScriptProgram(
-    SceneRuntimeContext& runtime,
-    std::string          script_source,
-    std::string          current_layer_name,
-    ProjectProperties    project_properties,
-    ScriptHostContext    host_context)
-{
+    SceneRuntimeContext& runtime, std::string script_source, std::string current_layer_name,
+    ProjectProperties project_properties, ScriptHostContext host_context) {
     if (m_context == nullptr || m_runtime == nullptr) return nullptr;
     const auto program_id = ++m_next_program_id;
-    auto program = std::make_unique<SceneScriptProgram>(
-        runtime,
-        std::move(script_source),
-        std::move(current_layer_name),
-        std::move(project_properties),
-        host_context,
-        m_runtime,
-        m_context,
-        "__sceneExports_" + std::to_string(program_id));
-    if (!program->Valid()) return nullptr;
+    auto       program =
+        std::make_unique<SceneScriptProgram>(runtime,
+                                             std::move(script_source),
+                                             std::move(current_layer_name),
+                                             std::move(project_properties),
+                                             host_context,
+                                             m_runtime,
+                                             m_context,
+                                             "__sceneExports_" + std::to_string(program_id));
+    if (! program->Valid()) return nullptr;
     return program;
 }
 

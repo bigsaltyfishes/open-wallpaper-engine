@@ -1,9 +1,10 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
-#include <functional>
 #include "Type.hpp"
 #include "Swapchain/ExSwapchain.hpp"
 
@@ -12,22 +13,25 @@ namespace wallpaper
 
 using FirstFrameCallback = std::function<void()>;
 
-constexpr std::string_view PROPERTY_SOURCE               = "source";
-constexpr std::string_view PROPERTY_ASSETS               = "assets";
-constexpr std::string_view PROPERTY_FPS                  = "fps";
-constexpr std::string_view PROPERTY_FILLMODE             = "fillmode";
-constexpr std::string_view PROPERTY_SCALINGMODE          = "scalingmode";
-constexpr std::string_view PROPERTY_SCALINGFACTOR        = "scalingfactor";
-constexpr std::string_view PROPERTY_SPEED                = "speed";
-constexpr std::string_view PROPERTY_GRAPHIVZ             = "graphivz";
-constexpr std::string_view PROPERTY_VOLUME               = "volume";
-constexpr std::string_view PROPERTY_MUTED                = "muted";
-constexpr std::string_view PROPERTY_AUDIO_RESPONSE_ENABLED = "audio_response_enabled";
-constexpr std::string_view PROPERTY_PROJECT_PROPERTY_OVERRIDE_JSON = "project_property_override_json";
+constexpr std::string_view PROPERTY_SOURCE                    = "source";
+constexpr std::string_view PROPERTY_ASSETS                    = "assets";
+constexpr std::string_view PROPERTY_FPS                       = "fps";
+constexpr std::string_view PROPERTY_FILLMODE                  = "fillmode";
+constexpr std::string_view PROPERTY_SCALINGMODE               = "scalingmode";
+constexpr std::string_view PROPERTY_SCALINGFACTOR             = "scalingfactor";
+constexpr std::string_view PROPERTY_SPEED                     = "speed";
+constexpr std::string_view PROPERTY_GRAPHIVZ                  = "graphivz";
+constexpr std::string_view PROPERTY_VOLUME                    = "volume";
+constexpr std::string_view PROPERTY_MUTED                     = "muted";
+constexpr std::string_view PROPERTY_AUDIO_RESPONSE_ENABLED    = "audio_response_enabled";
+constexpr std::string_view PROPERTY_MEDIA_INTEGRATION_ENABLED = "media_integration_enabled";
+constexpr std::string_view PROPERTY_MEDIA_EVENT_JSON          = "media_event_json";
+constexpr std::string_view PROPERTY_PROJECT_PROPERTY_OVERRIDE_JSON =
+    "project_property_override_json";
 constexpr std::string_view PROPERTY_PROJECT_PROPERTY_RESET = "project_property_reset";
-constexpr std::string_view PROPERTY_CACHE_PATH           = "cache_path";
-constexpr std::string_view PROPERTY_FORCE_SHADER_REFRESH = "force_shader_refresh";
-constexpr std::string_view PROPERTY_FIRST_FRAME_CALLBACK = "first_frame_callback";
+constexpr std::string_view PROPERTY_CACHE_PATH             = "cache_path";
+constexpr std::string_view PROPERTY_FORCE_SHADER_REFRESH   = "force_shader_refresh";
+constexpr std::string_view PROPERTY_FIRST_FRAME_CALLBACK   = "first_frame_callback";
 
 #include "Core/NoCopyMove.hpp"
 class MainHandler;
@@ -36,8 +40,8 @@ struct SceneWallpaperConfig {
     std::string source;
     std::string assets;
     std::string cache_path;
-    uint32_t fps { 15 };
-    bool paused { false };
+    uint32_t    fps { 15 };
+    bool        paused { false };
 };
 
 class SceneWallpaper : NoCopy {
@@ -59,6 +63,8 @@ public:
     void setCachePath(std::string cache_path);
     void setTargetFps(uint32_t fps);
     void mouseInput(double x, double y);
+    void applySystemMediaArtwork(uint32_t width, uint32_t height, const uint8_t* rgba,
+                                 std::size_t rgba_len);
 
     void setPropertyBool(std::string_view, bool);
     void setPropertyInt32(std::string_view, int32_t);

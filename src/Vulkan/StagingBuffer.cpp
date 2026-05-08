@@ -192,7 +192,7 @@ bool StagingBuffer::allocateSubRef(VkDeviceSize size, StagingBufferRef& ref,
     return true;
 }
 void StagingBuffer::unallocateSubRef(const StagingBufferRef& ref) {
-    CHECK_REF(ref, ;);
+    if (! ref) return;
     if (ref.m_virtual_index < m_virtual_blocks.size()) {
         auto& block = m_virtual_blocks[ref.m_virtual_index];
         vmaVirtualFree(block.handle, ref.m_allocation);
