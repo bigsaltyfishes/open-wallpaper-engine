@@ -5,6 +5,9 @@
 #include "Utils/Logging.h"
 
 #include <cassert>
+#if defined(__APPLE__)
+#include <pthread.h>
+#endif
 
 using namespace wallpaper::looper;
 
@@ -39,17 +42,26 @@ bool Looper::loop() {
 status_t Looper::start() {
     Lock lock(m_mutex);
     if (m_running) return status_t::INVALID_OPERATION;
+    m_running = true;
     // using weak_ptr to allow looper deleted at looper->loop() end
     std::weak_ptr<Looper> wlooper = shared_from_this();
+    std::string           name { m_name };
     m_thread                      = std::thread(
-        [](std::weak_ptr<Looper> wlooper) {
+        [](std::weak_ptr<Looper> wlooper, std::string name) {
+#if defined(__APPLE__)
+            std::string thread_name = "owe-" + name;
+            pthread_setname_np(thread_name.substr(0, 63).c_str());
+#endif
             Looper* looper = nullptr;
             {
-                looper = wlooper.lock().get();
+                auto locked = wlooper.lock();
+                if (locked == nullptr) {
+                    LOG_ERROR("%s looper could not start because owner expired", name.c_str());
+                    return;
+                }
+                looper = locked.get();
                 LOG_INFO("%s looper started", looper->name().data());
-                looper->m_running = true;
             }
-            std::string name { looper->name() };
             // expired is safe here
             // 1. looper deleted at another thread, will join this, expired() allways true
             // 2. looper deleted at this thread, only in loop(), expired() reliable
@@ -57,7 +69,8 @@ status_t Looper::start() {
             }
             LOG_INFO("%s looper stopped", name.c_str());
         },
-        wlooper);
+        wlooper,
+        name);
     return status_t::OK;
 }
 

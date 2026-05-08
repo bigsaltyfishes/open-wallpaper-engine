@@ -1127,11 +1127,29 @@ bool MainHandler::init() {
     m_main_loop->setName("main");
     m_render_loop->setName("render");
 
-    m_main_loop->start();
-    m_render_loop->start();
+    if (m_main_loop->start() != looper::status_t::OK) {
+        LOG_ERROR("failed to start main looper");
+        return false;
+    }
+    if (m_render_loop->start() != looper::status_t::OK) {
+        LOG_ERROR("failed to start render looper");
+        m_main_loop->stop();
+        return false;
+    }
 
-    m_main_loop->registerHandler(shared_from_this());
-    m_render_loop->registerHandler(m_render_handler);
+    if (m_main_loop->registerHandler(shared_from_this()) == looper::Handler::INVALID_HANDLER_ID) {
+        LOG_ERROR("failed to register main handler");
+        m_render_loop->stop();
+        m_main_loop->stop();
+        return false;
+    }
+    if (m_render_loop->registerHandler(m_render_handler) == looper::Handler::INVALID_HANDLER_ID) {
+        LOG_ERROR("failed to register render handler");
+        m_main_loop->unregisterHandler(id());
+        m_render_loop->stop();
+        m_main_loop->stop();
+        return false;
+    }
 
     {
         auto  msg        = CreateMsgWithCmd(m_render_handler, RenderHandler::CMD::CMD_DRAW);
