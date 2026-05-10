@@ -174,6 +174,12 @@ void Device::Destroy() { VVK_CHECK(m_device.WaitIdle()); }
 
 void Device::releaseSwapchain() { m_swapchain.Destroy(); }
 
+bool Device::recreateSwapchain(VkSurfaceKHR surface, VkExtent2D extent) {
+    m_swapchain.Destroy();
+    m_extent = extent;
+    return Swapchain::Create(*this, surface, extent, m_swapchain);
+}
+
 Device::Device(): m_tex_cache(std::make_unique<TextureCache>(*this)) {}
 Device::~Device() {};
 

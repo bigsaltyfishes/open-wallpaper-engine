@@ -26,6 +26,18 @@ public:
 
     void destroy();
 
+    /// Pauses rendering and releases presentation-scoped resources:
+    /// VkSurfaceKHR, swapchain, FinPass/PrePass, and the presentation passes.
+    /// The Vulkan instance, logical device, queues, and device-scoped
+    /// buffers remain alive. Must be followed by `resetSurface` or `destroy`
+    /// before another frame is drawn.
+    void releaseSurface();
+
+    /// Rebuild the surface, swapchain, and presentation passes from a new
+    /// RenderInitInfo. The scene, staging buffers, and command buffers are
+    /// preserved. Returns false if surface/swapchain creation fails.
+    bool resetSurface(const RenderInitInfo& info);
+
     void drawFrame(Scene&);
 
     void clearLastRenderGraph();
