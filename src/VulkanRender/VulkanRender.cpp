@@ -234,20 +234,6 @@ bool VulkanRender::Impl::init(RenderInitInfo info) {
 bool VulkanRender::Impl::initDevice(const RenderInitInfo& info) {
     m_perf_log_enabled        = RenderPerfLogEnabled();
     m_redraw_cb               = info.redraw_callback;
-    m_display_scale_factor    = NormalizeScaleFactor(info.display_scale_factor);
-    m_requested_render_extent = { info.render_width, info.render_height };
-    VkExtent2D extent { info.width, info.height };
-    if (extent.width * extent.height < 500 * 500) {
-        LOG_ERROR("too small swapchain image size: %dx%d", extent.width, extent.height);
-    } else {
-        LOG_INFO("set swapchain image size: %dx%d", extent.width, extent.height);
-    }
-    LOG_INFO("wallpaper render init: output_px=%ux%u requested_render_px=%ux%u display_scale=%.3f",
-             extent.width,
-             extent.height,
-             m_requested_render_extent.width,
-             m_requested_render_extent.height,
-             m_display_scale_factor);
 
     std::vector<Extension> inst_exts { base_inst_exts.begin(), base_inst_exts.end() };
 
@@ -274,7 +260,24 @@ bool VulkanRender::Impl::initDevice(const RenderInitInfo& info) {
 }
 
 bool VulkanRender::Impl::initPresentation(const RenderInitInfo& info) {
+    // Presentation-scoped bookkeeping: these fields are re-read on every
+    // surface reconfigure, so they must live here (not in initDevice) to
+    // reflect the new display's geometry / scale on each reset.
+    m_display_scale_factor    = NormalizeScaleFactor(info.display_scale_factor);
+    m_requested_render_extent = { info.render_width, info.render_height };
     VkExtent2D extent { info.width, info.height };
+    if (extent.width * extent.height < 500 * 500) {
+        LOG_ERROR("too small swapchain image size: %dx%d", extent.width, extent.height);
+    } else {
+        LOG_INFO("set swapchain image size: %dx%d", extent.width, extent.height);
+    }
+    LOG_INFO("wallpaper render init: output_px=%ux%u requested_render_px=%ux%u display_scale=%.3f",
+             extent.width,
+             extent.height,
+             m_requested_render_extent.width,
+             m_requested_render_extent.height,
+             m_display_scale_factor);
+
     std::vector<Extension> device_exts = BaseDeviceExtensions();
 
     if (! info.offscreen) {
