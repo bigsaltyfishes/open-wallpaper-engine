@@ -790,6 +790,32 @@ void VulkanRender::Impl::updateScalingLayout(const Scene& scene, uint32_t output
                                                      logical_height,
                                                      scale_factor,
                                                      m_scaling_factor);
+
+    // Diagnostic: log the scaling layout inputs and resulting viewport/scissor.
+    // Log at most once per second to avoid spam; tied to m_last_perf_log if
+    // perf logging is enabled, otherwise gated by a local time counter.
+    {
+        static thread_local std::chrono::steady_clock::time_point last_log {};
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_log >= std::chrono::seconds(1)) {
+            last_log = now;
+            LOG_INFO(
+                "scaling layout: mode=%d out_px=%ux%u source=%ux%u logical=%ux%u scale=%.3f user_factor=%.3f viewport_px=(%d,%d,%d,%d) scissor_px=(%d,%d,%d,%d)",
+                static_cast<int>(m_scaling_mode),
+                output_width, output_height,
+                source_extent.width, source_extent.height,
+                logical_width, logical_height,
+                scale_factor, m_scaling_factor,
+                m_scaling_layout.viewport_px.x,
+                m_scaling_layout.viewport_px.y,
+                m_scaling_layout.viewport_px.width,
+                m_scaling_layout.viewport_px.height,
+                m_scaling_layout.scissor_px.x,
+                m_scaling_layout.scissor_px.y,
+                m_scaling_layout.scissor_px.width,
+                m_scaling_layout.scissor_px.height);
+        }
+    }
 }
 
 void VulkanRender::Impl::UpdateCameraFillMode(wallpaper::Scene&   scene,
