@@ -113,6 +113,9 @@ struct VulkanRender::Impl {
     ~Impl() = default;
 
     bool init(RenderInitInfo);
+    bool initDevice(const RenderInitInfo& info);
+    bool initPresentation(const RenderInitInfo& info);
+    void releasePresentation(); // Task 2
     void destroy();
 
     void drawFrame(Scene&);
@@ -217,7 +220,13 @@ wallpaper::ExSwapchain* VulkanRender::exSwapchain() const { return pImpl->m_ex_s
 
 bool VulkanRender::Impl::init(RenderInitInfo info) {
     if (m_inited) return true;
+    if (! initDevice(info)) return false;
+    if (! initPresentation(info)) return false;
+    m_inited = true;
+    return true;
+}
 
+bool VulkanRender::Impl::initDevice(const RenderInitInfo& info) {
     m_perf_log_enabled        = RenderPerfLogEnabled();
     m_redraw_cb               = info.redraw_callback;
     m_display_scale_factor    = NormalizeScaleFactor(info.display_scale_factor);
@@ -236,7 +245,6 @@ bool VulkanRender::Impl::init(RenderInitInfo info) {
              m_display_scale_factor);
 
     std::vector<Extension> inst_exts { base_inst_exts.begin(), base_inst_exts.end() };
-    std::vector<Extension> device_exts = BaseDeviceExtensions();
 
     if (! info.offscreen) {
         std::transform(info.surface_info.instanceExts.begin(),
@@ -245,24 +253,9 @@ bool VulkanRender::Impl::init(RenderInitInfo info) {
                        [](const auto& s) {
                            return Extension { true, s.c_str() };
                        });
-        device_exts.push_back({ true, VK_KHR_SWAPCHAIN_EXTENSION_NAME });
-    } else {
-#if defined(__linux__)
-        // Iteration 1a: offscreen FDs are real Linux DMA-BUFs so they can be
-        // imported by arbitrary external consumers. These extensions are
-        // strictly required on the offscreen path; if a driver lacks them
-        // we fail fast in Device::CheckGPU.
-        device_exts.push_back({ true, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME });
-        device_exts.push_back({ true, VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME });
-        device_exts.push_back({ true, VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME });
-#else
-        LOG_ERROR("offscreen external-memory rendering is only supported on Linux");
-        return false;
-#endif
     }
 
     std::vector<InstanceLayer> inst_layers;
-    // valid layer
     if (info.enable_valid_layer) {
         inst_layers.push_back({ true, VALIDATION_LAYER_NAME });
         LOG_INFO("vulkan valid layer \"%s\" enabled", VALIDATION_LAYER_NAME.data());
@@ -272,6 +265,26 @@ bool VulkanRender::Impl::init(RenderInitInfo info) {
         LOG_ERROR("init vulkan failed");
         return false;
     }
+    return true;
+}
+
+bool VulkanRender::Impl::initPresentation(const RenderInitInfo& info) {
+    VkExtent2D extent { info.width, info.height };
+    std::vector<Extension> device_exts = BaseDeviceExtensions();
+
+    if (! info.offscreen) {
+        device_exts.push_back({ true, VK_KHR_SWAPCHAIN_EXTENSION_NAME });
+    } else {
+#if defined(__linux__)
+        device_exts.push_back({ true, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME });
+        device_exts.push_back({ true, VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME });
+        device_exts.push_back({ true, VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME });
+#else
+        LOG_ERROR("offscreen external-memory rendering is only supported on Linux");
+        return false;
+#endif
+    }
+
     if (! info.offscreen) {
         VkSurfaceKHR surface;
         VVK_CHECK_ACT(
@@ -310,10 +323,11 @@ bool VulkanRender::Impl::init(RenderInitInfo info) {
     }
 
     if (! initRes()) return false;
-    ;
+    return true;
+}
 
-    m_inited = true;
-    return m_inited;
+void VulkanRender::Impl::releasePresentation() {
+    // Stub — will be implemented in Task 2.
 }
 
 bool VulkanRender::Impl::initRes() {
