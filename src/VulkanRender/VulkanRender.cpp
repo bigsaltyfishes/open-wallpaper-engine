@@ -191,6 +191,11 @@ int VulkanRender::takeLastFrameSyncFd() {
 
 bool VulkanRender::init(RenderInitInfo info) { return pImpl->init(info); }
 void VulkanRender::destroy() { pImpl->destroy(); }
+void VulkanRender::releaseSurface() { pImpl->releasePresentation(); }
+bool VulkanRender::resetSurface(const RenderInitInfo& info) {
+    pImpl->releasePresentation();
+    return pImpl->initPresentation(info);
+}
 void VulkanRender::drawFrame(Scene& scene) { pImpl->drawFrame(scene); };
 void VulkanRender::clearLastRenderGraph() { pImpl->clearLastRenderGraph(); };
 void VulkanRender::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
@@ -296,19 +301,31 @@ bool VulkanRender::Impl::initPresentation(const RenderInitInfo& info) {
         m_instance.setSurface(VkSurfaceKHR(surface));
         m_with_surface = true;
     }
-    {
-        auto surface   = *m_instance.surface();
-        auto check_gpu = [&device_exts, surface](const vvk::PhysicalDevice& gpu) {
-            return Device::CheckGPU(gpu, device_exts, surface);
-        };
-        if (! m_instance.ChoosePhysicalDevice(check_gpu, info.uuid)) return false;
-    }
 
-    {
-        m_device = std::make_unique<Device>();
-        if (! Device::Create(m_instance, device_exts, extent, *m_device)) {
-            LOG_ERROR("init vulkan device failed");
-            return false;
+    if (! m_device) {
+        {
+            auto surface   = *m_instance.surface();
+            auto check_gpu = [&device_exts, surface](const vvk::PhysicalDevice& gpu) {
+                return Device::CheckGPU(gpu, device_exts, surface);
+            };
+            if (! m_instance.ChoosePhysicalDevice(check_gpu, info.uuid)) return false;
+        }
+
+        {
+            m_device = std::make_unique<Device>();
+            if (! Device::Create(m_instance, device_exts, extent, *m_device)) {
+                LOG_ERROR("init vulkan device failed");
+                return false;
+            }
+        }
+    } else {
+        // Device already exists — just recreate the swapchain.
+        m_device->set_out_extent(extent);
+        if (m_with_surface) {
+            if (! m_device->recreateSwapchain(*m_instance.surface(), extent)) {
+                LOG_ERROR("recreate swapchain failed");
+                return false;
+            }
         }
     }
 
@@ -327,10 +344,36 @@ bool VulkanRender::Impl::initPresentation(const RenderInitInfo& info) {
 }
 
 void VulkanRender::Impl::releasePresentation() {
-    // Stub — will be implemented in Task 2.
+    if (!m_inited) return;
+
+    if (m_device && m_device->handle()) {
+        VVK_CHECK(m_device->handle().WaitIdle());
+    }
+
+    // Destroy compiled render graph passes (they reference swapchain images).
+    for (auto& p : m_passes) {
+        p->destory(*m_device, m_rendering_resources);
+    }
+    m_passes.clear();
+    m_pass_loaded = false;
+
+    // Destroy FinPass + PrePass.
+    m_finpass.reset();
+    m_prepass.reset();
+
+    // Destroy the ex_swapchain (offscreen) or swapchain (surface mode).
+    m_ex_swapchain.reset();
+    if (m_device) {
+        m_device->releaseSwapchain();
+    }
+
+    // Destroy the VkSurfaceKHR.
+    m_instance.releaseSurface();
+    m_with_surface = false;
 }
 
 bool VulkanRender::Impl::initRes() {
+    // Presentation-scoped: always recreated.
     m_prepass = std::make_unique<PrePass>(PrePass::Desc {});
     m_finpass = std::make_unique<FinPass>(FinPass::Desc {});
     if (m_with_surface) {
@@ -342,31 +385,28 @@ bool VulkanRender::Impl::initRes() {
         m_finpass->setPresentLayout(VK_IMAGE_LAYOUT_GENERAL);
         m_finpass->setPresentQueueIndex(VK_QUEUE_FAMILY_EXTERNAL);
     }
-    /*
-    m_testpass = std::make_unique<FinPass>(FinPass::Desc{});
-    m_testpass->setPresentFormat(m_ex_swapchain->format());
-    m_testpass->setPresentQueueIndex(m_device->graphics_queue().family_index);
-    m_testpass->setPresentLayout(vk::ImageLayout::ePresentSrcKHR);
-    */
 
-    m_vertex_buf = std::make_unique<StagingBuffer>(*m_device,
-                                                   2 * 1024 * 1024,
-                                                   VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
-                                                       VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
-    m_dyn_buf    = std::make_unique<StagingBuffer>(*m_device,
-                                                2 * 1024 * 1024,
-                                                VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
-                                                    VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                                                    VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
-    if (! m_vertex_buf->allocate()) return false;
-    if (! m_dyn_buf->allocate()) return false;
-    {
-        auto& pool = m_device->cmd_pool();
-        VVK_CHECK_BOOL_RE(pool.Allocate(vk_command_num, VK_COMMAND_BUFFER_LEVEL_PRIMARY, m_cmds));
-        m_upload_cmd = vvk::CommandBuffer(m_cmds[0], m_device->handle().Dispatch());
-        m_render_cmd = vvk::CommandBuffer(m_cmds[1], m_device->handle().Dispatch());
+    // Device-scoped: only allocated on first call.
+    if (!m_vertex_buf) {
+        m_vertex_buf = std::make_unique<StagingBuffer>(*m_device,
+                                                       2 * 1024 * 1024,
+                                                       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                                                           VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+        m_dyn_buf    = std::make_unique<StagingBuffer>(*m_device,
+                                                    2 * 1024 * 1024,
+                                                    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                                                        VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                                                        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+        if (! m_vertex_buf->allocate()) return false;
+        if (! m_dyn_buf->allocate()) return false;
+        {
+            auto& pool = m_device->cmd_pool();
+            VVK_CHECK_BOOL_RE(pool.Allocate(vk_command_num, VK_COMMAND_BUFFER_LEVEL_PRIMARY, m_cmds));
+            m_upload_cmd = vvk::CommandBuffer(m_cmds[0], m_device->handle().Dispatch());
+            m_render_cmd = vvk::CommandBuffer(m_cmds[1], m_device->handle().Dispatch());
+        }
+        if (! CreateRenderingResource(m_rendering_resources)) return false;
     }
-    if (! CreateRenderingResource(m_rendering_resources)) return false;
 
 #if ENABLE_RENDERDOC_API
     load_renderdoc_api();
