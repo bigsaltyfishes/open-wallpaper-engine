@@ -35,6 +35,37 @@ int owe_scene_wallpaper_init_metal_vulkan(owe_scene_wallpaper* scene, void* meta
                                           uint32_t width, uint32_t height, uint32_t render_width,
                                           uint32_t render_height, double display_scale_factor);
 
+/*
+ * Pauses rendering and releases the Vulkan surface + swapchain. The scene
+ * graph, compiled shaders, render-graph non-present passes, textures, audio,
+ * and runtime state remain loaded. After this returns, the caller may safely
+ * destroy the CAMetalLayer that was passed to
+ * owe_scene_wallpaper_init_metal_vulkan (or to a prior
+ * owe_scene_wallpaper_finish_surface_reconfigure).
+ *
+ * Synchronous: blocks until the render thread confirms completion.
+ * Returns 0 on success, non-zero on failure.
+ */
+int owe_scene_wallpaper_begin_surface_reconfigure(owe_scene_wallpaper* scene);
+
+/*
+ * Rebuilds the Vulkan surface + swapchain from a new CAMetalLayer and resumes
+ * rendering. Dimensions replace those passed to init_metal_vulkan. The render
+ * graph is rebuilt unconditionally.
+ *
+ * Preconditions: begin_surface_reconfigure must have returned 0 since the
+ * last init/finish.
+ *
+ * Synchronous: blocks until the new surface is presentable.
+ * Returns 0 on success, non-zero on failure.
+ */
+int owe_scene_wallpaper_finish_surface_reconfigure(
+    owe_scene_wallpaper* scene,
+    void* metal_layer,
+    uint32_t width, uint32_t height,
+    uint32_t render_width, uint32_t render_height,
+    double display_scale_factor);
+
 /* Applies SceneWallpaperConfig fields without persisting a duplicate config. */
 int owe_scene_wallpaper_apply_config(owe_scene_wallpaper* scene, const char* source,
                                      const char* assets, const char* cache_path, uint32_t fps,
