@@ -259,6 +259,16 @@ extern "C" int owe_scene_wallpaper_apply_config(
     return 0;
 }
 
+extern "C" int owe_scene_wallpaper_set_target_fps(owe_scene_wallpaper* scene, uint32_t fps)
+{
+    clear_last_error();
+    if (!valid_scene(scene)) return finish_with_error("scene must not be null");
+    if (fps == 0) return finish_with_error("fps must be greater than zero");
+
+    scene->scene.setTargetFps(fps);
+    return 0;
+}
+
 extern "C" int owe_scene_wallpaper_set_property_bool(
     owe_scene_wallpaper* scene,
     const char* name,
