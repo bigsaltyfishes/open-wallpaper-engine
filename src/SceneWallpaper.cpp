@@ -44,6 +44,7 @@
 #include <future>
 #include <limits>
 #include <optional>
+#include <utility>
 #include <vector>
 
 using namespace wallpaper;
@@ -354,6 +355,7 @@ public:
     enum class CMD
     {
         CMD_LOAD_SCENE,
+        CMD_APPLY_CONFIG,
         CMD_SET_PROPERTY,
         CMD_STOP,
         CMD_FIRST_FRAME,
@@ -375,6 +377,7 @@ public:
         if (msg->findInt32("cmd", &cmd_int)) {
             CMD cmd = static_cast<CMD>(cmd_int);
             switch (cmd) {
+                CASE_CMD(APPLY_CONFIG);
                 CASE_CMD(SET_PROPERTY);
                 CASE_CMD(LOAD_SCENE);
                 CASE_CMD(STOP);
@@ -389,10 +392,15 @@ public:
     bool isGenGraphviz() const { return m_gen_graphviz; }
 
 private:
+    bool applyConfig(SceneWallpaperConfig config);
+    void setPaused(bool paused);
+    bool setProjectPropertyOverrideJson(std::string json);
+    bool resetProjectPropertyOverride();
     void loadScene();
     bool loadNonSceneProject(const ProjectManifest& manifest, std::unique_ptr<fs::VFS> vfs);
 
     MHANDLER_CMD(LOAD_SCENE);
+    MHANDLER_CMD(APPLY_CONFIG);
     MHANDLER_CMD(SET_PROPERTY);
     MHANDLER_CMD(STOP);
     MHANDLER_CMD(FIRST_FRAME);
@@ -786,11 +794,9 @@ bool SceneWallpaper::finishSurfaceReconfigure(const RenderInitInfo& info) {
 }
 
 void SceneWallpaper::applyConfig(const SceneWallpaperConfig& config) {
-    setSceneSource(config.source);
-    setAssetsPath(config.assets);
-    setCachePath(config.cache_path);
-    setTargetFps(config.fps);
-    setPaused(config.paused);
+    auto msg = CreateMsgWithCmd(m_main_handler, MainHandler::CMD::CMD_APPLY_CONFIG);
+    msg->setObject("config", std::make_shared<SceneWallpaperConfig>(config));
+    msg->post();
 }
 
 void SceneWallpaper::play() {
@@ -884,6 +890,16 @@ MHANDLER_CMD_IMPL(MainHandler, LOAD_SCENE) {
     }
 }
 
+MHANDLER_CMD_IMPL(MainHandler, APPLY_CONFIG) {
+    std::shared_ptr<SceneWallpaperConfig> config;
+    if (! msg->findObject("config", &config) || config == nullptr) return;
+
+    const bool paused = config->paused;
+    const bool should_load = applyConfig(std::move(*config));
+    if (should_load && m_render_handler != nullptr) CALL_MHANDLER_CMD(LOAD_SCENE, msg);
+    setPaused(paused);
+}
+
 MHANDLER_CMD_IMPL(MainHandler, SET_PROPERTY) {
     std::string property;
     if (msg->findString("property", &property)) {
@@ -968,13 +984,12 @@ MHANDLER_CMD_IMPL(MainHandler, SET_PROPERTY) {
         } else if (property == PROPERTY_PROJECT_PROPERTY_OVERRIDE_JSON) {
             std::string json;
             msg->findString("value", &json);
-            m_project_property_override_json = json;
-            if (m_render_handler != nullptr) CALL_MHANDLER_CMD(LOAD_SCENE, msg);
+            if (setProjectPropertyOverrideJson(std::move(json)) && m_render_handler != nullptr)
+                CALL_MHANDLER_CMD(LOAD_SCENE, msg);
         } else if (property == PROPERTY_PROJECT_PROPERTY_RESET) {
             bool reset { false };
             msg->findBool("value", &reset);
-            if (reset) {
-                m_project_property_override_json.clear();
+            if (reset && resetProjectPropertyOverride()) {
                 if (m_render_handler != nullptr) CALL_MHANDLER_CMD(LOAD_SCENE, msg);
             }
         } else if (property == PROPERTY_FORCE_SHADER_REFRESH) {
@@ -997,20 +1012,71 @@ MHANDLER_CMD_IMPL(MainHandler, SET_PROPERTY) {
 MHANDLER_CMD_IMPL(MainHandler, STOP) {
     bool stop { false };
     if (msg->findBool("value", &stop)) {
-        if (stop) {
-            m_sound_manager->Pause();
-        } else {
-            m_sound_manager->Play();
-        }
-
-        auto msg_r = CreateMsgWithCmd(m_render_handler, RenderHandler::CMD::CMD_STOP);
-        msg_r->setBool("value", stop);
-        msg_r->post();
+        setPaused(stop);
     }
 }
 
 MHANDLER_CMD_IMPL(MainHandler, FIRST_FRAME) {
     if (m_first_frame_callback) m_first_frame_callback();
+}
+
+bool MainHandler::applyConfig(SceneWallpaperConfig config) {
+    bool should_load = false;
+
+    if (m_source != config.source) {
+        m_source = std::move(config.source);
+        LOG_INFO("source: %s", m_source.c_str());
+        should_load = true;
+    }
+    if (m_assets != config.assets) {
+        m_assets = std::move(config.assets);
+        should_load = true;
+    }
+    if (m_cache_path != config.cache_path) {
+        m_cache_path = std::move(config.cache_path);
+        should_load = true;
+    }
+
+    if (config.has_project_property_override) {
+        should_load =
+            setProjectPropertyOverrideJson(std::move(config.project_property_override_json)) ||
+            should_load;
+    } else {
+        should_load = resetProjectPropertyOverride() || should_load;
+    }
+
+    m_force_shader_refresh = config.force_shader_refresh;
+    if (m_force_shader_refresh) should_load = true;
+
+    if (config.fps >= 5) {
+        m_render_handler->frame_timer.SetRequiredFps((uint8_t)config.fps);
+    }
+
+    return should_load;
+}
+
+void MainHandler::setPaused(bool paused) {
+    if (paused) {
+        m_sound_manager->Pause();
+    } else {
+        m_sound_manager->Play();
+    }
+
+    auto msg_r = CreateMsgWithCmd(m_render_handler, RenderHandler::CMD::CMD_STOP);
+    msg_r->setBool("value", paused);
+    msg_r->post();
+}
+
+bool MainHandler::setProjectPropertyOverrideJson(std::string json) {
+    if (m_project_property_override_json == json) return false;
+    m_project_property_override_json = std::move(json);
+    return true;
+}
+
+bool MainHandler::resetProjectPropertyOverride() {
+    if (m_project_property_override_json.empty()) return false;
+    m_project_property_override_json.clear();
+    return true;
 }
 
 void MainHandler::loadScene() {

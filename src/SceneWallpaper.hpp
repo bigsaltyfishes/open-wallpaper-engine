@@ -40,8 +40,11 @@ struct SceneWallpaperConfig {
     std::string source;
     std::string assets;
     std::string cache_path;
+    std::string project_property_override_json;
     uint32_t    fps { 15 };
     bool        paused { false };
+    bool        force_shader_refresh { false };
+    bool        has_project_property_override { false };
 };
 
 class SceneWallpaper : NoCopy {

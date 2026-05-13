@@ -73,6 +73,23 @@ gtest_discover_tests(
     PROPERTIES TIMEOUT 30
     DISCOVERY_TIMEOUT 60
 )
+if(APPLE)
+    add_test(
+        NAME audio_coreaudio_backend_config
+        COMMAND
+            ${CMAKE_COMMAND}
+            -DHEADER=${CMAKE_SOURCE_DIR}/src/Audio/miniaudio-wrapper.hpp
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/audio/coreaudio_backend_config.cmake)
+endif()
+add_executable(shader_cache_metadata_test shader_cache_metadata_test.cpp)
+target_link_libraries(shader_cache_metadata_test PRIVATE ${PROJECT_NAME} wpFs wpScene GTest::gtest_main)
+target_include_directories(shader_cache_metadata_test PRIVATE .)
+target_compile_features(shader_cache_metadata_test PRIVATE cxx_std_20)
+gtest_discover_tests(
+    shader_cache_metadata_test
+    PROPERTIES TIMEOUT 30
+    DISCOVERY_TIMEOUT 60
+)
 add_executable(scenescript_sound_layer_smoke scenescript_sound_layer_smoke.cpp)
 target_link_libraries(scenescript_sound_layer_smoke PRIVATE ${PROJECT_NAME} wpAudio wpScene GTest::gtest_main)
 target_include_directories(scenescript_sound_layer_smoke PRIVATE .)

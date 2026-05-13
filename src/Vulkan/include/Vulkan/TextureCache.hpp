@@ -6,6 +6,7 @@
 #include "Core/NoCopyMove.hpp"
 #include "Core/MapSet.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -91,13 +92,23 @@ private:
         ExImageParameters     image;
         std::shared_ptr<void> metal_texture;
         uint64_t              generation { 0 };
+        uint64_t              last_used { 0 };
         void*                 surface_identity { nullptr };
+        uint32_t              pixel_format { 0 };
     };
     struct VideoTex {
-        TextureSample                              sample;
-        std::shared_ptr<video::VideoTextureSource> source;
-        std::unique_ptr<ImportedVideoFrame>        current_frame;
+        TextureSample                                    sample;
+        std::shared_ptr<video::VideoTextureSource>       source;
+        ImportedVideoFrame*                              current_frame { nullptr };
+        std::vector<std::unique_ptr<ImportedVideoFrame>> imported_frames;
+        uint64_t                                         frame_use_serial { 0 };
     };
+    static constexpr std::size_t kMaxImportedVideoFramesPerVideoTex { 4 };
+    bool                CanReuseVideoFrameImport(const video::VideoTextureFrame& frame) const;
+    ImportedVideoFrame* FindImportedVideoFrame(VideoTex&                       video_tex,
+                                               const video::VideoTextureFrame& frame,
+                                               void* surface_identity) const;
+    bool                EnsureVideoFrameCacheRoom(VideoTex& video_tex, std::string* error);
     Map<std::string, std::unique_ptr<VideoTex>> m_video_tex_map;
     video::VideoPlaybackState                   m_video_playback_state {};
     RenderFrameStats*                           m_frame_stats { nullptr };

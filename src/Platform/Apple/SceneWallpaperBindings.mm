@@ -240,7 +240,9 @@ extern "C" int owe_scene_wallpaper_apply_config(
     const char* assets,
     const char* cache_path,
     uint32_t fps,
-    bool paused)
+    bool paused,
+    bool force_shader_refresh,
+    const char* project_property_override_json)
 {
     clear_last_error();
     if (!valid_scene(scene)) return finish_with_error("scene must not be null");
@@ -255,6 +257,10 @@ extern "C" int owe_scene_wallpaper_apply_config(
     config.cache_path = std::string(view_or_empty(cache_path));
     config.fps = fps;
     config.paused = paused;
+    config.force_shader_refresh = force_shader_refresh;
+    config.has_project_property_override = project_property_override_json != nullptr;
+    config.project_property_override_json =
+        std::string(view_or_empty(project_property_override_json));
     scene->scene.applyConfig(config);
     return 0;
 }

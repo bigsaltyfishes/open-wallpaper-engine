@@ -128,5 +128,24 @@ TEST(SoundLayerControlTest, VolumeAndMuteAffectEmittedSamples) {
     EXPECT_FLOAT_EQ(output[1], 0.0f);
 }
 
+TEST(SoundLayerControlTest, EmptyLoopReadProducesSilenceAndKeepsPlaying) {
+    int factory_calls = 0;
+    WPSoundStream stream({ [&factory_calls](const audio::SoundStream::Desc&) {
+                             ++factory_calls;
+                             return MakeFakeStream({});
+                         } },
+                         { .mode = PlaybackMode::Loop });
+    stream.PassDesc({ .channels = 2, .sampleRate = 48'000 });
+
+    std::array<float, 4> output { 9.0f, 9.0f, 9.0f, 9.0f };
+
+    EXPECT_EQ(stream.NextPcmData(output.data(), 2), 2u);
+    EXPECT_TRUE(stream.IsPlaying());
+    EXPECT_GE(factory_calls, 2);
+    for (float sample : output) {
+        EXPECT_FLOAT_EQ(sample, 0.0f);
+    }
+}
+
 } // namespace
 } // namespace wallpaper

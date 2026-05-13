@@ -16,7 +16,6 @@
 #define MA_NO_WASAPI
 #define MA_NO_DSOUND
 #define MA_NO_WINMM
-#define MA_NO_COREAUDIO
 #define MA_NO_ENCODING
 #define STB_VORBIS_HEADER_ONLY
 #include <extras/stb_vorbis.c> /* Enables Vorbis decoding. */
@@ -215,7 +214,8 @@ private:
             if (m_frameBuffer.size() < framesByteSize) m_frameBuffer.resize(framesByteSize);
         }
         {
-            std::unique_lock<std::mutex> lock { m_mutex };
+            std::unique_lock<std::mutex> lock { m_mutex, std::try_to_lock };
+            if (! lock.owns_lock()) return;
 
             float*      pOutput_float = static_cast<float*>(pOutput);
             float*      pBuffer_float = reinterpret_cast<float*>(m_frameBuffer.data());

@@ -76,8 +76,9 @@ uint64_t WPSoundStream::NextPcmData(void* data, uint32_t frame_count) {
             return frame_count;
         }
         Switch();
-        if (! m_cur_active) return 0;
+        if (! m_cur_active) return frame_count;
         frames_read = m_cur_active->NextPcmData(data, frame_count);
+        if (frames_read == 0) return frame_count;
     }
 
     const auto samples_read =

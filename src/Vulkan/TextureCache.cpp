@@ -742,8 +742,7 @@ ImageSlotsRef TextureCache::CreateTex(Image& image) {
     if (image.header.isVideo) {
         if (exists(m_video_tex_map, image.key)) {
             ImageSlotsRef ref;
-            if (auto* current = m_video_tex_map.at(image.key)->current_frame.get();
-                current != nullptr) {
+            if (auto* current = m_video_tex_map.at(image.key)->current_frame; current != nullptr) {
                 ref.slots  = { ImageParameters(current->image) };
                 ref.active = 0;
             }
@@ -983,6 +982,48 @@ double TextureCache::GetVideoDuration(std::string_view key) const {
     return iterator->second->source->durationSeconds();
 }
 
+bool TextureCache::CanReuseVideoFrameImport(const video::VideoTextureFrame& frame) const {
+    return frame.io_surface != nullptr && frame.plane_count <= 1;
+}
+
+TextureCache::ImportedVideoFrame*
+TextureCache::FindImportedVideoFrame(VideoTex& video_tex, const video::VideoTextureFrame& frame,
+                                     void* surface_identity) const {
+    const bool can_reuse_surface_import = CanReuseVideoFrameImport(frame);
+    for (auto& imported_frame : video_tex.imported_frames) {
+        if (imported_frame == nullptr) continue;
+        if (imported_frame->surface_identity != surface_identity) continue;
+        if (imported_frame->pixel_format != frame.pixel_format) continue;
+        if (imported_frame->image.extent.width != frame.width ||
+            imported_frame->image.extent.height != frame.height) {
+            continue;
+        }
+        if (! can_reuse_surface_import && imported_frame->generation != frame.generation) {
+            continue;
+        }
+        return imported_frame.get();
+    }
+    return nullptr;
+}
+
+bool TextureCache::EnsureVideoFrameCacheRoom(VideoTex& video_tex, std::string* error) {
+    while (video_tex.imported_frames.size() >= kMaxImportedVideoFramesPerVideoTex) {
+        auto victim = video_tex.imported_frames.end();
+        for (auto iter = video_tex.imported_frames.begin(); iter != video_tex.imported_frames.end();
+             ++iter) {
+            if (iter->get() == video_tex.current_frame) continue;
+            if (victim == video_tex.imported_frames.end() ||
+                (*iter)->last_used < (*victim)->last_used) {
+                victim = iter;
+            }
+        }
+        if (victim == video_tex.imported_frames.end()) return true;
+        if (! waitForPendingVideoImport(error)) return false;
+        video_tex.imported_frames.erase(victim);
+    }
+    return true;
+}
+
 void TextureCache::Clear() {
     std::string error;
     if (! waitForPendingVideoImport(&error) && ! error.empty()) {
@@ -1027,9 +1068,16 @@ bool TextureCache::UpdateVideoFrame(std::string_view                 key,
     }
 
     void* surface_identity = frame.io_surface != nullptr ? frame.io_surface : frame.pixel_buffer;
-    if (video_tex.current_frame == nullptr ||
-        video_tex.current_frame->generation != frame.generation ||
-        video_tex.current_frame->surface_identity != surface_identity) {
+    if (auto* imported_frame = FindImportedVideoFrame(video_tex, frame, surface_identity);
+        imported_frame != nullptr) {
+        imported_frame->generation = frame.generation;
+        imported_frame->last_used  = ++video_tex.frame_use_serial;
+        video_tex.current_frame    = imported_frame;
+    } else {
+        if (! EnsureVideoFrameCacheRoom(video_tex, error)) {
+            return false;
+        }
+
         void* metal_device = GetMetalDeviceHandle(error);
         if (metal_device == nullptr) {
             return false;
@@ -1095,14 +1143,18 @@ bool TextureCache::UpdateVideoFrame(std::string_view                 key,
         }
         m_video_import_pending = true;
 
-        auto imported_frame              = std::make_unique<ImportedVideoFrame>();
-        imported_frame->image            = std::move(imported_image.value());
-        imported_frame->metal_texture    = std::shared_ptr<void>(metal_texture, [](void* handle) {
+        auto new_imported_frame           = std::make_unique<ImportedVideoFrame>();
+        new_imported_frame->image         = std::move(imported_image.value());
+        new_imported_frame->metal_texture = std::shared_ptr<void>(metal_texture, [](void* handle) {
             video::ReleaseAppleVideoMetalTexture(handle);
         });
-        imported_frame->generation       = frame.generation;
-        imported_frame->surface_identity = surface_identity;
-        video_tex.current_frame          = std::move(imported_frame);
+        new_imported_frame->generation    = frame.generation;
+        new_imported_frame->last_used     = ++video_tex.frame_use_serial;
+        new_imported_frame->surface_identity = surface_identity;
+        new_imported_frame->pixel_format     = frame.pixel_format;
+
+        video_tex.current_frame = new_imported_frame.get();
+        video_tex.imported_frames.emplace_back(std::move(new_imported_frame));
     }
 
     if (out != nullptr && video_tex.current_frame != nullptr) {

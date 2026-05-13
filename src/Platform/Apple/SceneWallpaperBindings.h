@@ -69,7 +69,8 @@ int owe_scene_wallpaper_finish_surface_reconfigure(
 /* Applies SceneWallpaperConfig fields without persisting a duplicate config. */
 int owe_scene_wallpaper_apply_config(owe_scene_wallpaper* scene, const char* source,
                                      const char* assets, const char* cache_path, uint32_t fps,
-                                     bool paused);
+                                     bool paused, bool force_shader_refresh,
+                                     const char* project_property_override_json);
 
 /* Direct SceneWallpaper::setTargetFps forwarding. */
 int owe_scene_wallpaper_set_target_fps(owe_scene_wallpaper* scene, uint32_t fps);

@@ -740,7 +740,15 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
                                   WPShaderInfo* shader_info, std::span<const WPShaderTexInfo> texs) {
     (void)texs;
 
-    auto compile = [](std::span<WPShaderUnit> units, std::vector<ShaderCode>& codes) {
+    auto preprocess_units = [shader_info](std::span<WPShaderUnit> units) {
+        const Combos empty_combos {};
+        const auto& combos = shader_info != nullptr ? shader_info->combos : empty_combos;
+        for (auto& unit : units) {
+            unit.src = Preprocessor(unit.src, unit.stage, combos, unit.preprocess_info);
+        }
+    };
+
+    auto finalize_units = [](std::span<WPShaderUnit> units) {
         std::vector<vulkan::ShaderCompUnit> vunits(units.size());
         for (usize i = 0; i < units.size(); i++) {
             auto&               unit     = units[i];
@@ -754,7 +762,10 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
             vunit.src   = unit.src;
             vunit.stage = ToGLSL(unit.stage);
         }
+        return vunits;
+    };
 
+    auto compile = [](std::vector<vulkan::ShaderCompUnit>& vunits, std::vector<ShaderCode>& codes) {
         vulkan::ShaderCompOpt opt;
         opt.client_ver             = glslang::EShTargetVulkan_1_1;
         opt.auto_map_bindings      = true;
@@ -763,7 +774,7 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
         opt.relaxed_rules_vulkan   = true;
         opt.suppress_warnings_glsl = true;
 
-        std::vector<vulkan::Uni_ShaderSpv> spvs(units.size());
+        std::vector<vulkan::Uni_ShaderSpv> spvs(vunits.size());
 
         const auto compile_started = std::chrono::steady_clock::now();
         if (! vulkan::CompileAndLinkShaderUnits(vunits, opt, spvs)) {
@@ -795,14 +806,13 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
                 LOG_ERROR("load shader from \'%s\' failed", cache_file_path.c_str());
                 return false;
             }
+            preprocess_units(units);
+            (void)finalize_units(units);
         } else {
             g_shader_startup_metrics.cache_misses++;
-            std::for_each(units.begin(), units.end(), [shader_info](auto& unit) {
-                const Combos empty_combos {};
-                const auto& combos = shader_info != nullptr ? shader_info->combos : empty_combos;
-                unit.src = Preprocessor(unit.src, unit.stage, combos, unit.preprocess_info);
-            });
-            if (! compile(units, codes)) return false;
+            preprocess_units(units);
+            auto vunits = finalize_units(units);
+            if (! compile(vunits, codes)) return false;
             const auto cache_write_started = std::chrono::steady_clock::now();
             if (auto cache_file = vfs.OpenW(cache_file_path); cache_file) {
                 ::SaveShaderToFile(codes, *cache_file);
@@ -812,11 +822,8 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
         return true;
 
     } else {
-        std::for_each(units.begin(), units.end(), [shader_info](auto& unit) {
-            const Combos empty_combos {};
-            const auto& combos = shader_info != nullptr ? shader_info->combos : empty_combos;
-            unit.src = Preprocessor(unit.src, unit.stage, combos, unit.preprocess_info);
-        });
-        return compile(units, codes);
+        preprocess_units(units);
+        auto vunits = finalize_units(units);
+        return compile(vunits, codes);
     }
 }
