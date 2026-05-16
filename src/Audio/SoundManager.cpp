@@ -15,15 +15,6 @@
 using namespace wallpaper;
 using namespace wallpaper::audio;
 
-namespace
-{
-
-SoundStream::Desc ToSSDesc(const miniaudio::DeviceDesc& d) {
-    return { .channels = d.phyChannels, .sampleRate = d.sampleRate };
-}
-
-} // namespace
-
 class Channel_Impl : public miniaudio::Channel {
 public:
     explicit Channel_Impl(std::shared_ptr<SoundStream> ss): m_ss(std::move(ss)) {}
@@ -49,7 +40,7 @@ public:
 
     void PassDeviceDesc(const miniaudio::DeviceDesc& desc) override {
         StopWorker();
-        m_ss->PassDesc(ToSSDesc(desc));
+        m_ss->PassDesc({ .channels = desc.phyChannels, .sampleRate = desc.sampleRate });
         {
             std::lock_guard<std::mutex> lock { m_mutex };
             m_desc = desc;
