@@ -19,7 +19,7 @@ constexpr uint32_t kAnalysisSampleRate = 12000;
 constexpr uint32_t kFftSize = 1024;
 constexpr uint32_t kHopSize = 200;
 constexpr size_t kInterleavedChannels = 2u;
-constexpr size_t kMaxFifoSamples = static_cast<size_t>(kAnalysisSampleRate) * 2u;
+constexpr size_t kMaxRetainedMonoFrames = static_cast<size_t>(kAnalysisSampleRate) * 2u;
 
 struct AudioResponseState
 {
@@ -121,6 +121,38 @@ void EnsureWorkerStartedLocked()
     g_state.worker_started = true;
 }
 
+bool SubmitValidatedMonoFrames(
+    uint32_t sample_rate,
+    uint32_t accepted_frame_count,
+    const float* pcm_frames,
+    size_t frame_count)
+{
+    std::lock_guard<std::mutex> lock(g_state.mutex);
+    EnsureWorkerStartedLocked();
+
+    const float* insert_begin = pcm_frames;
+    size_t insert_count = frame_count;
+    if (frame_count > kMaxRetainedMonoFrames) {
+        g_state.fifo.clear();
+        insert_begin = pcm_frames + (frame_count - kMaxRetainedMonoFrames);
+        insert_count = kMaxRetainedMonoFrames;
+    } else if (g_state.fifo.size() + frame_count > kMaxRetainedMonoFrames) {
+        const size_t overflow = (g_state.fifo.size() + frame_count) - kMaxRetainedMonoFrames;
+        if (overflow >= g_state.fifo.size()) {
+            g_state.fifo.clear();
+        } else {
+            g_state.fifo.erase(g_state.fifo.begin(), g_state.fifo.begin() + static_cast<std::ptrdiff_t>(overflow));
+        }
+    }
+
+    g_state.fifo.insert(g_state.fifo.end(), insert_begin, insert_begin + insert_count);
+    g_state.last_submit_time = std::chrono::steady_clock::now();
+    g_state.snapshot.last_submit_sample_rate = sample_rate;
+    g_state.snapshot.accepted_frame_count += accepted_frame_count;
+    g_state.condition.notify_one();
+    return true;
+}
+
 } // namespace
 
 bool SubmitMonoAudioFrames(
@@ -133,32 +165,7 @@ bool SubmitMonoAudioFrames(
         return false;
     }
 
-    const size_t sample_count = static_cast<size_t>(frame_count);
-
-    std::lock_guard<std::mutex> lock(g_state.mutex);
-    EnsureWorkerStartedLocked();
-
-    const float* insert_begin = pcm_frames;
-    size_t insert_count = sample_count;
-    if (sample_count > kMaxFifoSamples) {
-        g_state.fifo.clear();
-        insert_begin = pcm_frames + (sample_count - kMaxFifoSamples);
-        insert_count = kMaxFifoSamples;
-    } else if (g_state.fifo.size() + sample_count > kMaxFifoSamples) {
-        const size_t overflow = (g_state.fifo.size() + sample_count) - kMaxFifoSamples;
-        if (overflow >= g_state.fifo.size()) {
-            g_state.fifo.clear();
-        } else {
-            g_state.fifo.erase(g_state.fifo.begin(), g_state.fifo.begin() + static_cast<std::ptrdiff_t>(overflow));
-        }
-    }
-
-    g_state.fifo.insert(g_state.fifo.end(), insert_begin, insert_begin + insert_count);
-    g_state.last_submit_time = std::chrono::steady_clock::now();
-    g_state.snapshot.last_submit_sample_rate = sample_rate;
-    g_state.snapshot.accepted_frame_count += frame_count;
-    g_state.condition.notify_one();
-    return true;
+    return SubmitValidatedMonoFrames(sample_rate, frame_count, pcm_frames, static_cast<size_t>(frame_count));
 }
 
 bool SubmitAudioFrames(
@@ -174,9 +181,9 @@ bool SubmitAudioFrames(
     const size_t submitted_frame_count = static_cast<size_t>(frame_count);
     size_t retained_frame_offset = 0u;
     size_t retained_frame_count = submitted_frame_count;
-    if (submitted_frame_count > kMaxFifoSamples) {
-        retained_frame_offset = submitted_frame_count - kMaxFifoSamples;
-        retained_frame_count = kMaxFifoSamples;
+    if (submitted_frame_count > kMaxRetainedMonoFrames) {
+        retained_frame_offset = submitted_frame_count - kMaxRetainedMonoFrames;
+        retained_frame_count = kMaxRetainedMonoFrames;
     }
 
     std::vector<float> mono(retained_frame_count, 0.0f);
@@ -186,24 +193,7 @@ bool SubmitAudioFrames(
         mono[frame] = 0.5f * (pcm_frames[stereo_sample] + pcm_frames[stereo_sample + 1u]);
     }
 
-    std::lock_guard<std::mutex> lock(g_state.mutex);
-    EnsureWorkerStartedLocked();
-
-    if (g_state.fifo.size() + retained_frame_count > kMaxFifoSamples) {
-        const size_t overflow = (g_state.fifo.size() + retained_frame_count) - kMaxFifoSamples;
-        if (overflow >= g_state.fifo.size()) {
-            g_state.fifo.clear();
-        } else {
-            g_state.fifo.erase(g_state.fifo.begin(), g_state.fifo.begin() + static_cast<std::ptrdiff_t>(overflow));
-        }
-    }
-
-    g_state.fifo.insert(g_state.fifo.end(), mono.begin(), mono.end());
-    g_state.last_submit_time = std::chrono::steady_clock::now();
-    g_state.snapshot.last_submit_sample_rate = sample_rate;
-    g_state.snapshot.accepted_frame_count += frame_count;
-    g_state.condition.notify_one();
-    return true;
+    return SubmitValidatedMonoFrames(sample_rate, frame_count, mono.data(), retained_frame_count);
 }
 
 AudioSpectrumSnapshot CurrentAudioSpectrumSnapshot()
