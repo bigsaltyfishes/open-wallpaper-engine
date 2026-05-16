@@ -40,7 +40,6 @@ public:
     void MountStream(std::unique_ptr<SoundStream>&&);
     void MountStream(std::shared_ptr<SoundStream>);
     void UnMountAll();
-    void Test(std::shared_ptr<fs::IBinaryStream>);
     bool Init();
     bool IsInited() const;
     void Play();

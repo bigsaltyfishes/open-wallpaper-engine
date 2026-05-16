@@ -1,4 +1,5 @@
 #include "Audio/SoundManager.h"
+#include "Audio/FfmpegSoundStream.hpp"
 #include "miniaudio-wrapper.hpp"
 #include "Fs/IBinaryStream.h"
 #include "Core/Literals.hpp"
@@ -19,9 +20,6 @@ namespace
 
 SoundStream::Desc ToSSDesc(const miniaudio::DeviceDesc& d) {
     return { .channels = d.phyChannels, .sampleRate = d.sampleRate };
-}
-miniaudio::DeviceDesc ToSSDesc(const SoundStream::Desc& d) {
-    return { .phyChannels = d.channels, .sampleRate = d.sampleRate };
 }
 
 } // namespace
@@ -183,48 +181,17 @@ private:
     bool                         m_stop_worker { false };
 };
 
-struct BStreamWrapper {
-    std::shared_ptr<wallpaper::fs::IBinaryStream> stream;
-    size_t                                        Read(void* pBufferOut, size_t bytesToRead) {
-        size_t reads = stream->Read(pBufferOut, bytesToRead);
-        // LOG_INFO("r:%u, %u",bytesToRead, reads);
-        return reads;
-    }
-    bool Seek(idx offset, ma_seek_origin origin) {
-        bool result { false };
-        switch (origin) {
-        case ma_seek_origin_start: result = stream->SeekSet(offset); break;
-        case ma_seek_origin_current: result = stream->SeekCur(offset); break;
-        case ma_seek_origin_end: result = stream->SeekEnd(offset); break;
-        }
-        // LOG_INFO("s:%u, %d",offset, result);
-        return result;
-    }
-};
-
-template<typename T>
-class SoundStream_impl : public SoundStream {
-public:
-    SoundStream_impl(std::unique_ptr<T>&& ss): m_ss(std::move(ss)) {}
-    virtual ~SoundStream_impl() {}
-
-    uint64_t NextPcmData(void* pData, uint32_t frameCount) override {
-        return m_ss->NextPcmData(pData, frameCount);
-    }
-    void PassDesc(const Desc&) override {}
-
-private:
-    std::unique_ptr<T> m_ss;
-};
-
 std::unique_ptr<SoundStream>
 wallpaper::audio::CreateSoundStream(std::shared_ptr<wallpaper::fs::IBinaryStream> stream,
                                     const SoundStream::Desc&                      desc) {
-    BStreamWrapper sw { stream };
-    auto           decoder = std::make_unique<miniaudio::Decoder<BStreamWrapper>>(std::move(sw));
-    decoder->Init(ToSSDesc(desc));
-    return std::make_unique<SoundStream_impl<miniaudio::Decoder<BStreamWrapper>>>(
-        std::move(decoder));
+    std::string error;
+    auto        sound_stream = CreateFfmpegSoundStream(std::move(stream), &error);
+    if (sound_stream == nullptr) {
+        LOG_ERROR("failed to create FFmpeg sound stream: %s", error.c_str());
+        return nullptr;
+    }
+    sound_stream->PassDesc(desc);
+    return sound_stream;
 }
 
 class SoundManager::impl : NoCopy, NoMove {
@@ -245,10 +212,6 @@ void SoundManager::MountStream(std::shared_ptr<SoundStream> ss) {
     pImpl->device.MountChannel(std::make_unique<Channel_Impl>(std::move(ss)));
 }
 
-void SoundManager::Test(std::shared_ptr<fs::IBinaryStream> stream) {
-    BStreamWrapper sw { stream };
-    auto           decoder = std::make_unique<miniaudio::Decoder<BStreamWrapper>>(std::move(sw));
-}
 bool SoundManager::Init() { return pImpl->device.Init({}); }
 bool SoundManager::IsInited() const { return pImpl->device.IsInited(); }
 void SoundManager::Play() { pImpl->device.Start(); }

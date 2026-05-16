@@ -7,6 +7,9 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <vector>
@@ -163,6 +166,23 @@ TEST(FfmpegSoundStreamTest, InvalidVfsStreamFailsGracefully)
 
     EXPECT_EQ(sound, nullptr);
     EXPECT_FALSE(error.empty());
+}
+
+TEST(FfmpegSoundStreamTest, SoundManagerNoLongerUsesMiniaudioDecoder)
+{
+    const auto source_path = std::filesystem::path(__FILE__)
+                                 .parent_path()
+                                 .parent_path()
+                                 .parent_path() /
+                             "src/Audio/SoundManager.cpp";
+    std::ifstream source_file(source_path);
+    ASSERT_TRUE(source_file.is_open()) << source_path;
+
+    const std::string source(
+        (std::istreambuf_iterator<char>(source_file)),
+        std::istreambuf_iterator<char>());
+
+    EXPECT_EQ(source.find("miniaudio::Decoder"), std::string::npos);
 }
 
 } // namespace

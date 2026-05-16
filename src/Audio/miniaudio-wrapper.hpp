@@ -17,13 +17,8 @@
 #define MA_NO_DSOUND
 #define MA_NO_WINMM
 #define MA_NO_ENCODING
-#define STB_VORBIS_HEADER_ONLY
-#include <extras/stb_vorbis.c> /* Enables Vorbis decoding. */
 #define MINIAUDIO_IMPLEMENTATION
 #include <miniaudio.h>
-/* stb_vorbis implementation must come after the implementation of miniaudio. */
-#undef STB_VORBIS_HEADER_ONLY
-#include <extras/stb_vorbis.c> /* Enables Vorbis decoding. */
 
 namespace miniaudio
 {
@@ -32,54 +27,6 @@ struct DeviceDesc {
     ma_uint32              phyChannels;
     ma_uint32              sampleRate;
     static const ma_format format { ma_format_f32 };
-};
-
-template<typename TStream>
-class Decoder : NoCopy {
-public:
-    Decoder(TStream&& s): m_stream(std::move(s)) {}
-    ~Decoder() { ma_decoder_uninit(&m_decoder); }
-    Decoder(Decoder&& o) noexcept
-        : m_decoder(std::exchange(o.m_decoder, ma_decoder()), m_stream(std::move(m_stream))) {}
-    Decoder& operator=(Decoder&& o) noexcept {
-        m_decoder = std::exchange(o.m_decoder, ma_decoder());
-        m_stream  = std::move(m_stream);
-        return *this;
-    }
-
-    bool Init(const DeviceDesc& d) {
-        ma_decoder_config config =
-            ma_decoder_config_init(DeviceDesc::format, d.phyChannels, d.sampleRate);
-        ma_result result = ma_decoder_init(Read, Seek, this, &config, &m_decoder);
-        m_inited         = result == MA_SUCCESS;
-        if (! m_inited) {
-            LOG_ERROR("init decoder failed");
-        }
-        return m_inited;
-    }
-    ma_uint64 NextPcmData(void* pData, ma_uint64 frameCount) {
-        if (! m_inited) return 0;
-        decltype(frameCount) readed { 0 };
-        ma_result result = ma_decoder_read_pcm_frames(&m_decoder, pData, frameCount, &readed);
-        return result == MA_SUCCESS ? readed : 0;
-    }
-    bool IsInited() { return m_inited; }
-
-private:
-    static ma_result Read(ma_decoder* pMaDecoder, void* pBufferOut, size_t bytesToRead,
-                          size_t* pBytesRead) {
-        auto* pDecoder = static_cast<Decoder<TStream>*>(pMaDecoder->pUserData);
-        *pBytesRead    = pDecoder->m_stream.Read(pBufferOut, bytesToRead);
-        return MA_SUCCESS;
-    }
-    static ma_result Seek(ma_decoder* pMaDecoder, ma_int64 byteOffset, ma_seek_origin origin) {
-        auto* pDecoder = static_cast<Decoder<TStream>*>(pMaDecoder->pUserData);
-        bool  ok       = pDecoder->m_stream.Seek(byteOffset, origin);
-        return ok ? MA_SUCCESS : MA_ERROR;
-    }
-    bool       m_inited { false };
-    ma_decoder m_decoder {};
-    TStream    m_stream;
 };
 
 class Channel : NoCopy {
