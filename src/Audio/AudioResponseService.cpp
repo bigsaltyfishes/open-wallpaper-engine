@@ -171,12 +171,39 @@ bool SubmitAudioFrames(
         return false;
     }
 
-    std::vector<float> mono(static_cast<size_t>(frame_count), 0.0f);
-    for (uint32_t frame = 0; frame < frame_count; ++frame) {
-        mono[frame] = 0.5f * (pcm_frames[frame * 2u] + pcm_frames[(frame * 2u) + 1u]);
+    const size_t submitted_frame_count = static_cast<size_t>(frame_count);
+    size_t retained_frame_offset = 0u;
+    size_t retained_frame_count = submitted_frame_count;
+    if (submitted_frame_count > kMaxFifoSamples) {
+        retained_frame_offset = submitted_frame_count - kMaxFifoSamples;
+        retained_frame_count = kMaxFifoSamples;
     }
 
-    return SubmitMonoAudioFrames(sample_rate, frame_count, mono.data(), error);
+    std::vector<float> mono(retained_frame_count, 0.0f);
+    for (size_t frame = 0; frame < retained_frame_count; ++frame) {
+        const size_t stereo_frame = retained_frame_offset + frame;
+        const size_t stereo_sample = stereo_frame * kInterleavedChannels;
+        mono[frame] = 0.5f * (pcm_frames[stereo_sample] + pcm_frames[stereo_sample + 1u]);
+    }
+
+    std::lock_guard<std::mutex> lock(g_state.mutex);
+    EnsureWorkerStartedLocked();
+
+    if (g_state.fifo.size() + retained_frame_count > kMaxFifoSamples) {
+        const size_t overflow = (g_state.fifo.size() + retained_frame_count) - kMaxFifoSamples;
+        if (overflow >= g_state.fifo.size()) {
+            g_state.fifo.clear();
+        } else {
+            g_state.fifo.erase(g_state.fifo.begin(), g_state.fifo.begin() + static_cast<std::ptrdiff_t>(overflow));
+        }
+    }
+
+    g_state.fifo.insert(g_state.fifo.end(), mono.begin(), mono.end());
+    g_state.last_submit_time = std::chrono::steady_clock::now();
+    g_state.snapshot.last_submit_sample_rate = sample_rate;
+    g_state.snapshot.accepted_frame_count += frame_count;
+    g_state.condition.notify_one();
+    return true;
 }
 
 AudioSpectrumSnapshot CurrentAudioSpectrumSnapshot()
