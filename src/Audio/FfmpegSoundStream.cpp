@@ -46,6 +46,7 @@ public:
 
     virtual const std::string& Description() const = 0;
     virtual bool Open(AVFormatContext** format_context, std::string* error) = 0;
+    virtual void Close() {}
 };
 
 class PathFfmpegInputSource final : public FfmpegInputSource {
@@ -105,7 +106,7 @@ public:
             return SetError(error, "failed to allocate an FFmpeg media context");
         }
 
-        constexpr int avio_buffer_size = 4096;
+        constexpr int avio_buffer_size = 32 * 1024;
         auto* buffer = static_cast<unsigned char*>(av_malloc(avio_buffer_size));
         if (buffer == nullptr) {
             avformat_free_context(context);
@@ -130,12 +131,21 @@ public:
         context->flags |= AVFMT_FLAG_CUSTOM_IO;
 
         if (const int result = avformat_open_input(&context, nullptr, nullptr, nullptr); result < 0) {
+            if (context != nullptr) {
+                context->pb = nullptr;
+                avformat_free_context(context);
+            }
             FreeAvio();
             return SetError(error, "failed to open FFmpeg audio input: " + AvErrorString(result));
         }
 
         *format_context = context;
         return true;
+    }
+
+    void Close() override
+    {
+        FreeAvio();
     }
 
 private:
@@ -153,7 +163,10 @@ private:
     {
         auto* source = static_cast<StreamFfmpegInputSource*>(opaque);
 
-        if (whence == AVSEEK_SIZE) return source->m_stream->Size();
+        if (whence == AVSEEK_SIZE) {
+            const auto size = source->m_stream->Size();
+            return size >= 0 ? static_cast<int64_t>(size) : AVERROR(EIO);
+        }
 
         bool seek_result { false };
         switch (whence & ~AVSEEK_FORCE) {
@@ -187,12 +200,14 @@ bool ProbeHasAudioStream(FfmpegInputSource& input_source, std::string* error)
 
     if (const int result = avformat_find_stream_info(format_context, nullptr); result < 0) {
         avformat_close_input(&format_context);
+        input_source.Close();
         return SetError(error, "failed to read FFmpeg media stream info: " + AvErrorString(result));
     }
 
     const int audio_stream_index =
         av_find_best_stream(format_context, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
     avformat_close_input(&format_context);
+    input_source.Close();
     if (audio_stream_index < 0) {
         return SetError(error, "failed to find an FFmpeg audio stream: " + AvErrorString(audio_stream_index));
     }
@@ -219,12 +234,7 @@ public:
 
     ~FfmpegSoundStream() override
     {
-        if (m_packet != nullptr) av_packet_free(&m_packet);
-        if (m_frame != nullptr) av_frame_free(&m_frame);
-        if (m_swr != nullptr) swr_free(&m_swr);
-        if (m_codec_context != nullptr) avcodec_free_context(&m_codec_context);
-        if (m_format_context != nullptr) avformat_close_input(&m_format_context);
-        av_channel_layout_uninit(&m_output_layout);
+        closeDecoder();
     }
 
     uint64_t NextPcmData(void* pData, uint32_t frameCount) override
@@ -289,42 +299,49 @@ private:
 
     bool openDecoder(std::string* error)
     {
+        closeDecoder();
+
+        const auto fail = [&](std::string message) {
+            closeDecoder();
+            return SetError(error, std::move(message));
+        };
+
         if (!m_input_source->Open(&m_format_context, error)) return false;
 
         if (const int result = avformat_find_stream_info(m_format_context, nullptr); result < 0) {
-            return SetError(error, "failed to read FFmpeg audio stream info: " + AvErrorString(result));
+            return fail("failed to read FFmpeg audio stream info: " + AvErrorString(result));
         }
 
         m_audio_stream_index =
             av_find_best_stream(m_format_context, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
         if (m_audio_stream_index < 0) {
-            return SetError(error, "failed to find an FFmpeg audio stream: " + AvErrorString(m_audio_stream_index));
+            return fail("failed to find an FFmpeg audio stream: " + AvErrorString(m_audio_stream_index));
         }
 
         m_audio_stream = m_format_context->streams[m_audio_stream_index];
         if (m_audio_stream == nullptr || m_audio_stream->codecpar == nullptr) {
-            return SetError(error, "FFmpeg audio stream is missing codec parameters");
+            return fail("FFmpeg audio stream is missing codec parameters");
         }
 
         const AVCodec* codec = avcodec_find_decoder(m_audio_stream->codecpar->codec_id);
         if (codec == nullptr) {
-            return SetError(error, "failed to find an FFmpeg decoder for the audio stream");
+            return fail("failed to find an FFmpeg decoder for the audio stream");
         }
 
         m_codec_context = avcodec_alloc_context3(codec);
         if (m_codec_context == nullptr) {
-            return SetError(error, "failed to allocate an FFmpeg audio decoder context");
+            return fail("failed to allocate an FFmpeg audio decoder context");
         }
 
         if (const int result = avcodec_parameters_to_context(
                 m_codec_context,
                 m_audio_stream->codecpar);
             result < 0) {
-            return SetError(error, "failed to copy FFmpeg audio codec parameters: " + AvErrorString(result));
+            return fail("failed to copy FFmpeg audio codec parameters: " + AvErrorString(result));
         }
 
         if (const int result = avcodec_open2(m_codec_context, codec, nullptr); result < 0) {
-            return SetError(error, "failed to open the FFmpeg audio decoder: " + AvErrorString(result));
+            return fail("failed to open the FFmpeg audio decoder: " + AvErrorString(result));
         }
 
         av_channel_layout_default(&m_output_layout, static_cast<int>(m_desc.channels));
@@ -340,19 +357,36 @@ private:
                 0,
                 nullptr);
             result < 0) {
-            return SetError(error, "failed to allocate the FFmpeg audio resampler: " + AvErrorString(result));
+            return fail("failed to allocate the FFmpeg audio resampler: " + AvErrorString(result));
         }
         if (const int result = swr_init(m_swr); result < 0) {
-            return SetError(error, "failed to initialize the FFmpeg audio resampler: " + AvErrorString(result));
+            return fail("failed to initialize the FFmpeg audio resampler: " + AvErrorString(result));
         }
 
         m_packet = av_packet_alloc();
         m_frame = av_frame_alloc();
         if (m_packet == nullptr || m_frame == nullptr) {
-            return SetError(error, "failed to allocate FFmpeg audio packet/frame buffers");
+            return fail("failed to allocate FFmpeg audio packet/frame buffers");
         }
 
         return true;
+    }
+
+    void closeDecoder()
+    {
+        if (m_packet != nullptr) av_packet_free(&m_packet);
+        if (m_frame != nullptr) av_frame_free(&m_frame);
+        if (m_swr != nullptr) swr_free(&m_swr);
+        if (m_codec_context != nullptr) avcodec_free_context(&m_codec_context);
+        if (m_format_context != nullptr) avformat_close_input(&m_format_context);
+        if (m_input_source != nullptr) m_input_source->Close();
+        av_channel_layout_uninit(&m_output_layout);
+        m_output_layout = {};
+        m_audio_stream = nullptr;
+        m_audio_stream_index = -1;
+        m_pending_samples.clear();
+        m_pending_offset_samples = 0;
+        m_open = false;
     }
 
     bool seekToStart()
