@@ -8,6 +8,7 @@
 #include <cmath>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace wallpaper::audio
 {
@@ -96,6 +97,27 @@ TEST(AudioResponseMonoTest, MonoSubmitRejectsNonAnalysisSampleRate) {
     EXPECT_FALSE(SubmitMonoAudioFrames(48'000u, kChunkFrameCount, samples.data(), &error));
     EXPECT_NE(error.find("sample_rate"), std::string::npos);
     EXPECT_NE(error.find("12000"), std::string::npos);
+}
+
+TEST(AudioResponseMonoTest, OversizedMonoSubmitIsAcceptedAndAnalyzed) {
+    ResetAudioResponseServiceForTesting();
+
+    constexpr uint32_t oversized_frame_count = 24'200u;
+    std::vector<float> samples(oversized_frame_count, 0.0f);
+    for (std::size_t index = 0; index < samples.size(); ++index) {
+        samples[index] = std::sin(static_cast<float>(index) * 0.03f);
+    }
+
+    std::string error;
+    ASSERT_TRUE(SubmitMonoAudioFrames(kSubmitSampleRate, oversized_frame_count, samples.data(), &error))
+        << error;
+
+    auto snapshot = WaitForGeneration();
+    EXPECT_EQ(snapshot.sample_rate, 12'000u);
+    EXPECT_EQ(snapshot.last_submit_sample_rate, kSubmitSampleRate);
+    EXPECT_EQ(snapshot.accepted_frame_count, oversized_frame_count);
+    EXPECT_GT(snapshot.generation, 0u);
+    EXPECT_TRUE(HasNonZeroAverage64Bin(snapshot));
 }
 
 TEST(AudioResponseMonoTest, StereoCompatibilityWrapperDownmixesToMono) {

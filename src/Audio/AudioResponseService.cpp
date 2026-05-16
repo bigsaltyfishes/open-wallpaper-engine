@@ -138,7 +138,13 @@ bool SubmitMonoAudioFrames(
     std::lock_guard<std::mutex> lock(g_state.mutex);
     EnsureWorkerStartedLocked();
 
-    if (g_state.fifo.size() + sample_count > kMaxFifoSamples) {
+    const float* insert_begin = pcm_frames;
+    size_t insert_count = sample_count;
+    if (sample_count > kMaxFifoSamples) {
+        g_state.fifo.clear();
+        insert_begin = pcm_frames + (sample_count - kMaxFifoSamples);
+        insert_count = kMaxFifoSamples;
+    } else if (g_state.fifo.size() + sample_count > kMaxFifoSamples) {
         const size_t overflow = (g_state.fifo.size() + sample_count) - kMaxFifoSamples;
         if (overflow >= g_state.fifo.size()) {
             g_state.fifo.clear();
@@ -147,7 +153,7 @@ bool SubmitMonoAudioFrames(
         }
     }
 
-    g_state.fifo.insert(g_state.fifo.end(), pcm_frames, pcm_frames + sample_count);
+    g_state.fifo.insert(g_state.fifo.end(), insert_begin, insert_begin + insert_count);
     g_state.last_submit_time = std::chrono::steady_clock::now();
     g_state.snapshot.last_submit_sample_rate = sample_rate;
     g_state.snapshot.accepted_frame_count += frame_count;
