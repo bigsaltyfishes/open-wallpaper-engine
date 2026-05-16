@@ -65,6 +65,7 @@ add_executable(
     audio_tests
     audio/audio_response_mono_test.cpp
     audio/ffmpeg_sound_stream_test.cpp
+    fs/limited_binary_stream_test.cpp
     audio/sample_math_test.cpp
     audio/sound_layer_control_test.cpp)
 target_link_libraries(audio_tests PRIVATE ${PROJECT_NAME} wpAudio wpFs GTest::gtest_main)

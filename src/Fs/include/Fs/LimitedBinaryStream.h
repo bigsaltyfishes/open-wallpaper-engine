@@ -17,7 +17,7 @@ public:
     virtual ~LimitedBinaryStream() = default;
 
 private:
-    bool CheckInArea(idx pos) const { return pos > 0 && pos <= Size(); }
+    bool CheckInArea(idx pos) const { return pos >= 0 && pos <= Size(); }
 
     bool SeekInMPos(void) { return m_infs->SeekSet(m_start + m_pos); }
     bool SeekInPos(idx pos) {
@@ -60,7 +60,7 @@ public:
         return SeekInPos(pos);
     }
     virtual bool SeekEnd(idx offset) {
-        idx pos = Size() - 1 - offset;
+        idx pos = Size() + offset;
         return SeekInPos(pos);
     }
     virtual isize Size() const { return m_end - m_start; }
