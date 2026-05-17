@@ -2,9 +2,6 @@
 
 #include <algorithm>
 #include <cassert>
-#include <glslang/Include/Types.h>
-#include <glslang/MachineIndependent/localintermediate.h>
-#include <glslang/MachineIndependent/iomapper.h>
 #include <glslang/SPIRV/GlslangToSpv.h>
 #include "Spv.hpp"
 #include "TextureCache.hpp"
@@ -125,14 +122,6 @@ inline void SetMessageOptions(const ShaderCompOpt& opt, EShMessages& emsg) {
     if (opt.suppress_warnings_glsl) emsg = (EShMessages)(emsg | EShMsgSuppressWarnings);
     if (getClient(opt.client_ver) == glslang::EShClientVulkan)
         emsg = (EShMessages)(emsg | EShMsgVulkanRules);
-}
-
-inline i32 GetTypeNum(const glslang::TType* type) {
-    i32 num { 1 };
-    if (type->isArray()) num *= type->getCumulativeArraySize();
-    if (type->isVector()) num *= type->getVectorSize();
-    if (type->isMatrix()) num *= type->getMatrixCols() * type->getMatrixRows();
-    return num;
 }
 } // namespace
 const TBuiltInResource wallpaper::vulkan::DefaultTBuiltInResource {
@@ -437,14 +426,7 @@ bool wallpaper::vulkan::CompileAndLinkShaderUnits(std::span<const ShaderCompUnit
         return false;
     }
 
-    for (auto& unit : compUnits) {
-        (void)program.getIntermediate(unit.stage);
-    }
-    glslang::TIntermediate*         firstIm = program.getIntermediate(compUnits[0].stage);
-    glslang::TDefaultGlslIoResolver resolver(*firstIm);
-    glslang::TGlslIoMapper          ioMapper;
-
-    if (! (program.mapIO(&resolver, &ioMapper))) {
+    if (! (program.mapIO())) {
         LOG_ERROR("glslang(mapIo): %s\n", program.getInfoLog());
         return false;
     }
@@ -459,7 +441,6 @@ bool wallpaper::vulkan::CompileAndLinkShaderUnits(std::span<const ShaderCompUnit
         Uni_ShaderSpv spv = std::make_unique<ShaderSpv>();
         spv->stage        = ::ToGeneType(::ToVkType(unit.stage));
         auto im           = program.getIntermediate(unit.stage);
-        im->setOriginUpperLeft();
         glslang::GlslangToSpv(*im, spv->spirv, &logger, &spvOptions);
         spvs.emplace_back(std::move(spv));
 
@@ -468,28 +449,4 @@ bool wallpaper::vulkan::CompileAndLinkShaderUnits(std::span<const ShaderCompUnit
     }
 
     return true;
-}
-
-VkFormat wallpaper::vulkan::ToVkType(glslang::TBasicType type, size_t size) {
-#define FORMAT_SWITCH(in, s, sign, type)                       \
-    switch (in) {                                              \
-    case 1: return _VK_FORMAT_1(s, _##sign, type, R);          \
-    case 2: return _VK_FORMAT_2(s, _##sign, type, R, G);       \
-    case 3: return _VK_FORMAT_3(s, _##sign, type, R, G, B);    \
-    case 4: return _VK_FORMAT_4(s, _##sign, type, R, G, B, A); \
-    }                                                          \
-    break;
-
-    switch (type) {
-    case glslang::TBasicType::EbtFloat: FORMAT_SWITCH(size, 32, S, FLOAT);
-    case glslang::TBasicType::EbtInt: FORMAT_SWITCH(size, 32, S, INT);
-    case glslang::TBasicType::EbtUint: FORMAT_SWITCH(size, 32, U, INT);
-    default: break;
-    }
-    LOG_ERROR("can't covert glslang type \"%s\" of size %d to vulkan format",
-              glslang::TType::getBasicString(type),
-              size);
-    assert(false);
-    return VK_FORMAT_UNDEFINED;
-#undef FORMAT_SWITCH
 }

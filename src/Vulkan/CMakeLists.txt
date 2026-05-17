@@ -20,7 +20,7 @@ target_link_libraries(${LIB_NAME}
 PUBLIC
 	glslang
     spirv-reflect-static
-	${Vulkan_LIBRARIES}
+	Vulkan::Vulkan
     wpScene
 PRIVATE
 	SPIRV

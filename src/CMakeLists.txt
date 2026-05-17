@@ -1,6 +1,6 @@
 find_package(OpenGL REQUIRED)
 find_package(Threads REQUIRED)
-pkg_check_modules(LZ4 REQUIRED liblz4)
+pkg_check_modules(LZ4 REQUIRED IMPORTED_TARGET liblz4)
 pkg_check_modules(AVFORMAT REQUIRED IMPORTED_TARGET libavformat)
 pkg_check_modules(AVCODEC REQUIRED IMPORTED_TARGET libavcodec)
 pkg_check_modules(AVUTIL REQUIRED IMPORTED_TARGET libavutil)
@@ -106,7 +106,7 @@ set(InteralLib
 target_link_libraries(
   ${PROJECT_NAME}
   PUBLIC wpUtils
-  PRIVATE ${InteralLib} nlohmann_json quickjs::quickjs ${LZ4_LIBRARIES}
+  PRIVATE ${InteralLib} nlohmann_json::nlohmann_json quickjs::quickjs PkgConfig::LZ4
           PkgConfig::AVFORMAT
           PkgConfig::AVCODEC
           PkgConfig::AVUTIL
