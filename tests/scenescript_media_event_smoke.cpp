@@ -298,5 +298,117 @@ export function update(value) {
     EXPECT_EQ(runtime->scriptErrorCount(), 0u);
 }
 
+TEST(SceneScriptMediaEventSmoke, BottomAlignedLayerScalesUpFromBottomEdge) {
+    auto fixture = CreateRuntimeWithProbeNodes();
+    ASSERT_NE(fixture.runtime, nullptr);
+
+    fixture.exported_probe->SetTranslate(Eigen::Vector3f(100.0f, 50.0f, 0.0f));
+    fixture.exported_probe->SetScale(Eigen::Vector3f(1.0f, 1.0f, 1.0f));
+    fixture.runtime->RegisterNode("exportedProbe", fixture.exported_probe.get());
+    fixture.runtime->RegisterNodeSize("exportedProbe", Eigen::Vector2f(20.0f, 10.0f));
+
+    fixture.runtime->RegisterSceneScript(
+        R"JS(
+function update() {
+  var bar = scene.getObject('exportedProbe');
+  bar.alignment = 'bottom';
+  bar.scale = new Vec3(1, 4, 1);
+  bar.origin = new Vec3(100, 50, 0);
+}
+)JS",
+        "");
+    ASSERT_EQ(fixture.runtime->sceneScriptCount(), 1u);
+
+    fixture.runtime->Tick(1.0 / 60.0);
+
+    EXPECT_FLOAT_EQ(fixture.runtime->NodeScale("exportedProbe").y(), 4.0f);
+    EXPECT_FLOAT_EQ(fixture.runtime->NodeTranslate("exportedProbe").x(), 100.0f);
+    EXPECT_FLOAT_EQ(fixture.runtime->NodeTranslate("exportedProbe").y(), 50.0f);
+    EXPECT_FLOAT_EQ(fixture.exported_probe->Translate().y(), 65.0f);
+    EXPECT_EQ(fixture.runtime->scriptErrorCount(), 0u);
+}
+
+TEST(SceneScriptMediaEventSmoke, BottomAlignedLayerAppliesRenderedTransform) {
+    auto fixture = CreateRuntimeWithProbeNodes();
+    ASSERT_NE(fixture.runtime, nullptr);
+
+    fixture.exported_probe->SetTranslate(Eigen::Vector3f(100.0f, 50.0f, 0.0f));
+    fixture.exported_probe->SetScale(Eigen::Vector3f(1.0f, 1.0f, 1.0f));
+    fixture.runtime->RegisterNode("exportedProbe", fixture.exported_probe.get());
+    fixture.runtime->RegisterNodeSize("exportedProbe", Eigen::Vector2f(20.0f, 10.0f));
+
+    fixture.runtime->RegisterSceneScript(
+        R"JS(
+function update() {
+  var bar = scene.getObject('exportedProbe');
+  bar.alignment = 'bottom';
+  bar.scale = new Vec3(3, 4, 1);
+  bar.origin = new Vec3(100, 50, 0);
+}
+)JS",
+        "");
+
+    fixture.runtime->Tick(1.0 / 60.0);
+
+    EXPECT_FLOAT_EQ(fixture.runtime->NodeScale("exportedProbe").x(), 3.0f);
+    EXPECT_FLOAT_EQ(fixture.runtime->NodeScale("exportedProbe").y(), 4.0f);
+    EXPECT_FLOAT_EQ(fixture.runtime->NodeTranslate("exportedProbe").x(), 100.0f);
+    EXPECT_FLOAT_EQ(fixture.runtime->NodeTranslate("exportedProbe").y(), 50.0f);
+    EXPECT_FLOAT_EQ(fixture.exported_probe->Translate().x(), 100.0f);
+    EXPECT_FLOAT_EQ(fixture.exported_probe->Translate().y(), 65.0f);
+    EXPECT_EQ(fixture.runtime->scriptErrorCount(), 0u);
+}
+
+TEST(SceneScriptMediaEventSmoke, VisualizerScriptPropertiesDriveLayerScale) {
+    auto runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {
+        .project_properties = {
+            { "newproperty10", RuntimeScalarValue::Float(3.0f) },
+            { "newproperty11", RuntimeScalarValue::Float(30.0f) },
+            { "yp", RuntimeScalarValue::Bool(true) },
+        },
+    });
+    ASSERT_NE(runtime, nullptr);
+
+    auto node = std::make_shared<SceneNode>();
+    runtime->RegisterNode("Simple Visualizer", node.get());
+    runtime->RegisterNodeVisibility(
+        "Simple Visualizer",
+        node.get(),
+        ResolveBoolSetting(
+            *runtime,
+            nlohmann::json {
+                {
+                    "script",
+                    R"JS(
+export var scriptProperties = createScriptProperties()
+  .addSlider({ name: 'barWidth', value: 5 })
+  .addSlider({ name: 'scaleY', value: 60 })
+  .finish();
+
+export function update(value) {
+  thisLayer.scale = new Vec3(scriptProperties.barWidth, scriptProperties.scaleY, 1);
+  return value;
+}
+)JS",
+                },
+                {
+                    "scriptproperties",
+                    {
+                        { "barWidth", { { "user", "newproperty10" }, { "value", 5.0f } } },
+                        { "scaleY", { { "user", "newproperty11" }, { "value", 60.0f } } },
+                    },
+                },
+                { "user", "yp" },
+                { "value", true },
+            },
+            "Simple Visualizer"));
+
+    runtime->Tick(1.0 / 60.0);
+
+    EXPECT_FLOAT_EQ(runtime->NodeScale("Simple Visualizer").x(), 3.0f);
+    EXPECT_FLOAT_EQ(runtime->NodeScale("Simple Visualizer").y(), 30.0f);
+    EXPECT_EQ(runtime->scriptErrorCount(), 0u);
+}
+
 } // namespace
 } // namespace wallpaper

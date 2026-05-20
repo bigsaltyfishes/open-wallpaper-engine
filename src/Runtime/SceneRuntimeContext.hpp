@@ -19,7 +19,7 @@ namespace wallpaper
 class DynamicValue;
 class ScriptEngine;
 class SceneScriptProgram;
-class SceneMaterial;
+struct SceneMaterial;
 class ScriptedDynamicValue;
 class SceneNode;
 class SceneImageEffectLayer;
@@ -61,6 +61,8 @@ public:
     void RegisterNodeScale(std::string name, SceneNode* node, std::unique_ptr<DynamicValue> value);
     void RegisterNodeRotation(std::string name, SceneNode* node,
                               std::unique_ptr<DynamicValue> value);
+    void RegisterMaterialConstant(SceneMaterial* material, std::string name,
+                                  std::unique_ptr<DynamicValue> value);
     void RegisterNodeEffectFinal(std::string name, SceneNode* node, SceneImageEffectLayer* layer);
     void RegisterMaterialAlphaAnimation(SceneMaterial* material, ScalarAnimation animation);
     void RegisterSceneScript(std::string script_source, std::string layer_name);
@@ -85,6 +87,7 @@ public:
     bool            SetNodeVisible(std::string_view name, bool visible);
     bool            SetNodeTranslate(std::string_view name, const Eigen::Vector3f& value);
     bool            SetNodeScale(std::string_view name, const Eigen::Vector3f& value);
+    bool            SetNodeAlignment(std::string_view name, std::string alignment);
     bool            SetNodeRotation(std::string_view name, const Eigen::Vector3f& value);
     Eigen::Vector3f NodeTranslate(std::string_view name) const;
     Eigen::Vector3f NodeScale(std::string_view name) const;
@@ -142,6 +145,16 @@ private:
         SceneMaterial*  material { nullptr };
         ScalarAnimation animation {};
     };
+    struct MaterialConstantBinding {
+        SceneMaterial* material { nullptr };
+        std::string    name;
+        DynamicValue*  value { nullptr };
+    };
+    struct NodeAlignmentBinding {
+        std::string      alignment;
+        Eigen::Vector3f  origin { Eigen::Vector3f::Zero() };
+        Eigen::Vector3f  scale { Eigen::Vector3f::Ones() };
+    };
     struct VideoTexturePlaybackBinding {
         double duration_seconds { 0.0 };
         double absolute_seconds { 0.0 };
@@ -153,9 +166,9 @@ private:
         std::shared_ptr<SceneNode> node;
         Eigen::Vector2f            size { Eigen::Vector2f::Zero() };
     };
-
     std::shared_ptr<WPSoundStream> LockSoundLayer(std::string_view name) const;
     void DispatchMediaPlaybackChanged(std::string_view name, bool playing);
+    void ApplyNodeTransform(std::string_view name);
 
     std::unique_ptr<ScriptEngine>                                  m_script_engine;
     std::unique_ptr<ScriptHostContext>                             m_host_context;
@@ -172,7 +185,9 @@ private:
     std::unordered_map<std::string, NodeVec3Binding>               m_node_rotation;
     std::unordered_map<std::string, NodeEffectFinalBinding>        m_node_effect_final;
     std::vector<MaterialAlphaBinding>                              m_material_alpha;
+    std::vector<MaterialConstantBinding>                           m_material_constants;
     std::unordered_map<std::string, Eigen::Vector2f>               m_node_size;
+    std::unordered_map<std::string, NodeAlignmentBinding>          m_node_alignment;
     std::unordered_map<std::string, std::string>                   m_node_template_paths;
     std::unordered_map<std::string, LayerTemplateBinding>          m_layer_templates;
     std::unordered_map<std::string, std::string>                   m_node_video_textures;

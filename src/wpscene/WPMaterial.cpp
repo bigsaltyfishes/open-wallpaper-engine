@@ -31,6 +31,21 @@ bool UserTextureEmpty(const WPUserTexture& user_texture) {
     return user_texture.name.empty() && user_texture.type.empty();
 }
 
+WPConstantShaderValue ParseConstantShaderValue(const nlohmann::json& json) {
+    WPConstantShaderValue result;
+
+    if (json.is_object()) {
+        GET_JSON_NAME_VALUE_NOWARN(json, "user", result.user);
+        if (json.contains("value")) {
+            GET_JSON_NAME_VALUE(json, "value", result.value);
+        }
+        return result;
+    }
+
+    GET_JSON_VALUE(json, result.value);
+    return result;
+}
+
 void MergeUserTextures(std::vector<WPUserTexture>&       target,
                        const std::vector<WPUserTexture>& source) {
     if (source.size() > target.size()) target.resize(source.size());
@@ -93,11 +108,9 @@ bool WPMaterialPass::FromJson(const nlohmann::json& json) {
     ParseUserTextures(json, usertextures);
     if (json.contains("constantshadervalues")) {
         for (const auto& jC : json.at("constantshadervalues").items()) {
-            std::string        name;
-            std::vector<float> value;
+            std::string name;
             GET_JSON_VALUE(jC.key(), name);
-            GET_JSON_VALUE(jC.value(), value);
-            constantshadervalues[name] = value;
+            constantshadervalues[name] = ParseConstantShaderValue(jC.value());
         }
     }
     if (json.contains("combos")) {
@@ -145,11 +158,9 @@ bool WPMaterial::FromJson(const nlohmann::json& json) {
     ParseUserTextures(jContent, usertextures);
     if (jContent.contains("constantshadervalues")) {
         for (const auto& jC : jContent.at("constantshadervalues").items()) {
-            std::string        name;
-            std::vector<float> value;
+            std::string name;
             GET_JSON_VALUE(jC.key(), name);
-            GET_JSON_VALUE(jC.value(), value);
-            constantshadervalues[name] = value;
+            constantshadervalues[name] = ParseConstantShaderValue(jC.value());
         }
     }
     if (jContent.contains("combos")) {

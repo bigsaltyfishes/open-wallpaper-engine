@@ -23,6 +23,11 @@ struct WPUserTexture {
     std::string type;
 };
 
+struct WPConstantShaderValue {
+    std::vector<float> value;
+    std::string        user;
+};
+
 class WPMaterialPass {
 public:
     bool                                                FromJson(const nlohmann::json&);
@@ -30,7 +35,7 @@ public:
     std::vector<std::string>                            textures;
     std::vector<WPUserTexture>                          usertextures;
     std::unordered_map<std::string, int32_t>            combos;
-    std::unordered_map<std::string, std::vector<float>> constantshadervalues;
+    std::unordered_map<std::string, WPConstantShaderValue> constantshadervalues;
     std::string                                         target;
     std::vector<WPMaterialPassBindItem>                 bind;
 };
@@ -47,13 +52,14 @@ public:
     std::vector<std::string>                            textures;
     std::vector<WPUserTexture>                          usertextures;
     std::unordered_map<std::string, int32_t>            combos;
-    std::unordered_map<std::string, std::vector<float>> constantshadervalues;
+    std::unordered_map<std::string, WPConstantShaderValue> constantshadervalues;
 
     bool use_puppet { false };
 };
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPMaterialPassBindItem, name, index);
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPUserTexture, name, type);
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPConstantShaderValue, value, user);
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPMaterialPass, bind, target, textures, combos,
                                    constantshadervalues);
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPMaterial, blending, shader, textures, combos,

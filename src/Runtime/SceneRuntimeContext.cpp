@@ -13,6 +13,7 @@
 
 #include <cmath>
 #include <filesystem>
+#include <sstream>
 
 namespace wallpaper
 {
@@ -36,7 +37,14 @@ std::string MakeWorkshopLocalAlias(std::string_view canonical_path) {
     return std::string("models/") + normalized.substr(slash + 1);
 }
 
-std::shared_ptr<SceneMesh> CloneMesh(SceneMesh& mesh) {
+struct ClonedMaterialBinding {
+    SceneMaterial* source_material { nullptr };
+    SceneMaterial* cloned_material { nullptr };
+};
+
+std::shared_ptr<SceneMesh> CloneMesh(
+    SceneMesh& mesh,
+    std::vector<ClonedMaterialBinding>* material_bindings) {
     auto clone = std::make_shared<SceneMesh>(mesh.Dynamic());
     clone->SetPrimitive(mesh.Primitive());
     clone->SetPointSize(mesh.PointSize());
@@ -44,11 +52,20 @@ std::shared_ptr<SceneMesh> CloneMesh(SceneMesh& mesh) {
     clone->ChangeMeshDataFrom(mesh);
     if (mesh.Material() != nullptr) {
         clone->AddMaterial(SceneMaterial(*mesh.Material()));
+        if (material_bindings != nullptr) {
+            material_bindings->push_back(ClonedMaterialBinding {
+                .source_material = mesh.Material(),
+                .cloned_material = clone->Material(),
+            });
+        }
     }
     return clone;
 }
 
-std::shared_ptr<SceneNode> CloneNodeShallow(SceneNode& node, std::string name) {
+std::shared_ptr<SceneNode> CloneNodeShallow(
+    SceneNode& node,
+    std::string name,
+    std::vector<ClonedMaterialBinding>* material_bindings) {
     auto clone = std::make_shared<SceneNode>(
         node.Translate(), node.Scale(), node.Rotation(), std::move(name));
     clone->SetVisible(node.Visible());
@@ -59,7 +76,7 @@ std::shared_ptr<SceneNode> CloneNodeShallow(SceneNode& node, std::string name) {
         clone->SetRenderTransformOverride(node.RenderTrans());
     }
     if (node.Mesh() != nullptr) {
-        clone->AddMesh(CloneMesh(*node.Mesh()));
+        clone->AddMesh(CloneMesh(*node.Mesh(), material_bindings));
     }
     return clone;
 }
@@ -132,6 +149,66 @@ void ApplyMaterialAlpha(SceneMaterial& material, float alpha) {
     values["g_Color4"] = color;
 }
 
+ShaderValue ShaderValueFromDynamicValue(const DynamicValue& value) {
+    switch (value.getType()) {
+    case DynamicValue::Vec4: return ShaderValue(value.getVec4().data(), 4);
+    case DynamicValue::Vec3: return ShaderValue(value.getVec3().data(), 3);
+    case DynamicValue::Vec2: return ShaderValue(value.getVec2().data(), 2);
+    case DynamicValue::IVec4: {
+        const auto          source = value.getIVec4();
+        std::array<float, 4> converted {
+            static_cast<float>(source.x()),
+            static_cast<float>(source.y()),
+            static_cast<float>(source.z()),
+            static_cast<float>(source.w()),
+        };
+        return ShaderValue(converted);
+    }
+    case DynamicValue::IVec3: {
+        const auto          source = value.getIVec3();
+        std::array<float, 3> converted {
+            static_cast<float>(source.x()),
+            static_cast<float>(source.y()),
+            static_cast<float>(source.z()),
+        };
+        return ShaderValue(converted);
+    }
+    case DynamicValue::IVec2: {
+        const auto          source = value.getIVec2();
+        std::array<float, 2> converted {
+            static_cast<float>(source.x()),
+            static_cast<float>(source.y()),
+        };
+        return ShaderValue(converted);
+    }
+    case DynamicValue::Boolean:
+    case DynamicValue::Float:
+    case DynamicValue::Int: return ShaderValue(value.getFloat());
+    case DynamicValue::String: {
+        std::istringstream stream(value.getString());
+        std::vector<float> parsed;
+        float              component = 0.0f;
+        while (stream >> component) {
+            parsed.push_back(component);
+        }
+        return parsed.empty() ? ShaderValue(0.0f) : ShaderValue(parsed);
+    }
+    case DynamicValue::Null: return ShaderValue(0.0f);
+    }
+
+    return ShaderValue(0.0f);
+}
+
+void ApplyMaterialConstant(SceneMaterial& material, const std::string& name,
+                           const DynamicValue& value) {
+    if (name.empty()) return;
+    material.customShader.constValues[name] = ShaderValueFromDynamicValue(value);
+}
+
+bool AlignmentContains(std::string_view alignment, std::string_view part) {
+    return alignment.find(part) != std::string_view::npos;
+}
+
 void SyncEffectFinalNode(SceneNode& source, SceneImageEffectLayer& layer) {
     source.UpdateTrans();
     const auto sync_node = [&source](SceneNode& target) {
@@ -188,13 +265,19 @@ void SceneRuntimeContext::Tick(double frame_time) {
     for (auto& [name, binding] : m_node_translate) {
         (void)name;
         if (binding.node != nullptr && binding.value != nullptr) {
-            binding.node->SetTranslate(binding.value->getVec3());
+            m_node_alignment[name].origin = binding.value->getVec3();
+            ApplyNodeTransform(name);
         }
     }
     for (auto& [name, binding] : m_node_scale) {
         (void)name;
         if (binding.node != nullptr && binding.value != nullptr) {
-            binding.node->SetScale(binding.value->getVec3());
+            m_node_alignment[name].scale = binding.value->getVec3();
+            if (m_node_alignment[name].alignment.empty()) {
+                binding.node->SetScale(binding.value->getVec3());
+            } else {
+                ApplyNodeTransform(name);
+            }
         }
     }
     for (auto& [name, binding] : m_node_rotation) {
@@ -213,8 +296,16 @@ void SceneRuntimeContext::Tick(double frame_time) {
         ApplyMaterialAlpha(*binding.material,
                            binding.animation.Evaluate(m_host_context->runtime_seconds));
     }
+    for (auto& binding : m_material_constants) {
+        if (binding.material == nullptr || binding.value == nullptr) continue;
+        ApplyMaterialConstant(*binding.material, binding.name, *binding.value);
+    }
     for (auto& script : m_scene_scripts) {
         if (script != nullptr) script->Tick(*m_host_context);
+    }
+    for (auto& binding : m_material_constants) {
+        if (binding.material == nullptr || binding.value == nullptr) continue;
+        ApplyMaterialConstant(*binding.material, binding.name, *binding.value);
     }
 }
 
@@ -272,7 +363,11 @@ void SceneRuntimeContext::RegisterScriptedValue(ScriptedDynamicValue* value) {
 
 void SceneRuntimeContext::RegisterNode(std::string name, SceneNode* node) {
     if (node == nullptr || name.empty()) return;
-    m_nodes[std::move(name)] = node;
+    std::string key = std::move(name);
+    m_nodes[key]    = node;
+    auto& alignment = m_node_alignment[key];
+    alignment.origin = node->Translate();
+    alignment.scale  = node->Scale();
 }
 
 void SceneRuntimeContext::RegisterNodeSize(std::string name, Eigen::Vector2f value) {
@@ -323,7 +418,7 @@ void SceneRuntimeContext::RegisterNodeTranslate(std::string name, SceneNode* nod
     if (node == nullptr || value == nullptr) return;
 
     RegisterNode(name, node);
-    node->SetTranslate(value->getVec3());
+    SetNodeTranslate(name, value->getVec3());
     auto* raw = value.get();
     m_owned_values.push_back(std::move(value));
     m_node_translate[std::move(name)] = NodeVec3Binding {
@@ -337,7 +432,7 @@ void SceneRuntimeContext::RegisterNodeScale(std::string name, SceneNode* node,
     if (node == nullptr || value == nullptr) return;
 
     RegisterNode(name, node);
-    node->SetScale(value->getVec3());
+    SetNodeScale(name, value->getVec3());
     auto* raw = value.get();
     m_owned_values.push_back(std::move(value));
     m_node_scale[std::move(name)] = NodeVec3Binding {
@@ -358,6 +453,20 @@ void SceneRuntimeContext::RegisterNodeRotation(std::string name, SceneNode* node
         .node  = node,
         .value = raw,
     };
+}
+
+void SceneRuntimeContext::RegisterMaterialConstant(SceneMaterial* material, std::string name,
+                                                   std::unique_ptr<DynamicValue> value) {
+    if (material == nullptr || name.empty() || value == nullptr) return;
+
+    ApplyMaterialConstant(*material, name, *value);
+    auto* raw = value.get();
+    m_owned_values.push_back(std::move(value));
+    m_material_constants.push_back(MaterialConstantBinding {
+        .material = material,
+        .name     = std::move(name),
+        .value    = raw,
+    });
 }
 
 void SceneRuntimeContext::RegisterNodeEffectFinal(std::string name, SceneNode* node,
@@ -531,7 +640,8 @@ std::string SceneRuntimeContext::CreateLayerFromTemplate(std::string_view reques
 
     const std::string generated_name =
         "__generated_layer_" + std::to_string(m_next_generated_layer_id++) + ":" + requested_path;
-    auto generated = CloneNodeShallow(*binding.node, generated_name);
+    std::vector<ClonedMaterialBinding> material_bindings;
+    auto generated = CloneNodeShallow(*binding.node, generated_name, &material_bindings);
     if (generated == nullptr) return {};
 
     SceneNode* parent = nullptr;
@@ -549,6 +659,28 @@ std::string SceneRuntimeContext::CreateLayerFromTemplate(std::string_view reques
     RegisterNode(generated_name, generated.get());
     RegisterNodeSize(generated_name, binding.size);
     m_node_template_paths[generated_name] = binding.canonical_path;
+    const auto source_constant_count = m_material_constants.size();
+    for (const auto& material_binding : material_bindings) {
+        if (material_binding.source_material == nullptr ||
+            material_binding.cloned_material == nullptr) {
+            continue;
+        }
+        for (std::size_t index = 0; index < source_constant_count; ++index) {
+            const auto& constant_binding = m_material_constants[index];
+            if (constant_binding.material != material_binding.source_material ||
+                constant_binding.value == nullptr) {
+                continue;
+            }
+            ApplyMaterialConstant(*material_binding.cloned_material,
+                                  constant_binding.name,
+                                  *constant_binding.value);
+            m_material_constants.push_back(MaterialConstantBinding {
+                .material = material_binding.cloned_material,
+                .name     = constant_binding.name,
+                .value    = constant_binding.value,
+            });
+        }
+    }
     m_scene_graph_mutated                 = true;
     return generated_name;
 }
@@ -593,7 +725,8 @@ bool SceneRuntimeContext::SetNodeTranslate(std::string_view name, const Eigen::V
     }
     const auto iterator = m_nodes.find(std::string(name));
     if (iterator == m_nodes.end() || iterator->second == nullptr) return false;
-    iterator->second->SetTranslate(value);
+    m_node_alignment[std::string(name)].origin = value;
+    ApplyNodeTransform(name);
     return true;
 }
 
@@ -604,7 +737,27 @@ bool SceneRuntimeContext::SetNodeScale(std::string_view name, const Eigen::Vecto
     }
     const auto iterator = m_nodes.find(std::string(name));
     if (iterator == m_nodes.end() || iterator->second == nullptr) return false;
-    iterator->second->SetScale(value);
+    auto& binding = m_node_alignment[std::string(name)];
+    binding.scale = value;
+    if (binding.alignment.empty()) {
+        iterator->second->SetScale(value);
+    } else {
+        ApplyNodeTransform(name);
+    }
+    return true;
+}
+
+bool SceneRuntimeContext::SetNodeAlignment(std::string_view name, std::string alignment) {
+    const auto iterator = m_nodes.find(std::string(name));
+    if (iterator == m_nodes.end() || iterator->second == nullptr) return false;
+
+    auto& binding = m_node_alignment[std::string(name)];
+    if (binding.alignment.empty()) {
+        binding.origin = iterator->second->Translate();
+        binding.scale  = iterator->second->Scale();
+    }
+    binding.alignment = std::move(alignment);
+    ApplyNodeTransform(name);
     return true;
 }
 
@@ -622,6 +775,9 @@ bool SceneRuntimeContext::SetNodeRotation(std::string_view name, const Eigen::Ve
 Eigen::Vector3f SceneRuntimeContext::NodeTranslate(std::string_view name) const {
     const auto iterator = m_nodes.find(std::string(name));
     if (iterator == m_nodes.end() || iterator->second == nullptr) return Eigen::Vector3f::Zero();
+    const auto alignment = m_node_alignment.find(std::string(name));
+    if (alignment != m_node_alignment.end() && ! alignment->second.alignment.empty())
+        return alignment->second.origin;
     return iterator->second->Translate();
 }
 
@@ -736,6 +892,30 @@ std::shared_ptr<WPSoundStream> SceneRuntimeContext::LockSoundLayer(std::string_v
     const auto iterator = m_sound_layers.find(std::string(name));
     if (iterator == m_sound_layers.end()) return nullptr;
     return iterator->second.lock();
+}
+
+void SceneRuntimeContext::ApplyNodeTransform(std::string_view name) {
+    const auto node_iterator = m_nodes.find(std::string(name));
+    if (node_iterator == m_nodes.end() || node_iterator->second == nullptr) return;
+
+    auto& binding = m_node_alignment[std::string(name)];
+    Eigen::Vector3f translate = binding.origin;
+    const auto      size      = NodeSize(name);
+
+    if (AlignmentContains(binding.alignment, "bottom")) {
+        translate.y() += size.y() * (binding.scale.y() - 1.0f) * 0.5f;
+    } else if (AlignmentContains(binding.alignment, "top")) {
+        translate.y() -= size.y() * (binding.scale.y() - 1.0f) * 0.5f;
+    }
+
+    if (AlignmentContains(binding.alignment, "left")) {
+        translate.x() += size.x() * (binding.scale.x() - 1.0f) * 0.5f;
+    } else if (AlignmentContains(binding.alignment, "right")) {
+        translate.x() -= size.x() * (binding.scale.x() - 1.0f) * 0.5f;
+    }
+
+    node_iterator->second->SetScale(binding.scale);
+    node_iterator->second->SetTranslate(translate);
 }
 
 void SceneRuntimeContext::DispatchMediaPlaybackChanged(std::string_view name, bool playing) {

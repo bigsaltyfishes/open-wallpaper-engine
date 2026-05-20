@@ -1,5 +1,11 @@
 #include "Interface/IImageParser.h"
 #include "Runtime/RuntimeImageSource.hpp"
+#include "Runtime/DynamicValue.hpp"
+#include "Runtime/SceneRuntimeContext.hpp"
+#include "Scene/include/Scene/Scene.h"
+#include "Scene/include/Scene/SceneMaterial.h"
+#include "Scene/include/Scene/SceneMesh.h"
+#include "Scene/SceneNode.h"
 #include "WPSceneParser.hpp"
 #include "wpscene/WPMaterial.h"
 
@@ -21,6 +27,15 @@ public:
     std::shared_ptr<Image> Parse(const std::string&) override { return nullptr; }
     ImageHeader            ParseHeader(const std::string&) override { return {}; }
 };
+
+std::unique_ptr<DynamicValue> BoundValue(SceneRuntimeContext& runtime,
+                                         std::string_view     property_name,
+                                         std::unique_ptr<DynamicValue> value) {
+    if (auto* property = runtime.FindPropertyValue(property_name); property != nullptr) {
+        value->connect(property);
+    }
+    return value;
+}
 
 TEST(MediaThumbnailTextureSmoke, RegularUserTextureSlotZeroResolvesToMediaThumbnail) {
     const nlohmann::json material_json = {
@@ -73,6 +88,154 @@ TEST(MediaThumbnailTextureSmoke, EffectUserTextureSlotOneResolvesToMediaThumbnai
     ASSERT_EQ(textures.size(), 2u);
     EXPECT_EQ(textures[0], "materials/base.tex");
     EXPECT_EQ(textures[1], "$mediaThumbnail");
+}
+
+TEST(MediaThumbnailTextureSmoke, ConstantShaderValuesPreserveUserBindingAndFallback) {
+    const nlohmann::json material_json = {
+        { "passes",
+          { {
+              { "shader", "workshop/2652493753/tint" },
+              { "textures", { "workshop/2652493753/bar" } },
+              { "constantshadervalues",
+                {
+                    { "color",
+                      {
+                          { "user", "ypcolor" },
+                          { "value", "0.00000 0.00000 0.00000" },
+                      } },
+                    { "Alpha",
+                      {
+                          { "user", "newproperty14" },
+                          { "value", 1.0f },
+                      } },
+                } },
+          } } },
+    };
+
+    wpscene::WPMaterial material;
+    ASSERT_TRUE(material.FromJson(material_json));
+
+    const auto color = material.constantshadervalues.find("color");
+    ASSERT_NE(color, material.constantshadervalues.end());
+    EXPECT_EQ(color->second.user, "ypcolor");
+    ASSERT_EQ(color->second.value.size(), 3u);
+    EXPECT_FLOAT_EQ(color->second.value[0], 0.0f);
+    EXPECT_FLOAT_EQ(color->second.value[1], 0.0f);
+    EXPECT_FLOAT_EQ(color->second.value[2], 0.0f);
+
+    const auto alpha = material.constantshadervalues.find("Alpha");
+    ASSERT_NE(alpha, material.constantshadervalues.end());
+    EXPECT_EQ(alpha->second.user, "newproperty14");
+    ASSERT_EQ(alpha->second.value.size(), 1u);
+    EXPECT_FLOAT_EQ(alpha->second.value[0], 1.0f);
+}
+
+TEST(MediaThumbnailTextureSmoke, RuntimeMaterialConstantsFollowProjectProperties) {
+    auto runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {
+        .project_properties = {
+            { "ypcolor", RuntimeScalarValue::String("1 0.8117647 0.8705882") },
+            { "alpha", RuntimeScalarValue::Float(0.75f) },
+        },
+    });
+    ASSERT_NE(runtime, nullptr);
+
+    SceneMaterial material;
+    runtime->RegisterMaterialConstant(
+        &material,
+        "g_Color",
+        BoundValue(
+            *runtime,
+            "ypcolor",
+            std::make_unique<DynamicValue>(Eigen::Vector3f(0.0f, 0.0f, 0.0f))));
+    runtime->RegisterMaterialConstant(
+        &material,
+        "g_UserAlpha",
+        BoundValue(
+            *runtime,
+            "alpha",
+            std::make_unique<DynamicValue>(1.0f)));
+
+    ASSERT_TRUE(material.customShader.constValues.contains("g_Color"));
+    ASSERT_EQ(material.customShader.constValues.at("g_Color").size(), 3u);
+    EXPECT_FLOAT_EQ(material.customShader.constValues.at("g_Color")[0], 1.0f);
+    EXPECT_FLOAT_EQ(material.customShader.constValues.at("g_Color")[1], 0.8117647f);
+    EXPECT_FLOAT_EQ(material.customShader.constValues.at("g_Color")[2], 0.8705882f);
+    ASSERT_TRUE(material.customShader.constValues.contains("g_UserAlpha"));
+    ASSERT_EQ(material.customShader.constValues.at("g_UserAlpha").size(), 1u);
+    EXPECT_FLOAT_EQ(material.customShader.constValues.at("g_UserAlpha")[0], 0.75f);
+
+    runtime->ApplyProjectPropertyOverride({
+        { "ypcolor", RuntimeScalarValue::String("0.25 0.5 0.75") },
+        { "alpha", RuntimeScalarValue::Float(0.25f) },
+    });
+    runtime->Tick(1.0 / 60.0);
+
+    ASSERT_EQ(material.customShader.constValues.at("g_Color").size(), 3u);
+    EXPECT_FLOAT_EQ(material.customShader.constValues.at("g_Color")[0], 0.25f);
+    EXPECT_FLOAT_EQ(material.customShader.constValues.at("g_Color")[1], 0.5f);
+    EXPECT_FLOAT_EQ(material.customShader.constValues.at("g_Color")[2], 0.75f);
+    ASSERT_EQ(material.customShader.constValues.at("g_UserAlpha").size(), 1u);
+    EXPECT_FLOAT_EQ(material.customShader.constValues.at("g_UserAlpha")[0], 0.25f);
+}
+
+TEST(MediaThumbnailTextureSmoke, GeneratedTemplateLayersKeepMaterialConstantBindings) {
+    auto scene   = std::make_unique<Scene>();
+    auto runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {
+        .project_properties = {
+            { "ypcolor", RuntimeScalarValue::String("1 0.8 0.6") },
+        },
+    });
+    ASSERT_NE(runtime, nullptr);
+    runtime->AttachScene(scene.get());
+
+    auto source_node = std::make_shared<SceneNode>(
+        Eigen::Vector3f(100.0f, 50.0f, 0.0f),
+        Eigen::Vector3f::Ones(),
+        Eigen::Vector3f::Zero(),
+        "source");
+    auto source_mesh = std::make_shared<SceneMesh>();
+    source_mesh->AddMaterial(SceneMaterial {});
+    source_node->AddMesh(source_mesh);
+    scene->sceneGraph->AppendChild(source_node);
+
+    runtime->RegisterNode("source", source_node.get());
+    runtime->RegisterLayerTemplate("models/workshop/2652493753/bar.json",
+                                   source_node,
+                                   Eigen::Vector2f(20.0f, 10.0f));
+    runtime->RegisterMaterialConstant(
+        source_mesh->Material(),
+        "g_Color",
+        BoundValue(
+            *runtime,
+            "ypcolor",
+            std::make_unique<DynamicValue>(Eigen::Vector3f(0.0f, 0.0f, 0.0f))));
+
+    const auto generated_name = runtime->CreateLayerFromTemplate("models/bar.json", "source");
+    ASSERT_FALSE(generated_name.empty());
+    ASSERT_EQ(scene->sceneGraph->GetChildren().size(), 2u);
+
+    auto generated_node = scene->sceneGraph->GetChildren().back();
+    ASSERT_NE(generated_node, nullptr);
+    ASSERT_NE(generated_node->Mesh(), nullptr);
+    ASSERT_NE(generated_node->Mesh()->Material(), nullptr);
+
+    runtime->ApplyProjectPropertyOverride({
+        { "ypcolor", RuntimeScalarValue::String("0.2 0.4 0.6") },
+    });
+    runtime->Tick(1.0 / 60.0);
+
+    const auto& source_color =
+        source_mesh->Material()->customShader.constValues.at("g_Color");
+    const auto& generated_color =
+        generated_node->Mesh()->Material()->customShader.constValues.at("g_Color");
+    ASSERT_EQ(source_color.size(), 3u);
+    ASSERT_EQ(generated_color.size(), 3u);
+    EXPECT_FLOAT_EQ(source_color[0], 0.2f);
+    EXPECT_FLOAT_EQ(source_color[1], 0.4f);
+    EXPECT_FLOAT_EQ(source_color[2], 0.6f);
+    EXPECT_FLOAT_EQ(generated_color[0], 0.2f);
+    EXPECT_FLOAT_EQ(generated_color[1], 0.4f);
+    EXPECT_FLOAT_EQ(generated_color[2], 0.6f);
 }
 
 TEST(MediaThumbnailTextureSmoke, RuntimeImageSourceStoresExactRgbaPayload) {

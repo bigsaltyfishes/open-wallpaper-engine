@@ -1086,6 +1086,9 @@ void AppendCommonHostBootstrap(std::ostringstream& wrapper) {
         << "      set origin(v) { __layerSetOrigin(name, v); },\n"
         << "      get scale() { return __layerGetScale(name); },\n"
         << "      set scale(v) { __layerSetScale(name, v); },\n"
+        << "      get alignment() { return state.alignment || 'center'; },\n"
+        << "      set alignment(v) { state.alignment = String(v || 'center'); "
+           "__layerSetAlignment(name, state.alignment); },\n"
         << "      get angles() { return __layerGetAngles(name); },\n"
         << "      set angles(v) { __layerSetAngles(name, v); },\n"
         << "      get size() { return __layerGetSize(name); },\n"
@@ -1627,6 +1630,21 @@ JSValue JsLayerSetScale(JSContext* context, JSValueConst, int argc, JSValueConst
     return JS_UNDEFINED;
 }
 
+JSValue JsLayerSetAlignment(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
+    if (argc < 2) return JS_UNDEFINED;
+    auto* bridge = GetBridgeState(context);
+    if (bridge == nullptr || bridge->runtime == nullptr) return JS_UNDEFINED;
+
+    const char* layer_name = JS_ToCString(context, argv[0]);
+    const char* alignment  = JS_ToCString(context, argv[1]);
+    if (layer_name != nullptr && alignment != nullptr) {
+        bridge->runtime->SetNodeAlignment(layer_name, std::string(alignment));
+    }
+    if (alignment != nullptr) JS_FreeCString(context, alignment);
+    if (layer_name != nullptr) JS_FreeCString(context, layer_name);
+    return JS_UNDEFINED;
+}
+
 JSValue JsLayerGetAngles(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
     if (argc < 1) return CreateJsVec3(context, 0.0, 0.0, 0.0);
     auto* bridge = GetBridgeState(context);
@@ -2143,6 +2161,11 @@ bool EnsureSharedHostBindings(JSContext* context, SceneRuntimeContext* runtime,
                           global_object,
                           "__layerSetScale",
                           JS_NewCFunction(context, JsLayerSetScale, "__layerSetScale", 2));
+        JS_SetPropertyStr(
+            context,
+            global_object,
+            "__layerSetAlignment",
+            JS_NewCFunction(context, JsLayerSetAlignment, "__layerSetAlignment", 2));
         JS_SetPropertyStr(context,
                           global_object,
                           "__layerGetAngles",

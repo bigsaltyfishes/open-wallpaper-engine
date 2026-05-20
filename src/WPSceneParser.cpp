@@ -858,28 +858,68 @@ void ResolveEffectFinalTransform(SceneNode& destination, SceneNode& effect_rende
     SetNodeTransformFromMatrix(destination, resolved);
 }
 
+std::string ResolveConstvalueGlName(const std::string& name, const WPShaderInfo& info) {
+    if (info.alias.count(name) != 0) return info.alias.at(name);
+
+    for (const auto& el : info.alias) {
+        if (el.second.substr(2) == name) return el.second;
+    }
+
+    return {};
+}
+
+std::unique_ptr<DynamicValue> MakeMaterialConstantValue(
+    const wpscene::WPConstantShaderValue& source) {
+    const auto& value = source.value;
+
+    if (value.size() >= 4) {
+        return std::make_unique<DynamicValue>(
+            Eigen::Vector4f(value[0], value[1], value[2], value[3]));
+    }
+    if (value.size() == 3) {
+        return std::make_unique<DynamicValue>(Eigen::Vector3f(value[0], value[1], value[2]));
+    }
+    if (value.size() == 2) {
+        return std::make_unique<DynamicValue>(Eigen::Vector2f(value[0], value[1]));
+    }
+    if (value.size() == 1) return std::make_unique<DynamicValue>(value[0]);
+
+    return std::make_unique<DynamicValue>(0.0f);
+}
+
 void LoadConstvalue(SceneMaterial& material, const wpscene::WPMaterial& wpmat,
                     const WPShaderInfo& info) {
     // load glname from alias and load to constvalue
     for (const auto& cs : wpmat.constantshadervalues) {
-        const auto&               name  = cs.first;
-        const std::vector<float>& value = cs.second;
-        std::string               glname;
-        if (info.alias.count(name) != 0) {
-            glname = info.alias.at(name);
-        } else {
-            for (const auto& el : info.alias) {
-                if (el.second.substr(2) == name) {
-                    glname = el.second;
-                    break;
-                }
-            }
-        }
+        const auto& name   = cs.first;
+        const auto& value  = cs.second;
+        const auto  glname = ResolveConstvalueGlName(name, info);
         if (glname.empty()) {
             LOG_ERROR("ShaderValue: %s not found in glsl", name.c_str());
         } else {
-            material.customShader.constValues[glname] = value;
+            material.customShader.constValues[glname] = value.value;
         }
+    }
+}
+
+void RegisterMaterialConstants(ParseContext& context, SceneMaterial* material,
+                               const wpscene::WPMaterial& wpmat, const WPShaderInfo& info) {
+    if (material == nullptr || context.scene->runtime == nullptr) return;
+
+    for (const auto& cs : wpmat.constantshadervalues) {
+        const auto& name  = cs.first;
+        const auto& value = cs.second;
+        if (value.user.empty()) continue;
+
+        const auto glname = ResolveConstvalueGlName(name, info);
+        if (glname.empty()) continue;
+
+        auto dynamic_value = MakeMaterialConstantValue(value);
+        if (auto* property_value = context.scene->runtime->FindPropertyValue(value.user);
+            property_value != nullptr) {
+            dynamic_value->connect(property_value);
+        }
+        context.scene->runtime->RegisterMaterialConstant(material, glname, std::move(dynamic_value));
     }
 }
 
@@ -1159,27 +1199,6 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
         LoadConstvalue(material, wpimgobj.material, shaderInfo);
     }
 
-    for (const auto& cs : wpimgobj.material.constantshadervalues) {
-        const auto&               name  = cs.first;
-        const std::vector<float>& value = cs.second;
-        std::string               glname;
-        if (shaderInfo.alias.count(name) != 0) {
-            glname = shaderInfo.alias.at(name);
-        } else {
-            for (const auto& el : shaderInfo.alias) {
-                if (el.second.substr(2) == name) {
-                    glname = el.second;
-                    break;
-                }
-            }
-        }
-        if (glname.empty()) {
-            LOG_ERROR("ShaderValue: %s not found in glsl", name.c_str());
-        } else {
-            material.customShader.constValues[glname] = value;
-        }
-    }
-
     // mesh
     SceneMesh effct_final_mesh {};
     auto      spMesh = std::make_shared<SceneMesh>();
@@ -1245,6 +1264,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
         material.blenmode = BlendMode::Normal;
     }
     mesh.AddMaterial(std::move(material));
+    RegisterMaterialConstants(context, spMesh->Material(), wpimgobj.material, shaderInfo);
     registerImageAlphaAnimation(spMesh->Material());
     if (context.scene->runtime != nullptr && spMesh->Material() != nullptr) {
         for (const auto& texture_name : spMesh->Material()->textures) {
@@ -1341,10 +1361,15 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                                  &passthrough_material,
                                  &passthrough_sv_data,
                                  &passthrough_shader_info)) {
-                    LoadConstvalue(
-                        passthrough_material, passthrough_wp_material, passthrough_shader_info);
+                    LoadConstvalue(passthrough_material,
+                                   passthrough_wp_material,
+                                   passthrough_shader_info);
                     auto passthrough_mesh = std::make_shared<SceneMesh>();
                     passthrough_mesh->AddMaterial(std::move(passthrough_material));
+                    RegisterMaterialConstants(context,
+                                              passthrough_mesh->Material(),
+                                              passthrough_wp_material,
+                                              passthrough_shader_info);
                     passthrough_node->AddMesh(passthrough_mesh);
                     context.shader_updater->SetNodeData(passthrough_node.get(),
                                                         passthrough_sv_data);
@@ -1482,6 +1507,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                     }
                 }
                 spMesh->AddMaterial(std::move(material));
+                RegisterMaterialConstants(context, spMesh->Material(), wpmat, wpEffShaderInfo);
                 registerImageAlphaAnimation(spMesh->Material());
                 spEffNode->AddMesh(spMesh);
 
@@ -1736,6 +1762,7 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
     LoadControlPoint(*particleSub, particle_obj);
 
     mesh.AddMaterial(std::move(material));
+    RegisterMaterialConstants(context, spMesh->Material(), particle_obj.material, shaderInfo);
     if (! is_child && context.scene->runtime != nullptr && spMesh->Material() != nullptr) {
         for (const auto& texture_name : spMesh->Material()->textures) {
             if (texture_name.empty()) continue;
