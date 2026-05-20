@@ -213,7 +213,6 @@ vvk::Framebuffer* FinPass::framebufferForPresent(const Device& device, Rendering
     if (device.handle().CreateFramebuffer(info, cached.framebuffer) != VK_SUCCESS) {
         return nullptr;
     }
-    if (rr.frame_stats != nullptr) ++rr.frame_stats->framebuffer_creations;
     m_framebuffers.push_back(std::move(cached));
     return &m_framebuffers.back().framebuffer;
 }
@@ -284,7 +283,6 @@ void FinPass::execute(const Device& device, RenderingResources& rr) {
         .pClearValues    = &m_desc.clear_value,
     };
     cmd.BeginRenderPass(pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
-    if (rr.frame_stats != nullptr) ++rr.frame_stats->render_pass_begin_count;
 
     cmd.BindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, *m_desc.pipeline.handle);
     VkViewport fallback_viewport {
@@ -310,7 +308,6 @@ void FinPass::execute(const Device& device, RenderingResources& rr) {
         0, 1, std::array { rr.vertex_buf->gpuBuf() }.data(), &m_desc.vertex_buf.offset);
     cmd.Draw(4, 1, 0, 0);
     cmd.EndRenderPass();
-    if (rr.frame_stats != nullptr) ++rr.frame_stats->render_pass_end_count;
 
     // do queue family transfer operation
     if (m_desc.present_queue_index != device.graphics_queue().family_index) {

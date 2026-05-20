@@ -25,11 +25,8 @@
 
 #include <atomic>
 #include <cassert>
-#include <chrono>
 #include <cmath>
 #include <cstdint>
-#include <cstdlib>
-#include <string_view>
 #include <unistd.h>
 #include <vector>
 
@@ -99,13 +96,6 @@ VkExtent2D ResolveSceneSourceExtent(const wallpaper::Scene& scene,
     };
 }
 
-bool RenderPerfLogEnabled() {
-    const char* value = std::getenv("WE_RENDER_PERF_LOG");
-    if (value == nullptr || value[0] == '\0') return false;
-    const std::string_view view(value);
-    return view != "0" && view != "false" && view != "FALSE";
-}
-
 } // namespace
 
 struct VulkanRender::Impl {
@@ -119,8 +109,6 @@ struct VulkanRender::Impl {
     void destroy();
 
     void drawFrame(Scene&);
-    void beginFrameStats();
-    void finishFrameStats();
 
     bool CreateRenderingResource(RenderingResources&);
     void DestroyRenderingResource(RenderingResources&);
@@ -165,11 +153,6 @@ struct VulkanRender::Impl {
     double                                m_scaling_factor { 1.0 };
     double                                m_display_scale_factor { 1.0 };
     VkExtent2D                            m_requested_render_extent {};
-    bool                                  m_perf_log_enabled { false };
-    RenderFrameStats                      m_frame_stats {};
-    RenderFrameStats                      m_pending_frame_stats {};
-    RenderFrameStats                      m_perf_stats_accum {};
-    std::chrono::steady_clock::time_point m_last_perf_log {};
 
     // Exported dma_fence sync_file fd for the most recently completed
     // offscreen frame. Written by drawFrameOffscreen(), consumed by
@@ -232,8 +215,7 @@ bool VulkanRender::Impl::init(RenderInitInfo info) {
 }
 
 bool VulkanRender::Impl::initDevice(const RenderInitInfo& info) {
-    m_perf_log_enabled        = RenderPerfLogEnabled();
-    m_redraw_cb               = info.redraw_callback;
+    m_redraw_cb = info.redraw_callback;
 
     std::vector<Extension> inst_exts { base_inst_exts.begin(), base_inst_exts.end() };
 
@@ -435,8 +417,7 @@ void VulkanRender::Impl::destroy() {
 }
 
 bool VulkanRender::Impl::CreateRenderingResource(RenderingResources& rr) {
-    rr.command     = m_render_cmd;
-    rr.frame_stats = &m_pending_frame_stats;
+    rr.command = m_render_cmd;
     VVK_CHECK_BOOL_RE(m_device->handle().CreateFence(
         VkFenceCreateInfo {
             .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
@@ -482,55 +463,8 @@ void VulkanRender::Impl::DestroyRenderingResource(RenderingResources& rr) {}
 
 // VulkanExSwapchain* VulkanRender::exSwapchain() const { return m_ex_swapchain.get(); }
 
-void VulkanRender::Impl::beginFrameStats() {
-    m_frame_stats.reset();
-    m_frame_stats.accumulate(m_pending_frame_stats);
-    m_pending_frame_stats.reset();
-    m_frame_stats.frames              = 1;
-    m_rendering_resources.frame_stats = &m_frame_stats;
-    if (m_device != nullptr) {
-        m_device->tex_cache().SetFrameStats(&m_frame_stats);
-    }
-}
-
-void VulkanRender::Impl::finishFrameStats() {
-    if (m_device != nullptr) {
-        m_device->tex_cache().SetFrameStats(nullptr);
-    }
-    m_rendering_resources.frame_stats = &m_pending_frame_stats;
-    if (! m_perf_log_enabled) return;
-
-    const auto now = std::chrono::steady_clock::now();
-    m_perf_stats_accum.accumulate(m_frame_stats);
-    if (m_last_perf_log.time_since_epoch().count() == 0) {
-        m_last_perf_log = now;
-        return;
-    }
-
-    const auto elapsed = std::chrono::duration<double>(now - m_last_perf_log).count();
-    if (elapsed < 1.0) return;
-
-    LOG_INFO("[render-perf] frames=%llu passes=%llu custom_draws=%llu render_passes=%llu/%llu "
-             "clear_only=%llu skipped_noop=%llu dyn_upload=%lluB fb_create=%llu tex_create=%llu "
-             "video_imports=%llu",
-             static_cast<unsigned long long>(m_perf_stats_accum.frames),
-             static_cast<unsigned long long>(m_perf_stats_accum.pass_count),
-             static_cast<unsigned long long>(m_perf_stats_accum.custom_draw_count),
-             static_cast<unsigned long long>(m_perf_stats_accum.render_pass_begin_count),
-             static_cast<unsigned long long>(m_perf_stats_accum.render_pass_end_count),
-             static_cast<unsigned long long>(m_perf_stats_accum.clear_only_pass_count),
-             static_cast<unsigned long long>(m_perf_stats_accum.skipped_noop_pass_count),
-             static_cast<unsigned long long>(m_perf_stats_accum.dynamic_upload_bytes),
-             static_cast<unsigned long long>(m_perf_stats_accum.framebuffer_creations),
-             static_cast<unsigned long long>(m_perf_stats_accum.texture_creations),
-             static_cast<unsigned long long>(m_perf_stats_accum.video_imports));
-    m_perf_stats_accum.reset();
-    m_last_perf_log = now;
-}
-
 void VulkanRender::Impl::drawFrame(Scene& scene) {
     if (! (m_inited && m_pass_loaded)) return;
-    beginFrameStats();
 
     const auto output_extent = m_device->out_extent();
     updateScalingLayout(
@@ -554,8 +488,6 @@ void VulkanRender::Impl::drawFrame(Scene& scene) {
 
     if (m_redraw_cb) m_redraw_cb();
 
-    finishFrameStats();
-
 #if ENABLE_RENDERDOC_API
     if (rdoc_api)
         rdoc_api->EndFrameCapture(
@@ -574,7 +506,6 @@ void VulkanRender::Impl::executePreparedPasses(RenderingResources& rr) {
 
         auto* custom = dynamic_cast<CustomShaderPass*>(pass);
         if (custom == nullptr) {
-            if (rr.frame_stats != nullptr) ++rr.frame_stats->pass_count;
             pass->execute(*m_device, rr);
             ++i;
             continue;
@@ -588,7 +519,6 @@ void VulkanRender::Impl::executePreparedPasses(RenderingResources& rr) {
             auto* run_custom = dynamic_cast<CustomShaderPass*>(run_pass);
             if (run_custom == nullptr) break;
 
-            if (rr.frame_stats != nullptr) ++rr.frame_stats->pass_count;
             custom_passes.push_back(run_custom);
             candidates.push_back(run_custom->preRecord(*m_device, rr));
         }
@@ -616,7 +546,6 @@ void VulkanRender::Impl::executePreparedPasses(RenderingResources& rr) {
                 .pClearValues    = &entry.render.clear_value,
             };
             rr.command.BeginRenderPass(pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
-            if (rr.frame_stats != nullptr) ++rr.frame_stats->render_pass_begin_count;
 
             for (size_t local = first; local < last; ++local) {
                 if (! candidates[local].visible) continue;
@@ -624,7 +553,6 @@ void VulkanRender::Impl::executePreparedPasses(RenderingResources& rr) {
             }
 
             rr.command.EndRenderPass();
-            if (rr.frame_stats != nullptr) ++rr.frame_stats->render_pass_end_count;
         }
     }
 }
@@ -651,7 +579,7 @@ void VulkanRender::Impl::drawFrameSwapchain() {
         .pNext = nullptr,
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     });
-    m_dyn_buf->recordUpload(rr.command, rr.frame_stats);
+    m_dyn_buf->recordUpload(rr.command);
     executePreparedPasses(rr);
     (void)rr.command.End();
 
@@ -694,7 +622,7 @@ void VulkanRender::Impl::drawFrameOffscreen() {
         .pNext = nullptr,
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     });
-    m_dyn_buf->recordUpload(rr.command, rr.frame_stats);
+    m_dyn_buf->recordUpload(rr.command);
     executePreparedPasses(rr);
 
     (void)rr.command.End();
@@ -790,32 +718,6 @@ void VulkanRender::Impl::updateScalingLayout(const Scene& scene, uint32_t output
                                                      logical_height,
                                                      scale_factor,
                                                      m_scaling_factor);
-
-    // Diagnostic: log the scaling layout inputs and resulting viewport/scissor.
-    // Log at most once per second to avoid spam; tied to m_last_perf_log if
-    // perf logging is enabled, otherwise gated by a local time counter.
-    {
-        static thread_local std::chrono::steady_clock::time_point last_log {};
-        const auto now = std::chrono::steady_clock::now();
-        if (now - last_log >= std::chrono::seconds(1)) {
-            last_log = now;
-            LOG_INFO(
-                "scaling layout: mode=%d out_px=%ux%u source=%ux%u logical=%ux%u scale=%.3f user_factor=%.3f viewport_px=(%d,%d,%d,%d) scissor_px=(%d,%d,%d,%d)",
-                static_cast<int>(m_scaling_mode),
-                output_width, output_height,
-                source_extent.width, source_extent.height,
-                logical_width, logical_height,
-                scale_factor, m_scaling_factor,
-                m_scaling_layout.viewport_px.x,
-                m_scaling_layout.viewport_px.y,
-                m_scaling_layout.viewport_px.width,
-                m_scaling_layout.viewport_px.height,
-                m_scaling_layout.scissor_px.x,
-                m_scaling_layout.scissor_px.y,
-                m_scaling_layout.scissor_px.width,
-                m_scaling_layout.scissor_px.height);
-        }
-    }
 }
 
 void VulkanRender::Impl::UpdateCameraFillMode(wallpaper::Scene&   scene,
@@ -894,9 +796,7 @@ void VulkanRender::Impl::clearLastRenderGraph() {
 
 void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
     if (! m_inited) return;
-    m_pass_loaded                     = false;
-    m_rendering_resources.frame_stats = &m_pending_frame_stats;
-    m_device->tex_cache().SetFrameStats(&m_pending_frame_stats);
+    m_pass_loaded = false;
 
     auto nodes             = rg.topologicalOrder();
     auto node_release_texs = rg.getLastReadTexs(nodes);
@@ -951,5 +851,4 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
         VVK_CHECK_VOID_RE(m_device->handle().WaitIdle());
     }
     m_pass_loaded = true;
-    m_device->tex_cache().SetFrameStats(nullptr);
 };

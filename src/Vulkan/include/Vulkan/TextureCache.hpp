@@ -19,8 +19,6 @@ struct Image;
 namespace vulkan
 {
 
-struct RenderFrameStats;
-
 VkFormat             ToVkType(TextureFormat);
 VkSamplerAddressMode ToVkType(TextureWrap);
 VkFilter             ToVkType(TextureFilter);
@@ -51,7 +49,6 @@ public:
     ~TextureCache();
 
     void Clear();
-    void SetFrameStats(RenderFrameStats* stats);
 
     std::optional<ExImageParameters> CreateExTex(uint32_t witdh, uint32_t height, VkFormat,
                                                  VkImageTiling);
@@ -111,7 +108,6 @@ private:
     bool                EnsureVideoFrameCacheRoom(VideoTex& video_tex, std::string* error);
     Map<std::string, std::unique_ptr<VideoTex>> m_video_tex_map;
     video::VideoPlaybackState                   m_video_playback_state {};
-    RenderFrameStats*                           m_frame_stats { nullptr };
     void*                                       m_metal_device { nullptr };
     bool                                        m_metal_device_queried { false };
 

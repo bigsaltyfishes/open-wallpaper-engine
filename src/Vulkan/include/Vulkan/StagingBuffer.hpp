@@ -11,7 +11,6 @@ namespace vulkan
 
 class Device;
 class StagingBuffer;
-struct RenderFrameStats;
 
 class StagingBufferRef {
 public:
@@ -39,7 +38,7 @@ public:
     bool writeToBuf(const StagingBufferRef&, std::span<uint8_t>, size_t offset = 0);
     bool fillBuf(const StagingBufferRef& ref, size_t offset, size_t size, uint8_t c);
 
-    bool recordUpload(vvk::CommandBuffer&, RenderFrameStats* stats = nullptr);
+    bool recordUpload(vvk::CommandBuffer&);
 
     VkBuffer gpuBuf() const;
 

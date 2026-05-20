@@ -3,7 +3,6 @@
 #include "Swapchain.hpp"
 #include "TextureCache.hpp"
 #include "Device.hpp"
-#include "RenderFrameStats.hpp"
 #include "Util.hpp"
 
 #include "Image.hpp"
@@ -18,7 +17,6 @@
 #include <vulkan/vulkan_metal.h>
 
 #include <cmath>
-#include <chrono>
 #include <cstdio>
 #include <memory>
 #include <optional>
@@ -729,7 +727,6 @@ std::optional<ExImageParameters> TextureCache::CreateExTex(uint32_t width, uint3
                              m_device.gpu());
     if (opt.has_value()) {
         const auto& eximg = opt.value();
-        if (m_frame_stats != nullptr) ++m_frame_stats->texture_creations;
 
         if (! m_tex_cmd) allocateCmd();
         TransImgLayout(m_device.graphics_queue().handle, m_tex_cmd, eximg, VK_IMAGE_LAYOUT_GENERAL);
@@ -828,7 +825,6 @@ ImageSlotsRef TextureCache::CreateTex(Image& image) {
                                    VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
             opt.has_value()) {
             image_paras = std::move(opt.value());
-            if (m_frame_stats != nullptr) ++m_frame_stats->texture_creations;
         } else
             break;
 
@@ -879,22 +875,15 @@ void TextureCache::allocateVideoImportCmd() {
 bool TextureCache::waitForPendingVideoImport(std::string* error) {
     if (! m_video_import_pending) return true;
 
-    const auto wait_started = std::chrono::steady_clock::now();
     if (const VkResult result = m_video_import_fence.Wait(); result != VK_SUCCESS) {
         VVK_CHECK(result);
         return SetError(error, "failed waiting for pending video frame import");
     }
-    const double wait_ms =
-        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - wait_started)
-            .count();
     if (const VkResult result = m_video_import_fence.Reset(); result != VK_SUCCESS) {
         VVK_CHECK(result);
         return SetError(error, "failed resetting video frame import fence");
     }
 
-    if (wait_ms >= 2.0) {
-        LOG_INFO("video texture import fence wait: %.3fms", wait_ms);
-    }
     m_video_import_pending = false;
     return true;
 }
@@ -947,7 +936,6 @@ std::optional<VmaImageParameters> TextureCache::CreateTex(TextureKey tex_key) {
                                 VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
             opt.has_value()) {
             image_paras = std::move(opt.value());
-            if (m_frame_stats != nullptr) ++m_frame_stats->texture_creations;
         } else
             break;
 
@@ -966,8 +954,6 @@ std::optional<VmaImageParameters> TextureCache::CreateTex(TextureKey tex_key) {
 TextureCache::TextureCache(const Device& device): m_device(device) {}
 
 TextureCache::~TextureCache() {};
-
-void TextureCache::SetFrameStats(RenderFrameStats* stats) { m_frame_stats = stats; }
 
 void TextureCache::SetVideoPlaybackPaused(bool paused) { m_video_playback_state.paused = paused; }
 
@@ -1038,7 +1024,6 @@ void TextureCache::Clear() {
 bool TextureCache::UpdateVideoFrame(std::string_view                 key,
                                     const video::VideoPlaybackState& playback_state,
                                     ImageSlotsRef* out, std::string* error) {
-    const auto update_started = std::chrono::steady_clock::now();
     if (! exists(m_video_tex_map, key)) {
         return SetError(error, std::string("video texture not registered: ") + std::string(key));
     }
@@ -1108,10 +1093,6 @@ bool TextureCache::UpdateVideoFrame(std::string_view                 key,
             video::ReleaseAppleVideoMetalTexture(metal_texture);
             return false;
         }
-        if (m_frame_stats != nullptr) {
-            ++m_frame_stats->texture_creations;
-            ++m_frame_stats->video_imports;
-        }
         if (! m_video_import_cmd) allocateVideoImportCmd();
         if (! m_video_import_fence) {
             VkFenceCreateInfo fence_info {
@@ -1162,16 +1143,6 @@ bool TextureCache::UpdateVideoFrame(std::string_view                 key,
         out->active = 0;
     }
 
-    const double update_ms =
-        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - update_started)
-            .count();
-    if (update_ms >= 25.0) {
-        LOG_INFO("video texture \"%s\" UpdateVideoFrame took %.3fms (generation=%llu)",
-                 std::string(key).c_str(),
-                 update_ms,
-                 static_cast<unsigned long long>(
-                     video_tex.current_frame != nullptr ? video_tex.current_frame->generation : 0));
-    }
     return true;
 }
 

@@ -321,7 +321,6 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             .layers          = 1,
         };
         VVK_CHECK_VOID_RE(device.handle().CreateFramebuffer(info, m_desc.fb));
-        if (rr.frame_stats != nullptr) ++rr.frame_stats->framebuffer_creations;
     }
 
     m_desc.uniform_block.reset();
@@ -502,13 +501,6 @@ CustomPassBatchCandidate CustomShaderPass::preRecord(const Device&, RenderingRes
     };
 
     if (! visible) {
-        if (rr.frame_stats != nullptr) {
-            if (candidate.clear_only) {
-                ++rr.frame_stats->clear_only_pass_count;
-            } else {
-                ++rr.frame_stats->skipped_noop_pass_count;
-            }
-        }
         return candidate;
     }
 
@@ -621,8 +613,6 @@ void CustomShaderPass::recordDraw(const Device&, RenderingResources& rr) {
     } else {
         cmd.Draw(m_desc.draw_count, 1, 0, 0);
     }
-
-    if (rr.frame_stats != nullptr) ++rr.frame_stats->custom_draw_count;
 }
 
 void CustomShaderPass::recordClear(const Device&, RenderingResources& rr) {
@@ -692,10 +682,8 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
         .pClearValues    = &info.clear_value,
     };
     rr.command.BeginRenderPass(pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
-    if (rr.frame_stats != nullptr) ++rr.frame_stats->render_pass_begin_count;
     recordDraw(device, rr);
     rr.command.EndRenderPass();
-    if (rr.frame_stats != nullptr) ++rr.frame_stats->render_pass_end_count;
 }
 
 void CustomShaderPass::destory(const Device&, RenderingResources& rr) {

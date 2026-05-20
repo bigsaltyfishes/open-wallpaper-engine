@@ -566,14 +566,6 @@ private:
             m_render->drawFrame(*m_scene);
 
             m_scene->PassFrameTime(frame_time);
-            const int64_t draw_second = static_cast<int64_t>(m_scene->elapsingTime);
-            if (draw_second != m_last_draw_log_second) {
-                m_last_draw_log_second = draw_second;
-                LOG_INFO("render draw tick scene \"%s\": elapsed %.3fs, frame %.3fs",
-                         m_scene->scene_id.c_str(),
-                         m_scene->elapsingTime,
-                         m_scene->frameTime);
-            }
 
             m_scene->shaderValueUpdater->FrameEnd();
             // fps_counter.RegisterFrame();
@@ -735,7 +727,6 @@ private:
     WallpaperScalingMode m_scalingmode { WallpaperScalingMode::FIT };
     float                m_scalingfactor { 1.0f };
     bool                 m_media_integration_enabled { false };
-    int64_t              m_last_draw_log_second { -1 };
     std::optional<SystemMediaArtworkPayload> m_pending_system_media_artwork {};
 
     std::atomic<std::array<float, 2>> m_mouse_pos { std::array { 0.5f, 0.5f } };

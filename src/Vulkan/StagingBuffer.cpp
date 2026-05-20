@@ -3,7 +3,6 @@
 #include <cstring>
 #include "Util.hpp"
 #include "Device.hpp"
-#include "RenderFrameStats.hpp"
 
 using namespace wallpaper::vulkan;
 
@@ -89,11 +88,6 @@ StagingBuffer::VirtualBlock* StagingBuffer::newVirtualBlock(VkDeviceSize nsize) 
     VVK_CHECK_ACT(return nullptr, vmaCreateVirtualBlock(&blockCreateInfo, &block.handle));
     block.enabled = true;
 
-    LOG_INFO("new buffer block(%p), size: %d, index: %d / %d",
-             this,
-             block.size,
-             block.index,
-             m_virtual_blocks.size());
     return &block;
 }
 bool StagingBuffer::increaseBuf(VkDeviceSize nsize) {
@@ -116,7 +110,6 @@ bool StagingBuffer::increaseBuf(VkDeviceSize nsize) {
 
     m_gpu_buf.handle = nullptr;
     m_dirty          = true;
-    LOG_INFO("increase buffer size: %d", nsize);
     return true;
 }
 
@@ -244,7 +237,7 @@ bool StagingBuffer::fillBuf(const StagingBufferRef& ref, size_t offset, size_t s
     return true;
 }
 
-bool StagingBuffer::recordUpload(vvk::CommandBuffer& cmd, RenderFrameStats* stats) {
+bool StagingBuffer::recordUpload(vvk::CommandBuffer& cmd) {
     if (! m_gpu_buf.handle) {
         if (auto opt = CreateGpuBuffer(m_device.vma_allocator(), m_usage, m_stage_buf.req_size);
             opt.has_value()) {
@@ -261,7 +254,6 @@ bool StagingBuffer::recordUpload(vvk::CommandBuffer& cmd, RenderFrameStats* stat
     VVK_CHECK_BOOL_RE(vmaFlushAllocation(
         m_device.vma_allocator(), m_stage_buf.handle.Allocation(), 0, VK_WHOLE_SIZE));
     RecordCopyBuffer(m_gpu_buf, m_stage_buf, cmd);
-    if (stats != nullptr) stats->dynamic_upload_bytes += m_stage_buf.req_size;
     m_dirty = false;
     return true;
 }
