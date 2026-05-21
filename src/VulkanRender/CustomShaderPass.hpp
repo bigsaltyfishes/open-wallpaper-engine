@@ -29,6 +29,8 @@ public:
         std::vector<std::string> textures;
         std::string              output;
         std::string              camera_override;
+        std::size_t              submesh_index { 0 };
+        uint32_t                 material_slot { 0 };
         bool                     clear_on_first_use { false };
         bool                     preserve_target_contents { false };
         bool                     write_alpha { true };
@@ -56,10 +58,12 @@ public:
         vvk::Framebuffer   fb;
         PipelineParameters pipeline;
         u32                draw_count { 0 };
+        std::vector<SceneMesh::DrawRange> draw_ranges;
 
         // uniforms
         std::optional<ShaderReflected::Block> uniform_block;
         std::function<void()>                 update_op;
+        uint64_t                              uploaded_mesh_dirty_generation { 0 };
     };
 
     CustomShaderPass(const Desc&);

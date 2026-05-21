@@ -131,6 +131,96 @@ void renderTargetAliasesResolveForOutputAndSampledSpecTextures() {
     assert(sampled_pass->desc().textures[0] == "_rt_resolved");
 }
 
+void submeshMaterialSlotsEmitDistinctCustomPasses() {
+    Scene scene;
+    installDefaultTargets(scene);
+    scene.renderTargets["_rt_submesh_slots"] = SceneRenderTarget {
+        .width      = 64,
+        .height     = 64,
+        .allowReuse = true,
+    };
+
+    auto node = std::make_shared<SceneNode>();
+    node->SetName("multi_slot_mesh");
+
+    auto mesh = std::make_shared<SceneMesh>();
+    SceneMaterial body {};
+    body.name = "body";
+    SceneMaterial eyes {};
+    eyes.name = "eyes";
+    mesh->AddMaterial(std::move(body));
+    mesh->AddMaterial(std::move(eyes));
+
+    mesh->Submeshes().emplace_back();
+    mesh->Submeshes().emplace_back();
+    mesh->Submeshes()[0].material_slot = 0;
+    mesh->Submeshes()[1].material_slot = 1;
+
+    node->AddMesh(mesh);
+    scene.sceneGraph->AppendChild(node);
+
+    auto camera = std::make_shared<SceneCamera>(64, 64, 0.01f, 100.0f);
+    camera->AttatchImgEffect(std::make_shared<SceneImageEffectLayer>(
+        node.get(),
+        64.0f,
+        64.0f,
+        "_rt_submesh_slots",
+        "_rt_unused"));
+    node->SetCamera("submesh_slots_camera");
+    scene.cameras["submesh_slots_camera"] = camera;
+
+    const auto graph  = wallpaper::sceneToRenderGraph(scene);
+    const auto passes = graphPasses(*graph);
+
+    const auto* body_pass = findCustomPass(passes, "body");
+    const auto* eyes_pass = findCustomPass(passes, "eyes");
+
+    assert(body_pass->desc().output == "_rt_submesh_slots");
+    assert(eyes_pass->desc().output == "_rt_submesh_slots");
+    assert(body_pass->desc().submesh_index == 0);
+    assert(body_pass->desc().material_slot == 0);
+    assert(eyes_pass->desc().submesh_index == 1);
+    assert(eyes_pass->desc().material_slot == 1);
+    assert(body_pass->desc().clear_on_first_use);
+    assert(!body_pass->desc().preserve_target_contents);
+    assert(!eyes_pass->desc().clear_on_first_use);
+    assert(eyes_pass->desc().preserve_target_contents);
+}
+
+void submeshMaterialRoutingDoesNotRequireSlotZero() {
+    Scene scene;
+    installDefaultTargets(scene);
+
+    auto node = std::make_shared<SceneNode>();
+    node->SetName("slot_one_only_mesh");
+
+    auto mesh = std::make_shared<SceneMesh>();
+    mesh->MaterialSlots().push_back(nullptr);
+    SceneMaterial slot_one {};
+    slot_one.name = "slot_one";
+    mesh->AddMaterial(std::move(slot_one));
+
+    mesh->Submeshes().emplace_back();
+    mesh->Submeshes().emplace_back();
+    mesh->Submeshes()[0].material_slot = 0;
+    mesh->Submeshes()[1].material_slot = 1;
+
+    node->AddMesh(mesh);
+    scene.sceneGraph->AppendChild(node);
+
+    const auto graph  = wallpaper::sceneToRenderGraph(scene);
+    const auto passes = graphPasses(*graph);
+
+    assert(std::none_of(passes.begin(), passes.end(), [](const auto& pass) {
+        return pass.custom != nullptr && pass.name.empty();
+    }));
+
+    const auto* slot_one_pass = findCustomPass(passes, "slot_one");
+    assert(slot_one_pass->desc().output == SpecTex_Default);
+    assert(slot_one_pass->desc().submesh_index == 1);
+    assert(slot_one_pass->desc().material_slot == 1);
+}
+
 void skippedBasePassStillEmitsEffectPasses() {
     Scene scene;
     installDefaultTargets(scene);
@@ -600,6 +690,8 @@ void postProcessCopyStepsResolveRenderTargetAliases() {
 
 int main() {
     renderTargetAliasesResolveForOutputAndSampledSpecTextures();
+    submeshMaterialSlotsEmitDistinctCustomPasses();
+    submeshMaterialRoutingDoesNotRequireSlotZero();
     skippedBasePassStillEmitsEffectPasses();
     composeBaseRunsBeforeChildrenAndEffectsAfterChildren();
     reusableNonDefaultTargetClearsOnlyOnFirstWriter();

@@ -232,6 +232,74 @@ void MirrorFirstMeshToLegacyFields(WPMdl& mdl) {
         if (i < mesh.texcoords.size()) mdl.vertexs[i].texcoord = mesh.texcoords[i];
     }
 }
+
+SceneVertexArray MakePuppetVertexArray(const std::size_t vertex_count) {
+    return SceneVertexArray({ { WE_IN_POSITION.data(), VertexType::FLOAT3 },
+                              { WE_IN_BLENDINDICES.data(), VertexType::UINT4 },
+                              { WE_IN_BLENDWEIGHTS.data(), VertexType::FLOAT4 },
+                              { WE_IN_TEXCOORD.data(), VertexType::FLOAT2 } },
+                            vertex_count);
+}
+
+std::vector<uint16_t> FlattenIndices(std::span<const std::array<uint16_t, 3>> triangles) {
+    std::vector<uint16_t> indices;
+    indices.reserve(triangles.size() * 3);
+    for (const auto& triangle : triangles) {
+        for (const uint16_t index : triangle) indices.push_back(index);
+    }
+    return indices;
+}
+
+SceneIndexArray MakePuppetIndexArray(std::span<const std::array<uint16_t, 3>> triangles) {
+    const auto indices = FlattenIndices(triangles);
+    if (indices.empty()) {
+        static constexpr std::array<uint32_t, 1> kPaddedEmptyIndex { 0u };
+        return SceneIndexArray(kPaddedEmptyIndex);
+    }
+    SceneIndexArray array(indices.size() / 3);
+    array.AssignHalf(0, indices);
+    return array;
+}
+
+void GenMeshFromMdl(SceneMesh::Submesh& submesh, const WPMdl::Mesh& mdl_mesh) {
+    auto vertex = MakePuppetVertexArray(mdl_mesh.positions.size());
+
+    for (std::size_t i = 0; i < mdl_mesh.positions.size(); ++i) {
+        std::array<float, 16> one_vert {};
+        uint                  offset = 0;
+        memcpy(one_vert.data() + 4 * (offset++),
+               mdl_mesh.positions[i].data(),
+               sizeof(mdl_mesh.positions[i]));
+        if (i < mdl_mesh.blend_indices.size()) {
+            memcpy(one_vert.data() + 4 * (offset),
+                   mdl_mesh.blend_indices[i].data(),
+                   sizeof(mdl_mesh.blend_indices[i]));
+        }
+        ++offset;
+        if (i < mdl_mesh.blend_weights.size()) {
+            memcpy(one_vert.data() + 4 * (offset),
+                   mdl_mesh.blend_weights[i].data(),
+                   sizeof(mdl_mesh.blend_weights[i]));
+        }
+        ++offset;
+        if (i < mdl_mesh.texcoords.size()) {
+            memcpy(one_vert.data() + 4 * (offset),
+                   mdl_mesh.texcoords[i].data(),
+                   sizeof(mdl_mesh.texcoords[i]));
+        }
+        vertex.SetVertexs(i, one_vert);
+    }
+
+    submesh.AddVertexArray(std::move(vertex));
+    submesh.AddIndexArray(MakePuppetIndexArray(mdl_mesh.indices));
+
+    std::vector<SceneMesh::DrawRange> ranges;
+    ranges.reserve(mdl_mesh.parts.size());
+    for (const auto& part : mdl_mesh.parts) {
+        ranges.push_back({ .indexOffset = part.start, .indexCount = part.size });
+    }
+    submesh.SetDrawRanges(ranges);
+}
 } // namespace
 
 // bytes * size
@@ -556,11 +624,18 @@ bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
 }
 
 void WPMdlParser::GenPuppetMesh(SceneMesh& mesh, const WPMdl& mdl) {
-    SceneVertexArray vertex({ { WE_IN_POSITION.data(), VertexType::FLOAT3 },
-                              { WE_IN_BLENDINDICES.data(), VertexType::UINT4 },
-                              { WE_IN_BLENDWEIGHTS.data(), VertexType::FLOAT4 },
-                              { WE_IN_TEXCOORD.data(), VertexType::FLOAT2 } },
-                            mdl.vertexs.size());
+    if (! mdl.meshes.empty()) {
+        auto& submeshes = mesh.Submeshes();
+        submeshes.clear();
+        submeshes.resize(mdl.meshes.size());
+        for (std::size_t i = 0; i < mdl.meshes.size(); ++i) {
+            submeshes[i].material_slot = static_cast<uint32_t>(i);
+            GenMeshFromMdl(submeshes[i], mdl.meshes[i]);
+        }
+        return;
+    }
+
+    SceneVertexArray vertex = MakePuppetVertexArray(mdl.vertexs.size());
 
     std::array<float, 16> one_vert;
     auto                  to_one = [](const WPMdl::Vertex& in, decltype(one_vert)& out) {
@@ -575,13 +650,8 @@ void WPMdlParser::GenPuppetMesh(SceneMesh& mesh, const WPMdl& mdl) {
         to_one(v, one_vert);
         vertex.SetVertexs(i, one_vert);
     }
-    std::vector<uint32_t> indices;
-    size_t                u16_count = mdl.indices.size() * 3;
-    indices.resize(u16_count / 2 + 1);
-    memcpy(indices.data(), mdl.indices.data(), u16_count * sizeof(uint16_t));
-
     mesh.AddVertexArray(std::move(vertex));
-    mesh.AddIndexArray(SceneIndexArray(indices));
+    mesh.AddIndexArray(MakePuppetIndexArray(mdl.indices));
 }
 
 void WPMdlParser::AddPuppetShaderInfo(WPShaderInfo& info, const WPMdl& mdl) {

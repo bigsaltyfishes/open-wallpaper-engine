@@ -201,6 +201,90 @@ struct ExtraInfo {
     bool                       use_mipmap_framebuffer { false };
 };
 
+static void AddCustomShaderGraphPass(
+    rg::RenderGraph& rgraph,
+    Scene& scene,
+    ExtraInfo& extra,
+    SceneNode* node,
+    SceneNode* visibility_node,
+    SceneMaterial& material,
+    std::string_view output,
+    i32 imgId,
+    std::string camera_override,
+    std::size_t submesh_index,
+    uint32_t material_slot) {
+    rgraph.addPass<vulkan::CustomShaderPass>(
+        material.name,
+        rg::PassNode::Type::CustomShader,
+        [&material,
+         node,
+         visibility_node,
+         output,
+         imgId,
+         &rgraph,
+         &scene,
+         &extra,
+         camera_override,
+         submesh_index,
+         material_slot](
+            rg::RenderGraphBuilder& builder, vulkan::CustomShaderPass::Desc& pdesc) {
+            const auto& pass = builder.workPassNode();
+            const auto  resolved_output = scene.ResolveRenderTargetName(output);
+            pdesc.node            = node;
+            pdesc.visibility_node = visibility_node != nullptr ? visibility_node : node;
+            pdesc.output          = resolved_output;
+            pdesc.camera_override = camera_override;
+            pdesc.submesh_index   = submesh_index;
+            pdesc.material_slot   = material_slot;
+            CheckAndSetSprite(scene, pdesc, material.textures);
+            for (usize i = 0; i < material.textures.size(); i++) {
+                const auto& texture_name = material.textures[i];
+                const auto  url = IsSpecTex(texture_name)
+                    ? scene.ResolveRenderTargetName(texture_name)
+                    : texture_name;
+                rg::TexNode* input { nullptr };
+                if (url.empty()) {
+                    pdesc.textures.emplace_back("");
+                    continue;
+                } else if (IsSpecLinkTex(url)) {
+                    auto id = ParseLinkTex(url);
+                    extra.link_info.push_back(
+                        DelayLinkInfo { .id = pass.ID(), .link_id = id, .tex_index = (i32)i });
+                    pdesc.textures.emplace_back("");
+                    continue;
+                } else {
+                    rg::TexNode::Desc desc;
+                    desc.key  = url;
+                    desc.name = url;
+                    desc.type = ! IsSpecTex(url) ? rg::TexNode::TexType::Imported
+                                                 : rg::TexNode::TexType::Temp;
+                    input     = builder.createTexNode(desc);
+                    if (IsSpecTex(url)) builder.markVirtualWrite(input);
+                    if (sstart_with(url, WE_MIP_MAPPED_FRAME_BUFFER))
+                        extra.use_mipmap_framebuffer = true;
+                }
+
+                if (url == output) {
+                    builder.markSelfWrite(input);
+                    input = rg::addCopyPass(rgraph, input);
+                }
+                builder.read(input);
+                pdesc.textures.emplace_back(input->key());
+            }
+
+            rg::TexNode* output_node { nullptr };
+            output_node =
+                builder.createTexNode(rg::TexNode::Desc { .name = resolved_output,
+                                                          .key  = resolved_output,
+                                                          .type = rg::TexNode::TexType::Temp },
+                                      true);
+            builder.write(output_node);
+            if (resolved_output == SpecTex_Default) {
+                extra.id_link_map[(usize)imgId] = output_node;
+            }
+        });
+}
+
 static void ToGraphPass(
     SceneNode* node,
     std::string output,
@@ -234,10 +318,6 @@ static void ToGraphPass(
 
     if (node->Mesh() == nullptr) return;
     auto* mesh = node->Mesh();
-    if (mesh->Material() == nullptr) return;
-    auto* material   = mesh->Material();
-    auto* mshaderPtr = material->customShader.shader.get();
-    (void)mshaderPtr;
 
     SceneImageEffectLayer* imgeff = nullptr;
     if (! node->Camera().empty()) {
@@ -264,71 +344,45 @@ static void ToGraphPass(
         if (!compose_target.camera.empty()) camera_override = compose_target.camera;
     }
 
-    std::string passName = material->name;
-
-    if (ShouldDebugSkipGraphPass(node, passName)) {
-        return;
-    }
-
     if (mode != GraphPassMode::EffectsOnly && !node->SkipRenderPass()) {
-        rgraph.addPass<vulkan::CustomShaderPass>(
-            passName,
-            rg::PassNode::Type::CustomShader,
-            [material, node, visibility_node, &output, &imgId, &rgraph, &scene, &extra, camera_override](
-                rg::RenderGraphBuilder& builder, vulkan::CustomShaderPass::Desc& pdesc) {
-                const auto& pass = builder.workPassNode();
-                const auto  resolved_output = scene.ResolveRenderTargetName(output);
-                pdesc.node            = node;
-                pdesc.visibility_node = visibility_node != nullptr ? visibility_node : node;
-                pdesc.output          = resolved_output;
-                pdesc.camera_override = camera_override;
-                CheckAndSetSprite(scene, pdesc, material->textures);
-                for (usize i = 0; i < material->textures.size(); i++) {
-                    const auto& texture_name = material->textures[i];
-                    const auto  url = IsSpecTex(texture_name)
-                        ? scene.ResolveRenderTargetName(texture_name)
-                        : texture_name;
-                    rg::TexNode* input { nullptr };
-                    if (url.empty()) {
-                        pdesc.textures.emplace_back("");
-                        continue;
-                    } else if (IsSpecLinkTex(url)) {
-                        auto id = ParseLinkTex(url);
-                        extra.link_info.push_back(
-                            DelayLinkInfo { .id = pass.ID(), .link_id = id, .tex_index = (i32)i });
-                        pdesc.textures.emplace_back("");
-                        continue;
-                    } else {
-                        rg::TexNode::Desc desc;
-                        desc.key  = url;
-                        desc.name = url;
-                        desc.type = ! IsSpecTex(url) ? rg::TexNode::TexType::Imported
-                                                     : rg::TexNode::TexType::Temp;
-                        input     = builder.createTexNode(desc);
-                        if (IsSpecTex(url)) builder.markVirtualWrite(input);
-                        if (sstart_with(url, WE_MIP_MAPPED_FRAME_BUFFER))
-                            extra.use_mipmap_framebuffer = true;
-                    }
-
-                    if (url == output) {
-                        builder.markSelfWrite(input);
-                        input = rg::addCopyPass(rgraph, input);
-                    }
-                    builder.read(input);
-                    pdesc.textures.emplace_back(input->key());
-                }
-
-                rg::TexNode* output_node { nullptr };
-                output_node =
-                    builder.createTexNode(rg::TexNode::Desc { .name = resolved_output,
-                                                              .key  = resolved_output,
-                                                              .type = rg::TexNode::TexType::Temp },
-                                          true);
-                builder.write(output_node);
-                if (resolved_output == SpecTex_Default) {
-                    extra.id_link_map[(usize)imgId] = output_node;
-                }
-            });
+        const auto& submeshes = mesh->Submeshes();
+        if (submeshes.size() > 1) {
+            for (std::size_t submesh_index = 0; submesh_index < submeshes.size(); ++submesh_index) {
+                const auto material_slot = submeshes[submesh_index].material_slot;
+                auto* submesh_material = mesh->MaterialForSlot(material_slot);
+                if (submesh_material == nullptr) continue;
+                if (ShouldDebugSkipGraphPass(node, submesh_material->name)) continue;
+                AddCustomShaderGraphPass(
+                    rgraph,
+                    scene,
+                    extra,
+                    node,
+                    visibility_node,
+                    *submesh_material,
+                    output,
+                    imgId,
+                    camera_override,
+                    submesh_index,
+                    material_slot);
+            }
+        } else {
+            auto* material = mesh->MaterialForSlot(0);
+            if (material == nullptr) return;
+            if (!ShouldDebugSkipGraphPass(node, material->name)) {
+                AddCustomShaderGraphPass(
+                    rgraph,
+                    scene,
+                    extra,
+                    node,
+                    visibility_node,
+                    *material,
+                    output,
+                    imgId,
+                    camera_override,
+                    0,
+                    0);
+            }
+        }
     }
 
     // load effect

@@ -32,6 +32,8 @@ CustomShaderPass::CustomShaderPass(const Desc& desc) {
     m_desc.textures        = desc.textures;
     m_desc.output          = desc.output;
     m_desc.camera_override = desc.camera_override;
+    m_desc.submesh_index   = desc.submesh_index;
+    m_desc.material_slot   = desc.material_slot;
     m_desc.sample_count    = desc.sample_count;
     m_desc.sprites_map     = desc.sprites_map;
     m_desc.video_textures  = desc.video_textures;
@@ -216,12 +218,17 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
     }
 
     SceneMesh& mesh = *(m_desc.node->Mesh());
+    if (m_desc.submesh_index >= mesh.Submeshes().size()) return;
+    auto& submesh = mesh.Submeshes()[m_desc.submesh_index];
+    auto* material = mesh.MaterialForSlot(m_desc.material_slot);
+    if (material == nullptr) return;
 
     std::vector<Uni_ShaderSpv> spvs;
     DescriptorSetInfo          descriptor_info;
     ShaderReflected            ref;
     {
-        SceneShader& shader = *(mesh.Material()->customShader.shader);
+        if (material->customShader.shader == nullptr) return;
+        SceneShader& shader = *(material->customShader.shader);
 
         if (! GenReflect(shader.codes, spvs, ref)) {
             LOG_ERROR("gen spv reflect failed, %s", shader.name.c_str());
@@ -260,10 +267,10 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
     std::vector<VkVertexInputAttributeDescription> attr_descriptions;
     {
         m_desc.dyn_vertex = mesh.Dynamic();
-        m_desc.vertex_bufs.resize(mesh.VertexCount());
+        m_desc.vertex_bufs.resize(submesh.VertexCount());
 
-        for (uint i = 0; i < mesh.VertexCount(); i++) {
-            const auto& vertex    = mesh.GetVertexArray(i);
+        for (uint i = 0; i < submesh.VertexCount(); i++) {
+            const auto& vertex    = submesh.GetVertexArray(i);
             auto        attrs_map = vertex.GetAttrOffsetMap();
 
             VkVertexInputBindingDescription bind_desc {
@@ -299,10 +306,11 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             m_desc.draw_count += (u32)(vertex.DataSize() / vertex.OneSize());
         }
 
-        if (mesh.IndexCount() > 0) {
-            auto&  indice     = mesh.GetIndexArray(0);
+        if (submesh.IndexCount() > 0) {
+            auto&  indice     = submesh.GetIndexArray(0);
             size_t count      = (indice.DataCount() * 2) / 3;
             m_desc.draw_count = (u32)count * 3;
+            m_desc.draw_ranges = submesh.DrawRanges();
             auto& buf         = m_desc.index_buf;
             if (! m_desc.dyn_vertex) {
                 if (! rr.vertex_buf->allocateSubRef(indice.CapacitySizeof(), buf)) return;
@@ -321,7 +329,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             if (m_desc.write_alpha) colorMask |= VK_COLOR_COMPONENT_A_BIT;
             color_blend.colorWriteMask = colorMask;
 
-            auto blendmode = mesh.Material()->blenmode;
+            auto blendmode = material->blenmode;
             SetBlend(blendmode, color_blend);
             m_desc.blending          = color_blend.blendEnable;
             m_desc.alpha_to_coverage = blendmode == BlendMode::AlphaToCoverage;
@@ -383,28 +391,44 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
     std::function<void()> update_dyn_buf_op;
     if (m_desc.dyn_vertex) {
         auto& mesh        = *m_desc.node->Mesh();
+        auto submesh_index = m_desc.submesh_index;
         auto* dyn_buf     = rr.dyn_buf;
         auto& vertex_bufs = m_desc.vertex_bufs;
         auto& draw_count  = m_desc.draw_count;
         auto& index_buf   = m_desc.index_buf;
-        update_dyn_buf_op = [&mesh, &vertex_bufs, &draw_count, &index_buf, dyn_buf]() {
-            if (mesh.Dirty().exchange(false)) {
-                for (usize i = 0; i < mesh.VertexCount(); i++) {
-                    const auto& vertex = mesh.GetVertexArray(i);
+        auto& draw_ranges = m_desc.draw_ranges;
+        auto& uploaded_generation = m_desc.uploaded_mesh_dirty_generation;
+        update_dyn_buf_op = [&mesh,
+                             submesh_index,
+                             &vertex_bufs,
+                             &draw_count,
+                             &index_buf,
+                             &draw_ranges,
+                             &uploaded_generation,
+                             dyn_buf]() {
+            const uint64_t dirty_generation = mesh.DirtyGeneration();
+            if (uploaded_generation != dirty_generation) {
+                if (submesh_index >= mesh.Submeshes().size()) return;
+                auto& submesh = mesh.Submeshes()[submesh_index];
+                for (usize i = 0; i < submesh.VertexCount(); i++) {
+                    if (i >= vertex_bufs.size()) return;
+                    const auto& vertex = submesh.GetVertexArray(i);
                     auto&       buf    = vertex_bufs[i];
                     if (! dyn_buf->writeToBuf(buf,
                                               { (uint8_t*)vertex.Data(), vertex.DataSizeOf() }))
                         return;
                 }
-                if (mesh.IndexCount() > 0) {
-                    auto& indice = mesh.GetIndexArray(0);
+                if (submesh.IndexCount() > 0) {
+                    auto& indice = submesh.GetIndexArray(0);
                     u32   count  = (u32)((indice.RenderDataCount() * 2) / 3);
                     draw_count   = count * 3;
+                    draw_ranges  = submesh.DrawRanges();
                     auto& buf    = index_buf;
                     if (! dyn_buf->writeToBuf(buf,
                                               { (uint8_t*)indice.Data(), indice.DataSizeOf() }))
                         return;
                 }
+                uploaded_generation = dirty_generation;
             }
         };
     }
@@ -421,6 +445,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
     auto& video_textures  = m_desc.video_textures;
     auto& vk_textures     = m_desc.vk_textures;
     auto  camera_override = m_desc.camera_override;
+    auto  material_slot   = m_desc.material_slot;
 
     m_desc.update_op = [shader_updater,
                         uniform_block,
@@ -434,6 +459,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                         &sprites,
                         &vk_textures,
                         camera_override,
+                        material_slot,
                         update_dyn_buf_op]() {
         auto update_unf_op = [uniform_block, buf, bufref](std::string_view       name,
                                                           wallpaper::ShaderValue value) {
@@ -452,9 +478,10 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         if (restore_camera) {
             node->SetCamera(original_camera);
         }
-        if (uniform_block != nullptr && node != nullptr && node->Mesh() != nullptr &&
-            node->Mesh()->Material() != nullptr) {
-            const auto& const_values = node->Mesh()->Material()->customShader.constValues;
+        if (uniform_block != nullptr && node != nullptr && node->Mesh() != nullptr) {
+            const auto* material = node->Mesh()->MaterialForSlot(material_slot);
+            if (material == nullptr) return;
+            const auto& const_values = material->customShader.constValues;
             for (const auto& [name, value] : const_values) {
                 UpdateUniform(buf, *bufref, *uniform_block, name, value);
             }
@@ -500,8 +527,8 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
     if (uniform_block != nullptr) {
         buf->fillBuf(*bufref, 0, bufref->size, 0);
         {
-            auto&      default_values = mesh.Material()->customShader.shader->default_uniforms;
-            auto&      const_values   = mesh.Material()->customShader.constValues;
+            auto&      default_values = material->customShader.shader->default_uniforms;
+            auto&      const_values   = material->customShader.constValues;
             std::array values_array   = { &default_values, &const_values };
             for (auto& values : values_array) {
                 for (auto& v : *values) {
@@ -660,7 +687,13 @@ void CustomShaderPass::recordDraw(const Device&, RenderingResources& rr) {
     }
     if (m_desc.index_buf) {
         cmd.BindIndexBuffer(gpu_buf, m_desc.index_buf.offset, VK_INDEX_TYPE_UINT16);
-        cmd.DrawIndexed(m_desc.draw_count, 1, 0, 0, 0);
+        if (!m_desc.draw_ranges.empty()) {
+            for (const auto& range : m_desc.draw_ranges) {
+                cmd.DrawIndexed(range.indexCount, 1, range.indexOffset, 0, 0);
+            }
+        } else {
+            cmd.DrawIndexed(m_desc.draw_count, 1, 0, 0, 0);
+        }
     } else {
         cmd.Draw(m_desc.draw_count, 1, 0, 0);
     }

@@ -75,6 +75,16 @@ gtest_discover_tests(
     DISCOVERY_TIMEOUT 60
 )
 
+add_executable(scene_mesh_tests scene_mesh_tests.cpp)
+target_link_libraries(scene_mesh_tests PRIVATE wpScene GTest::gtest_main)
+target_include_directories(scene_mesh_tests PRIVATE . ${CMAKE_SOURCE_DIR}/src)
+target_compile_features(scene_mesh_tests PRIVATE cxx_std_20)
+gtest_discover_tests(
+    scene_mesh_tests
+    PROPERTIES TIMEOUT 30
+    DISCOVERY_TIMEOUT 60
+)
+
 # CLI for fixture authoring: dumps a single workshop to a JSON file.
 add_executable(wpdump wpdump_main.cpp)
 target_link_libraries(wpdump PRIVATE wpdump_lib)

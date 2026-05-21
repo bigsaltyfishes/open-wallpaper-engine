@@ -5,12 +5,14 @@
 #include <span>
 #include <string>
 #include <vector>
+#include <cstring>
 
 #include <gtest/gtest.h>
 
 #include "Fs/Fs.h"
 #include "Fs/MemBinaryStream.h"
 #include "Fs/VFS.h"
+#include "Scene/SceneMesh.h"
 #include "WPMdlParser.hpp"
 
 namespace
@@ -354,6 +356,63 @@ TEST(MdlSchema, ParsesMdlv21PartsBeforeMdlsAndMultipleMeshes) {
     EXPECT_EQ(mdl.meshes[1].parts[0].id, 20u);
     EXPECT_EQ(mdl.mat_json_file, "mat/head.json");
     EXPECT_EQ(mdl.vertexs.size(), 3u);
+}
+
+TEST(MdlSchema, GeneratesOneSubmeshPerMdlv21Mesh) {
+    fs::VFS vfs;
+    MountMdlFixture(vfs, BuildMdlv21TwoMeshFixture());
+    WPMdl mdl;
+    ASSERT_TRUE(WPMdlParser::Parse("sample.mdl", vfs, mdl));
+
+    SceneMesh mesh;
+    WPMdlParser::GenPuppetMesh(mesh, mdl);
+
+    ASSERT_EQ(mesh.Submeshes().size(), 2u);
+    EXPECT_EQ(mesh.Submeshes()[0].VertexCount(), 1u);
+    EXPECT_EQ(mesh.Submeshes()[0].IndexCount(), 1u);
+    EXPECT_EQ(mesh.Submeshes()[1].VertexCount(), 1u);
+    EXPECT_EQ(mesh.Submeshes()[1].IndexCount(), 1u);
+
+    EXPECT_EQ(mesh.VertexCount(), 1u);
+    EXPECT_EQ(mesh.IndexCount(), 1u);
+    EXPECT_EQ(mesh.GetVertexArray(0).VertexCount(), 3u);
+    EXPECT_EQ(mesh.GetIndexArray(0).DataCount(), 2u);
+    std::array<uint16_t, 4> packed_indices {};
+    std::memcpy(
+        packed_indices.data(),
+        mesh.GetIndexArray(0).Data(),
+        sizeof(packed_indices));
+    EXPECT_EQ(packed_indices[0], 0u);
+    EXPECT_EQ(packed_indices[1], 1u);
+    EXPECT_EQ(packed_indices[2], 2u);
+    EXPECT_EQ(packed_indices[3], 0u);
+
+    ASSERT_EQ(mesh.Submeshes()[0].DrawRanges().size(), 1u);
+    ASSERT_EQ(mesh.Submeshes()[1].DrawRanges().size(), 1u);
+    EXPECT_EQ(mesh.Submeshes()[0].DrawRanges()[0].indexOffset, 0u);
+    EXPECT_EQ(mesh.Submeshes()[0].DrawRanges()[0].indexCount, 3u);
+    EXPECT_EQ(mesh.Submeshes()[1].DrawRanges()[0].indexOffset, 0u);
+    EXPECT_EQ(mesh.Submeshes()[1].DrawRanges()[0].indexCount, 3u);
+
+    EXPECT_EQ(mesh.Submeshes()[0].material_slot, 0u);
+    EXPECT_EQ(mesh.Submeshes()[1].material_slot, 1u);
+}
+
+TEST(MdlSchema, GeneratesSingleSubmeshForLegacyMdlWithoutParsedMeshes) {
+    fs::VFS vfs;
+    MountMdlFixture(vfs, BuildMdlv20LegacyHeaderWithMeshCountTwo());
+    WPMdl mdl;
+    ASSERT_TRUE(WPMdlParser::Parse("sample.mdl", vfs, mdl));
+    ASSERT_TRUE(mdl.meshes.empty());
+
+    SceneMesh mesh;
+    WPMdlParser::GenPuppetMesh(mesh, mdl);
+
+    ASSERT_EQ(mesh.Submeshes().size(), 1u);
+    EXPECT_EQ(mesh.VertexCount(), 1u);
+    EXPECT_EQ(mesh.IndexCount(), 1u);
+    EXPECT_EQ(mesh.GetIndexArray(0).CapacitySizeof(), sizeof(uint32_t));
+    EXPECT_EQ(mesh.Submeshes()[0].material_slot, 0u);
 }
 
 TEST(MdlSchema, PreservesFirstLevelBoneHierarchyForPuppetEvidence) {
