@@ -1,0 +1,379 @@
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
+
+#include "Fs/Fs.h"
+#include "Fs/MemBinaryStream.h"
+#include "Fs/VFS.h"
+#include "Audio/SoundManager.h"
+#include "Project/ProjectProperties.hpp"
+#include "Runtime/DynamicValue.hpp"
+#include "Runtime/SceneRuntimeContext.hpp"
+#include "WPSceneParser.hpp"
+#include "wpscene/WPImageObject.h"
+#include "wpscene/WPMiscObject.hpp"
+#include "wpscene/WPParticleObject.h"
+#include "wpscene/WPScene.h"
+
+namespace
+{
+using namespace wallpaper;
+
+class MemoryFs final : public fs::Fs {
+public:
+    explicit MemoryFs(std::map<std::string, std::string> files): m_files(std::move(files)) {}
+
+    bool Contains(std::string_view path) const override {
+        return m_files.contains(std::string(path));
+    }
+
+    std::shared_ptr<fs::IBinaryStream> Open(std::string_view path) override {
+        const auto it = m_files.find(std::string(path));
+        if (it == m_files.end()) return nullptr;
+        const auto& s = it->second;
+        return std::make_shared<fs::MemBinaryStream>(
+            std::vector<uint8_t>(s.begin(), s.end()));
+    }
+
+    std::shared_ptr<fs::IBinaryStreamW> OpenW(std::string_view) override { return nullptr; }
+
+private:
+    std::map<std::string, std::string> m_files;
+};
+
+void MountSceneFiles(fs::VFS& vfs) {
+    auto files = std::map<std::string, std::string> {
+        { "/image.json", R"({"width":64,"height":32,"material":"mat.json"})" },
+        { "/mat.json",
+          R"({"passes":[{"blending":"translucent","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"genericimage","textures":["a.tex"]}]})" },
+        { "/shaders/genericimage.vert",
+          R"(attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+varying vec2 v_TexCoord;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+  v_TexCoord = a_TexCoord;
+}
+)" },
+        { "/shaders/genericimage.frag",
+          R"(uniform sampler2D g_Texture0;
+varying vec2 v_TexCoord;
+void main() {
+  gl_FragColor = texture(g_Texture0, v_TexCoord);
+}
+)" },
+        { "/materials/a.tex.tex", "" },
+        { "/particle.json",
+          R"({"emitter":[{"name":"emit","id":1}],"material":"mat.json","maxcount":4,"starttime":0,
+              "children":[{"name":"child_particle.json","type":"eventspawn","maxcount":3,
+                "origin":[1,2,3],"scale":[0.5,0.5,1],"angles":[0,0,45]}]})" },
+        { "/child_particle.json",
+          R"({"emitter":[{"name":"child_emit","id":2}],"material":"mat.json","maxcount":2,"starttime":1})" },
+    };
+    EXPECT_TRUE(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::move(files))));
+}
+
+} // namespace
+
+TEST(SceneSchema, AbsorbsGeneralKeysAndLightConfig) {
+    wpscene::WPScene scene;
+    const auto json = nlohmann::json::parse(R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0.1,0.2,0.3], "skylightcolor":[0.4,0.5,0.6],
+        "clearcolor":[0.7,0.8,0.9], "cameraparallax":true,
+        "cameraparallaxamount":1.5, "cameraparallaxdelay":0.25,
+        "cameraparallaxmouseinfluence":0.75, "zoom":2.0,
+        "fov":63.0, "nearz":0.5, "farz":9000.0,
+        "bloom":true, "bloomstrength":1.25, "bloomthreshold":0.8,
+        "hdr":true, "norecompile":true, "bloomtint":[0.2,0.3,0.4],
+        "perspectiveoverridefov":70.0, "windenabled":true,
+        "winddirection":[1,0,0], "windstrength":3.0,
+        "gravitydirection":[0,-1,0], "gravitystrength":9.8,
+        "transparentsorting":true, "fogdistance":true,
+        "fogdistancestart":10.0, "fogdistanceend":100.0,
+        "fogdistancecolor":[0.6,0.7,0.8],
+        "fogheight":true, "fogheightstart":2.0, "fogheightend":8.0,
+        "fogheightcolor":[0.9,0.8,0.7],
+        "lightconfig":{"directional":1,"point":2,"spotshadow":3},
+        "orthogonalprojection":{"width":1280,"height":720}
+      },
+      "objects": []
+    })");
+
+    ASSERT_TRUE(scene.FromJson(json));
+    EXPECT_TRUE(scene.general.hdr);
+    EXPECT_TRUE(scene.general.norecompile);
+    EXPECT_FLOAT_EQ(scene.general.bloomtint[2], 0.4f);
+    EXPECT_TRUE(scene.general.windenabled);
+    EXPECT_FLOAT_EQ(scene.general.windstrength, 3.0f);
+    EXPECT_TRUE(scene.general.transparentsorting);
+    EXPECT_TRUE(scene.general.fogdistance);
+    EXPECT_TRUE(scene.general.fogheight);
+    EXPECT_EQ(scene.general.lightconfig.at("point"), 2);
+}
+
+TEST(SceneSchema, GeneralPackageVersionGatesHigherVersionFields) {
+    const auto json = nlohmann::json::parse(R"({
+      "ambientcolor":[0.1,0.2,0.3], "skylightcolor":[0.4,0.5,0.6],
+      "clearcolor":[0.7,0.8,0.9], "cameraparallax":false,
+      "cameraparallaxamount":0, "cameraparallaxdelay":0,
+      "cameraparallaxmouseinfluence":0, "hdr":true, "norecompile":true,
+      "bloomtint":[0.2,0.3,0.4], "windenabled":true, "windstrength":3.0,
+      "lightconfig":{"directional":1,"point":2}, "transparentsorting":true,
+      "fogdistance":true, "fogdistancestart":10.0, "fogheight":true,
+      "fogheightstart":2.0
+    })");
+
+    wpscene::WPSceneGeneral v9;
+    ASSERT_TRUE(v9.FromJson(json, 9));
+    EXPECT_FALSE(v9.hdr);
+    EXPECT_FALSE(v9.norecompile);
+
+    wpscene::WPSceneGeneral v10;
+    ASSERT_TRUE(v10.FromJson(json, 10));
+    EXPECT_TRUE(v10.hdr);
+    EXPECT_TRUE(v10.norecompile);
+
+    wpscene::WPSceneGeneral v19;
+    ASSERT_TRUE(v19.FromJson(json, 19));
+    EXPECT_FLOAT_EQ(v19.bloomtint[2], 1.0f);
+
+    wpscene::WPSceneGeneral v20;
+    ASSERT_TRUE(v20.FromJson(json, 20));
+    EXPECT_FLOAT_EQ(v20.bloomtint[2], 0.4f);
+    EXPECT_FALSE(v20.windenabled);
+    EXPECT_TRUE(v20.lightconfig.is_null());
+
+    wpscene::WPSceneGeneral v21;
+    ASSERT_TRUE(v21.FromJson(json, 21));
+    EXPECT_TRUE(v21.windenabled);
+    EXPECT_FLOAT_EQ(v21.windstrength, 3.0f);
+    EXPECT_EQ(v21.lightconfig.at("point"), 2);
+    EXPECT_FALSE(v21.transparentsorting);
+    EXPECT_FALSE(v21.fogdistance);
+
+    wpscene::WPSceneGeneral v22;
+    ASSERT_TRUE(v22.FromJson(json, 22));
+    EXPECT_TRUE(v22.transparentsorting);
+    EXPECT_TRUE(v22.fogdistance);
+    EXPECT_FALSE(v22.fogheight);
+
+    wpscene::WPSceneGeneral v23;
+    ASSERT_TRUE(v23.FromJson(json, 23));
+    EXPECT_TRUE(v23.fogheight);
+    EXPECT_FLOAT_EQ(v23.fogheightstart, 2.0f);
+}
+
+TEST(SceneSchema, SceneRootPackageVersionGatesGeneralFields) {
+    const auto root = nlohmann::json::parse(R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0.1,0.2,0.3], "skylightcolor":[0.4,0.5,0.6],
+        "clearcolor":[0.7,0.8,0.9], "cameraparallax":false,
+        "cameraparallaxamount":0, "cameraparallaxdelay":0,
+        "cameraparallaxmouseinfluence":0, "hdr":true,
+        "bloomtint":[0.2,0.3,0.4], "windenabled":true,
+        "lightconfig":{"point":2}, "fogheight":true
+      },
+      "objects": []
+    })");
+
+    wpscene::WPScene v20;
+    ASSERT_TRUE(v20.FromJson(root, 20));
+    EXPECT_TRUE(v20.general.hdr);
+    EXPECT_FLOAT_EQ(v20.general.bloomtint[2], 0.4f);
+    EXPECT_FALSE(v20.general.windenabled);
+    EXPECT_TRUE(v20.general.lightconfig.is_null());
+    EXPECT_FALSE(v20.general.fogheight);
+
+    wpscene::WPScene v23;
+    ASSERT_TRUE(v23.FromJson(root, 23));
+    EXPECT_TRUE(v23.general.windenabled);
+    EXPECT_EQ(v23.general.lightconfig.at("point"), 2);
+    EXPECT_TRUE(v23.general.fogheight);
+}
+
+TEST(SceneSchema, ImageAbsorbsDependenciesInstanceAnimationLayersAndBindings) {
+    fs::VFS vfs;
+    MountSceneFiles(vfs);
+    wpscene::WPImageObject image;
+    const auto json = nlohmann::json::parse(R"({
+      "image":"image.json", "id":7, "name":"image layer",
+      "dependencies":[1,2], "origin":[1,2,3],
+      "alpha":{"value":0.5,"animation":{"c0":[{"frame":0,"value":0.5}],"options":{"fps":30}}},
+      "visible":{"value":true,"script":"export function update() { return true; }",
+        "scriptproperties":{"speed":{"value":1.0}}},
+      "instance":{"id":42,"combos":{"BLENDMODE":1},"textures":["override.tex"],
+        "usertextures":[{"name":"$mediaThumbnail","type":"system"}]},
+      "animationlayers":[{"animation":11,"blend":0.75,"rate":1.25,"visible":true,
+        "id":3,"name":"blink","additive":true,"blendin":true,"blendout":true,"blendtime":0.4}]
+    })");
+
+    ASSERT_TRUE(image.FromJson(json, vfs));
+    EXPECT_EQ(image.dependencies, (std::vector<int32_t> { 1, 2 }));
+    ASSERT_TRUE(image.instance.enabled);
+    EXPECT_EQ(image.instance.id, 42);
+    EXPECT_EQ(image.instance.combos.at("BLENDMODE"), 1);
+    ASSERT_EQ(image.instance.usertextures.size(), 1u);
+    EXPECT_EQ(image.instance.usertextures[0].type, "system");
+    ASSERT_EQ(image.puppet_layers.size(), 1u);
+    EXPECT_EQ(image.puppet_layers[0].layer_id, 3);
+    EXPECT_EQ(image.puppet_layers[0].name, "blink");
+    EXPECT_TRUE(image.puppet_layers[0].additive);
+    EXPECT_TRUE(image.field_bindings.contains("alpha"));
+    EXPECT_TRUE(image.field_bindings.contains("visible"));
+}
+
+TEST(SceneSchema, ParticleAbsorbsInstanceOverrideExtrasAndNestedChildren) {
+    fs::VFS vfs;
+    MountSceneFiles(vfs);
+    wpscene::WPParticleObject particle;
+    const auto json = nlohmann::json::parse(R"({
+      "particle":"particle.json", "id":9, "name":"particles",
+      "dependencies":[7],
+      "instanceoverride":{"id":5,"alpha":0.5,"count":2.0,"color":[0.1,0.2,0.3]},
+      "origin":{"value":[0,0,0],"scriptproperties":{"x":{"value":1}}},
+      "visible":true
+    })");
+
+    ASSERT_TRUE(particle.FromJson(json, vfs));
+    EXPECT_EQ(particle.dependencies, (std::vector<int32_t> { 7 }));
+    EXPECT_TRUE(particle.instanceoverride.enabled);
+    EXPECT_EQ(particle.instanceoverride.id, 5);
+    EXPECT_TRUE(particle.instanceoverride.overColor);
+    EXPECT_TRUE(particle.field_bindings.contains("origin"));
+    ASSERT_EQ(particle.particleObj.children.size(), 1u);
+    const auto& child = particle.particleObj.children[0];
+    EXPECT_EQ(child.name, "child_particle.json");
+    EXPECT_EQ(child.type, "eventspawn");
+    EXPECT_EQ(child.maxcount, 3);
+    EXPECT_FLOAT_EQ(child.origin[1], 2.0f);
+    EXPECT_EQ(child.obj.emitters[0].name, "child_emit");
+}
+
+TEST(SceneSchema, AbsorbsTextModelAndCameraObjectKinds) {
+    fs::VFS vfs;
+    MountSceneFiles(vfs);
+
+    wpscene::WPTextObject text;
+    ASSERT_TRUE(text.FromJson(nlohmann::json::parse(R"({
+      "id":1,"text":{"value":"hello"},"font":"Arial","pointsize":24,
+      "padding":4,"horizontalalign":"center","verticalalign":"middle",
+      "anchor":"center","maxrows":2,"maxwidth":300,"limitrows":true,
+      "limitwidth":true,"limituseellipsis":true,"dependencies":[9],
+      "alpha":{"script":"export function update() { return 1; }"}
+    })"), vfs));
+    EXPECT_EQ(text.text.at("value"), "hello");
+    EXPECT_TRUE(text.limituseellipsis);
+    EXPECT_TRUE(text.field_bindings.contains("alpha"));
+
+    wpscene::WPModelObject model;
+    ASSERT_TRUE(model.FromJson(nlohmann::json::parse(R"({
+      "id":2,"model":"model.mdl","attachment":"head","perspective":true,
+      "dependencies":[1]
+    })"), vfs));
+    EXPECT_EQ(model.model, "model.mdl");
+    EXPECT_TRUE(model.perspective);
+
+    wpscene::WPCameraObject camera;
+    ASSERT_TRUE(camera.FromJson(nlohmann::json::parse(R"({
+      "id":3,"camera":"main","path":"camera.json","fov":80,"zoom":1.5,
+      "solid":true,"disablepropagation":true
+    })"), vfs));
+    EXPECT_EQ(camera.camera, "main");
+    EXPECT_FLOAT_EQ(camera.zoom, 1.5f);
+    EXPECT_TRUE(camera.disablepropagation);
+}
+
+TEST(SceneSchema, ParserSkipsSchemaOnlyObjectKindsWithoutBreakingLayerParents) {
+    fs::VFS vfs;
+    MountSceneFiles(vfs);
+    audio::SoundManager sound_manager;
+    WPSceneParser parser;
+    const std::string scene = R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0.2,0.2,0.2], "skylightcolor":[0.3,0.3,0.3],
+        "clearcolor":[0,0,0], "cameraparallax":false,
+        "cameraparallaxamount":0, "cameraparallaxdelay":0,
+        "cameraparallaxmouseinfluence":0,
+        "orthogonalprojection":{"width":640,"height":360}
+      },
+      "objects": [
+        {"id":100,"name":"group","visible":true},
+        {"id":101,"parent":100,"text":"hello","font":"Arial","visible":true}
+      ]
+    })";
+
+    auto parsed = parser.Parse("schema-only", scene, vfs, sound_manager);
+    ASSERT_NE(parsed, nullptr);
+    ASSERT_TRUE(parsed->sceneGraph != nullptr);
+    EXPECT_TRUE(parsed->HasRenderTarget("_alias_lightCookie"));
+    const auto& root_children = parsed->sceneGraph->GetChildren();
+    auto group = std::find_if(root_children.begin(), root_children.end(), [](const auto& node) {
+        return node != nullptr && node->Name() == "group";
+    });
+    ASSERT_NE(group, root_children.end());
+    EXPECT_EQ((*group)->Parent(), parsed->sceneGraph.get());
+    EXPECT_TRUE((*group)->GetChildren().empty());
+}
+
+TEST(SceneSchema, SchemaOnlyObjectPreservesRenderableChildParentTransform) {
+    fs::VFS vfs;
+    MountSceneFiles(vfs);
+    audio::SoundManager sound_manager;
+    WPSceneParser parser;
+    const std::string scene = R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0.2,0.2,0.2], "skylightcolor":[0.3,0.3,0.3],
+        "clearcolor":[0,0,0], "cameraparallax":false,
+        "cameraparallaxamount":0, "cameraparallaxdelay":0,
+        "cameraparallaxmouseinfluence":0,
+        "orthogonalprojection":{"width":640,"height":360}
+      },
+      "objects": [
+        {"id":200,"name":"text parent","text":"hello","origin":[25,0,0],"visible":true},
+        {"id":201,"parent":200,"name":"image child","image":"image.json",
+         "origin":[5,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":true}
+      ]
+    })";
+
+    auto parsed = parser.Parse("schema-only-parent", scene, vfs, sound_manager);
+    ASSERT_NE(parsed, nullptr);
+    ASSERT_TRUE(parsed->sceneGraph != nullptr);
+    const auto& root_children = parsed->sceneGraph->GetChildren();
+    auto parent = std::find_if(root_children.begin(), root_children.end(), [](const auto& node) {
+        return node != nullptr && node->Name() == "text parent";
+    });
+    ASSERT_NE(parent, root_children.end());
+    ASSERT_EQ((*parent)->GetChildren().size(), 1u);
+    const auto& child = (*parent)->GetChildren().front();
+    ASSERT_NE(child, nullptr);
+    EXPECT_EQ(child->Name(), "image child");
+    EXPECT_EQ(child->Parent(), parent->get());
+
+    child->UpdateTrans();
+    EXPECT_NEAR(child->ModelTrans()(0, 3), 30.0, 1.0e-5);
+}
+
+TEST(SceneSchema, RuntimeProjectPropertyResolutionStillWorks) {
+    auto runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {
+        .project_properties = {
+            { "speed", RuntimeScalarValue::Float(2.5f) },
+        },
+    });
+    ASSERT_NE(runtime, nullptr);
+
+    auto* value = runtime->FindPropertyValue("speed");
+    ASSERT_NE(value, nullptr);
+    EXPECT_FLOAT_EQ(value->getFloat(), 2.5f);
+}

@@ -3,6 +3,7 @@
 #include <unordered_map>
 #include <cstdint>
 #include "WPJson.hpp"
+#include "WPObjectSchema.hpp"
 #include <nlohmann/json.hpp>
 
 namespace wallpaper
@@ -25,6 +26,8 @@ struct WPSoundObject {
     bool                     visible { true };
     std::string              name;
     std::vector<std::string> sound;
+    std::vector<int32_t>     dependencies;
+    nlohmann::json           field_bindings;
 
     bool FromJson(const nlohmann::json& json, fs::VFS&) {
         GET_JSON_NAME_VALUE(json, "volume", volume);
@@ -35,6 +38,7 @@ struct WPSoundObject {
         GET_JSON_NAME_VALUE_NOWARN(json, "maxtime", maxtime);
         GET_JSON_NAME_VALUE_NOWARN(json, "visible", visible);
         GET_JSON_NAME_VALUE_NOWARN(json, "name", name);
+        ParseDependencies(json, dependencies);
         if (! json.contains("sound") || ! json.at("sound").is_array()) {
             return false;
         }
@@ -43,6 +47,7 @@ struct WPSoundObject {
             GET_JSON_VALUE(el, name);
             if (! name.empty()) sound.push_back(name);
         }
+        AbsorbFieldBindings(json, field_bindings);
         return true;
     }
 };

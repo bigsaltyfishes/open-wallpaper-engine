@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <string>
 #include <memory>
 
@@ -13,9 +14,12 @@ namespace audio{ class SoundManager; }
 
 struct SceneParseRequest
 {
+    static constexpr uint16_t kUnknownPkgVersion { 0 };
+
     std::string              scene_id {};
     std::string              project_path {};
     const ProjectProperties* project_properties { nullptr };
+    uint16_t                 pkg_version { kUnknownPkgVersion };
 };
 
 class ISceneParser {

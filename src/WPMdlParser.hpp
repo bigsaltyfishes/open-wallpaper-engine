@@ -23,6 +23,41 @@ class VFS;
 };
 
 struct WPMdl {
+    struct Header {
+        i32      mdlv { 13 };
+        uint32_t mdl_flag { 0 };
+        uint32_t mesh_count { 1 };
+    };
+    struct Mesh {
+        std::string mat_json_file;
+        uint32_t    flag_a { 0 };
+        uint32_t    flag { 0 };
+        std::array<float, 3> aabb_min {};
+        std::array<float, 3> aabb_max {};
+        bool        has_aabb { false };
+
+        std::vector<std::array<float, 3>>    positions;
+        std::vector<std::array<float, 3>>    normals;
+        std::vector<std::array<float, 4>>    tangents;
+        std::vector<std::array<uint8_t, 4>>  extra4;
+        std::vector<std::array<uint32_t, 4>> blend_indices;
+        std::vector<std::array<float, 4>>    blend_weights;
+        std::vector<std::array<float, 2>>    texcoords;
+        std::vector<std::array<float, 2>>    texcoord2;
+        std::vector<std::array<uint16_t, 3>> indices;
+
+        struct Part {
+            uint32_t id { 0 };
+            uint32_t start { 0 };
+            uint32_t size { 0 };
+        };
+        std::vector<std::array<float, 2>> part_uv2;
+        std::vector<uint32_t>             part_uv2_pad;
+        std::vector<Part>                 parts;
+    };
+
+    Header mdl_header;
+    std::vector<Mesh> meshes;
     i32 mdlv { 13 };
     i32 mdls { 1 };
     i32 mdla { 1 };

@@ -55,6 +55,26 @@ gtest_discover_tests(
     DISCOVERY_TIMEOUT 60
 )
 
+add_executable(scene_schema_tests scene_schema_tests.cpp)
+target_link_libraries(scene_schema_tests PRIVATE ${PROJECT_NAME} wpAudio wpFs wpScene GTest::gtest_main)
+target_include_directories(scene_schema_tests PRIVATE .)
+target_compile_features(scene_schema_tests PRIVATE cxx_std_20)
+gtest_discover_tests(
+    scene_schema_tests
+    PROPERTIES TIMEOUT 30
+    DISCOVERY_TIMEOUT 60
+)
+
+add_executable(mdl_schema_tests mdl_schema_tests.cpp)
+target_link_libraries(mdl_schema_tests PRIVATE ${PROJECT_NAME} wpFs wpScene GTest::gtest_main)
+target_include_directories(mdl_schema_tests PRIVATE .)
+target_compile_features(mdl_schema_tests PRIVATE cxx_std_20)
+gtest_discover_tests(
+    mdl_schema_tests
+    PROPERTIES TIMEOUT 30
+    DISCOVERY_TIMEOUT 60
+)
+
 # CLI for fixture authoring: dumps a single workshop to a JSON file.
 add_executable(wpdump wpdump_main.cpp)
 target_link_libraries(wpdump PRIVATE wpdump_lib)

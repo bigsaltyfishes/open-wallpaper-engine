@@ -1,4 +1,5 @@
 #include "WPParticleObject.h"
+#include "WPObjectSchema.hpp"
 
 #include "Utils/Logging.h"
 #include "Fs/VFS.h"
@@ -143,6 +144,7 @@ bool ParticleInstanceoverride::FromJosn(const nlohmann::json& json) {
     GET_JSON_NAME_VALUE_NOWARN(json, "rate", rate);
     GET_JSON_NAME_VALUE_NOWARN(json, "speed", speed);
     GET_JSON_NAME_VALUE_NOWARN(json, "count", count);
+    GET_JSON_NAME_VALUE_NOWARN(json, "id", id);
     if (json.contains("color")) {
         GET_JSON_NAME_VALUE(json, "color", color);
         overColor = true;
@@ -241,6 +243,7 @@ bool WPParticleObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
     read_vec3_setting(json, "angles", &angles, &angles_setting, &dynamic_angles);
     read_vec3_setting(json, "scale", &scale, &scale_setting, &dynamic_scale);
     GET_JSON_NAME_VALUE_NOWARN(json, "parallaxDepth", parallaxDepth);
+    ParseDependencies(json, dependencies);
 
     if (json.contains("instanceoverride") && ! json.at("instanceoverride").is_null()) {
         instanceoverride.FromJosn(json.at("instanceoverride"));
@@ -249,5 +252,6 @@ bool WPParticleObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
     nlohmann::json jParticle;
     if (! PARSE_JSON(fs::GetFileContent(vfs, "/assets/" + particle), jParticle)) return false;
     if (! particleObj.FromJson(jParticle, vfs)) return false;
+    AbsorbFieldBindings(json, field_bindings);
     return true;
 }

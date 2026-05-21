@@ -1,4 +1,5 @@
 #include "WPImageObject.h"
+#include "WPObjectSchema.hpp"
 #include "Utils/Logging.h"
 #include "Fs/VFS.h"
 
@@ -256,6 +257,12 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
              GET_JSON_NAME_VALUE(jLayer, "blend", layer.blend);
              GET_JSON_NAME_VALUE(jLayer, "rate", layer.rate);
              GET_JSON_NAME_VALUE_NOWARN(jLayer, "visible", layer.visible);
+             GET_JSON_NAME_VALUE_NOWARN(jLayer, "id", layer.layer_id);
+             GET_JSON_NAME_VALUE_NOWARN(jLayer, "name", layer.name);
+             GET_JSON_NAME_VALUE_NOWARN(jLayer, "additive", layer.additive);
+             GET_JSON_NAME_VALUE_NOWARN(jLayer, "blendin", layer.blendin);
+             GET_JSON_NAME_VALUE_NOWARN(jLayer, "blendout", layer.blendout);
+             GET_JSON_NAME_VALUE_NOWARN(jLayer, "blendtime", layer.blendtime);
              puppet_layers.push_back(layer);
         }
     }
@@ -263,5 +270,38 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
         const auto& jConf = json.at("config");
         GET_JSON_NAME_VALUE_NOWARN(jConf, "passthrough", config.passthrough);
     }
+    ParseDependencies(json, dependencies);
+    if (json.contains("instance") && json.at("instance").is_object()) {
+        const auto& jInstance = json.at("instance");
+        instance.enabled = true;
+        GET_JSON_NAME_VALUE_NOWARN(jInstance, "id", instance.id);
+        if (jInstance.contains("textures")) {
+            for (const auto& jT : jInstance.at("textures")) {
+                std::string texture;
+                if (! jT.is_null()) GET_JSON_VALUE_NOWARN(jT, texture);
+                instance.textures.push_back(texture);
+            }
+        }
+        if (jInstance.contains("usertextures")) {
+            for (const auto& jT : jInstance.at("usertextures")) {
+                WPUserTexture user_texture;
+                if (jT.is_string()) {
+                    GET_JSON_VALUE_NOWARN(jT, user_texture.name);
+                } else if (jT.is_object()) {
+                    GET_JSON_NAME_VALUE_NOWARN(jT, "name", user_texture.name);
+                    GET_JSON_NAME_VALUE_NOWARN(jT, "type", user_texture.type);
+                }
+                instance.usertextures.push_back(user_texture);
+            }
+        }
+        if (jInstance.contains("combos")) {
+            for (const auto& jC : jInstance.at("combos").items()) {
+                int32_t value { 0 };
+                GET_JSON_VALUE_NOWARN(jC.value(), value);
+                instance.combos[jC.key()] = value;
+            }
+        }
+    }
+    AbsorbFieldBindings(json, field_bindings);
     return true;
 }

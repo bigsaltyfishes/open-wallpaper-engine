@@ -137,6 +137,7 @@ public:
     bool enabled { false };
     bool overColor { false };
     bool overColorn { false };
+    int32_t id { 0 };
 
     float                alpha { 1.0f };
     float                count { 1.0f };
@@ -170,6 +171,8 @@ public:
     std::string              particle;
     Particle                 particleObj;
     ParticleInstanceoverride instanceoverride;
+    std::vector<int32_t>     dependencies;
+    nlohmann::json           field_bindings;
 };
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Initializer, name, max, min);

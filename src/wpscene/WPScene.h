@@ -29,7 +29,10 @@ public:
 
 class WPSceneGeneral {
 public:
+    static constexpr uint16_t kSceneVersionUnknown { 0 };
+
     bool                 FromJson(const nlohmann::json&);
+    bool                 FromJson(const nlohmann::json&, uint16_t pkg_version);
     std::array<float, 3> clearcolor { 0.0f, 0.0f, 0.0f };
     bool                 clearenabled { true };
     bool                 cameraparallax { false };
@@ -44,11 +47,35 @@ public:
     float                farz { 10000.0f };
     std::array<float, 3> ambientcolor { 0.2f, 0.2f, 0.2f };
     std::array<float, 3> skylightcolor { 0.3f, 0.3f, 0.3f };
+    bool                 bloom { false };
+    float                bloomstrength { 0.0f };
+    float                bloomthreshold { 0.0f };
+    bool                 hdr { false };
+    bool                 norecompile { false };
+    std::array<float, 3> bloomtint { 1.0f, 1.0f, 1.0f };
+    float                perspectiveoverridefov { 0.0f };
+    bool                 windenabled { false };
+    std::array<float, 3> winddirection { 0.0f, 0.0f, 1.0f };
+    float                windstrength { 0.0f };
+    std::array<float, 3> gravitydirection { 0.0f, -1.0f, 0.0f };
+    float                gravitystrength { 0.0f };
+    bool                 transparentsorting { false };
+    bool                 fogdistance { false };
+    float                fogdistancestart { 0.0f };
+    float                fogdistanceend { 0.0f };
+    std::array<float, 3> fogdistancecolor { 1.0f, 1.0f, 1.0f };
+    bool                 fogheight { false };
+    float                fogheightstart { 0.0f };
+    float                fogheightend { 0.0f };
+    std::array<float, 3> fogheightcolor { 1.0f, 1.0f, 1.0f };
+    nlohmann::json       lightconfig;
 };
 
 class WPScene {
 public:
     bool           FromJson(const nlohmann::json&);
+    bool           FromJson(const nlohmann::json&, uint16_t pkg_version);
+    uint16_t       pkg_version { WPSceneGeneral::kSceneVersionUnknown };
     WPSceneCamera  camera;
     WPSceneGeneral general;
 };

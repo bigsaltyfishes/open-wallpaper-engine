@@ -27,6 +27,7 @@
 #include "wpscene/WPParticleObject.h"
 #include "wpscene/WPSoundObject.h"
 #include "wpscene/WPLightObject.hpp"
+#include "wpscene/WPMiscObject.hpp"
 #include "wpscene/WPScene.h"
 
 #include "Fs/VFS.h"
@@ -70,7 +71,9 @@ struct ParseContext {
 };
 
 using WPObjectVar = std::variant<wpscene::WPImageObject, wpscene::WPParticleObject,
-                                 wpscene::WPSoundObject, wpscene::WPLightObject>;
+                                 wpscene::WPSoundObject, wpscene::WPLightObject,
+                                 wpscene::WPTextObject, wpscene::WPModelObject,
+                                 wpscene::WPCameraObject>;
 
 struct RawLayerObject {
     int32_t              id { 0 };
@@ -190,7 +193,15 @@ void QueueSceneScriptIfNeeded(ParseContext& context, std::string_view layer_name
 
 bool IsLayerObject(const nlohmann::json& object) {
     return ! object.contains("image") && ! object.contains("particle") &&
-           ! object.contains("sound") && ! object.contains("light");
+           ! object.contains("sound") && ! object.contains("light") &&
+           ! object.contains("text") && ! object.contains("model") &&
+           ! object.contains("camera");
+}
+
+bool IsSchemaOnlyObject(const nlohmann::json& object) {
+    return (object.contains("text") && ! object.at("text").is_null()) ||
+           (object.contains("model") && ! object.at("model").is_null()) ||
+           (object.contains("camera") && ! object.at("camera").is_null());
 }
 
 bool HasChildObject(const nlohmann::json& objects, int32_t parent_id) {
@@ -237,10 +248,13 @@ void AttachRemainingLayerNodes(ParseContext& context) {
     }
 }
 
-bool ParseLayerObject(const nlohmann::json& json, RawLayerObject& layer) {
-    if (! IsLayerObject(json)) return false;
-
+bool ParseLayerObject(const nlohmann::json& json, const nlohmann::json& objects,
+                      RawLayerObject& layer) {
     GET_JSON_NAME_VALUE_NOWARN(json, "id", layer.id);
+    if (! IsLayerObject(json) &&
+        (! IsSchemaOnlyObject(json) || layer.id == 0 || ! HasChildObject(objects, layer.id)))
+        return false;
+
     GET_JSON_NAME_VALUE_NOWARN(json, "parent", layer.parent_id);
     GET_JSON_NAME_VALUE_NOWARN(json, "name", layer.name);
     ReadVec3Setting(json, "origin", &layer.origin, &layer.origin_setting, &layer.dynamic_origin);
@@ -259,7 +273,7 @@ void ParseLayerNodes(ParseContext& context, const nlohmann::json& objects) {
     std::vector<RawLayerObject> layers;
     for (const auto& object : objects) {
         RawLayerObject layer;
-        if (ParseLayerObject(object, layer)) {
+        if (ParseLayerObject(object, objects, layer)) {
             layers.push_back(std::move(layer));
         }
     }
@@ -1857,7 +1871,7 @@ std::shared_ptr<Scene> WPSceneParser::Parse(const SceneParseRequest& request,
     nlohmann::json json;
     if (! PARSE_JSON(buf, json)) return nullptr;
     wpscene::WPScene sc;
-    sc.FromJson(json);
+    sc.FromJson(json, request.pkg_version);
     //	LOG_INFO(nlohmann::json(sc).dump(4));
 
     ParseContext context;
@@ -1875,6 +1889,12 @@ std::shared_ptr<Scene> WPSceneParser::Parse(const SceneParseRequest& request,
             AddWPObject<wpscene::WPSoundObject>(wp_objs, obj, vfs);
         } else if (obj.contains("light") && ! obj.at("light").is_null()) {
             AddWPObject<wpscene::WPLightObject>(wp_objs, obj, vfs);
+        } else if (obj.contains("text") && ! obj.at("text").is_null()) {
+            AddWPObject<wpscene::WPTextObject>(wp_objs, obj, vfs);
+        } else if (obj.contains("model") && ! obj.at("model").is_null()) {
+            AddWPObject<wpscene::WPModelObject>(wp_objs, obj, vfs);
+        } else if (obj.contains("camera") && ! obj.at("camera").is_null()) {
+            AddWPObject<wpscene::WPCameraObject>(wp_objs, obj, vfs);
         }
     }
 
@@ -1955,6 +1975,9 @@ std::shared_ptr<Scene> WPSceneParser::Parse(const SceneParseRequest& request,
                        [&context](wpscene::WPLightObject& obj) {
                            ParseLightObj(context, obj);
                        },
+                       [](wpscene::WPTextObject&) {},
+                       [](wpscene::WPModelObject&) {},
+                       [](wpscene::WPCameraObject&) {},
                    },
                    obj);
     }

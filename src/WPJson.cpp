@@ -28,6 +28,14 @@ inline bool _GetJsonValue(const nlohmann::json&                  json,
     if (njson.is_number()) {
         value = { njson.get<Tv>() };
         return true;
+    } else if (njson.is_array()) {
+        if (njson.size() != value.size()) {
+            throw utils::StrToArray::WrongSizeExp {};
+        }
+        for (std::size_t i = 0; i < value.size(); ++i) {
+            value[i] = njson.at(i).get<Tv>();
+        }
+        return true;
     } else {
         std::string strvalue;
         strvalue = njson.get<std::string>();

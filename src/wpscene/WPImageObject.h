@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 #include "WPMaterial.h"
 #include <vector>
+#include <unordered_map>
 #include "WPPuppet.hpp"
 #include <unordered_set>
 #include <string>
@@ -58,6 +59,13 @@ public:
     struct Config {
         bool passthrough { false };
     };
+    struct Instance {
+        bool                                      enabled { false };
+        int32_t                                   id { 0 };
+        std::unordered_map<std::string, int32_t> combos;
+        std::vector<std::string>                  textures;
+        std::vector<WPUserTexture>                usertextures;
+    };
     bool                       FromJson(const nlohmann::json&, fs::VFS&);
     int32_t                    id { 0 };
     int32_t                    parent_id { -1 };
@@ -92,6 +100,9 @@ public:
     WPMaterial                 material;
     std::vector<WPImageEffect> effects;
     Config                     config;
+    std::vector<int32_t>       dependencies;
+    Instance                   instance;
+    nlohmann::json             field_bindings;
 
     std::string                                puppet;
     std::vector<WPPuppetLayer::AnimationLayer> puppet_layers;

@@ -16,16 +16,24 @@ static bool HasValidParentIndex(const WPPuppet::Bone& bone, uint index)
     return bone.noParent() || bone.parent < index;
 }
 
+static bool HasValidBindParentIndex(const WPPuppet::Bone& bone, uint index)
+{
+    return bone.bind_parent == WPPuppet::Bone::NO_PARENT || bone.bind_parent < index;
+}
+
 void WPPuppet::prepared() {
     std::vector<Affine3f> combined_tran(bones.size());
     for (uint i = 0; i < bones.size(); i++) {
         auto& b = bones[i];
-        if (!HasValidParentIndex(b, i)) {
-            LOG_ERROR("puppet invalid parent index %u for bone %u", b.parent, i);
+        if (!HasValidBindParentIndex(b, i)) {
+            LOG_ERROR("puppet invalid bind parent index %u for bone %u", b.bind_parent, i);
             combined_tran[i] = b.transform;
         } else {
             combined_tran[i] =
-                (b.noParent() ? Affine3f::Identity() : combined_tran[b.parent]) * b.transform;
+                (b.bind_parent == WPPuppet::Bone::NO_PARENT
+                     ? Affine3f::Identity()
+                     : combined_tran[b.bind_parent]) *
+                b.transform;
         }
 
         b.offset_trans = combined_tran[i].inverse();

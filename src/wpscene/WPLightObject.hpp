@@ -28,6 +28,8 @@ public:
     float                radius { 1000.0f };
     float                intensity { 1.0f };
     bool                 visible { true };
+    std::vector<int32_t> dependencies;
+    nlohmann::json       field_bindings;
 };
 
 } // namespace wpscene

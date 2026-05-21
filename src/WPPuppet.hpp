@@ -22,10 +22,15 @@ public:
         Single
     };
     struct Bone {
-        Eigen::Affine3f transform { Eigen::Affine3f::Identity() };
-        uint32_t        parent { 0xFFFFFFFFu };
+        static constexpr uint32_t NO_PARENT { 0xFFFFFFFFu };
 
-        bool noParent() const { return parent == 0xFFFFFFFFu; }
+        Eigen::Affine3f transform { Eigen::Affine3f::Identity() };
+        uint32_t        parent { NO_PARENT };
+        // Runtime animation follows parent. MDLV21 bind transforms flatten only
+        // root-anchored children via bind_parent to avoid double translation.
+        uint32_t        bind_parent { NO_PARENT };
+
+        bool noParent() const { return parent == NO_PARENT; }
         // prepared
         Eigen::Affine3f offset_trans { Eigen::Affine3f::Identity() };
         /*
@@ -87,11 +92,17 @@ public:
     bool hasPuppet() const { return (bool)m_puppet; };
 
     struct AnimationLayer {
-        i32    id { 0 };
-        double rate { 1.0f };
-        double blend { 1.0f };
-        bool   visible { true };
-        double cur_time { 0.0f };
+        i32         id { 0 };
+        double      rate { 1.0f };
+        double      blend { 1.0f };
+        bool        visible { true };
+        double      cur_time { 0.0f };
+        i32         layer_id { 0 };
+        std::string name;
+        bool        additive { false };
+        bool        blendin { false };
+        bool        blendout { false };
+        double      blendtime { 0.0 };
     };
 
     void prepared(std::span<AnimationLayer>);

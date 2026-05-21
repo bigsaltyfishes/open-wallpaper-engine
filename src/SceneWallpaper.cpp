@@ -38,6 +38,7 @@
 #include "VulkanRender/VulkanRender.hpp"
 #include "Runtime/VirtualAssetRegistry.hpp"
 #include <atomic>
+#include <charconv>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -73,6 +74,36 @@ std::shared_ptr<looper::Message> CreateMsgWithCmd(const std::shared_ptr<looper::
     auto msg = looper::Message::create(0, handler);
     AddMsgCmd(*msg, cmd);
     return msg;
+}
+
+uint16_t ParsePkgVersionStamp(std::string_view stamp) {
+    constexpr std::string_view prefix { "PKGV" };
+    if (stamp.size() <= prefix.size() || stamp.substr(0, prefix.size()) != prefix) {
+        return SceneParseRequest::kUnknownPkgVersion;
+    }
+
+    uint16_t version { SceneParseRequest::kUnknownPkgVersion };
+    const auto* first = stamp.data() + prefix.size();
+    const auto* last  = stamp.data() + stamp.size();
+    const auto [ptr, ec] = std::from_chars(first, last, version);
+    if (ec != std::errc {} || ptr != last) return SceneParseRequest::kUnknownPkgVersion;
+    return version;
+}
+
+uint16_t ReadPkgVersionFromFile(const std::string& pkg_path) {
+    std::ifstream input(pkg_path, std::ios::binary);
+    if (! input.good()) return SceneParseRequest::kUnknownPkgVersion;
+
+    int32_t length { 0 };
+    input.read(reinterpret_cast<char*>(&length), sizeof(length));
+    if (! input.good() || length <= 0 || length > 64) {
+        return SceneParseRequest::kUnknownPkgVersion;
+    }
+
+    std::string stamp(static_cast<std::size_t>(length), '\0');
+    input.read(stamp.data(), static_cast<std::streamsize>(stamp.size()));
+    if (! input.good()) return SceneParseRequest::kUnknownPkgVersion;
+    return ParsePkgVersionStamp(stamp);
 }
 
 class NoOpShaderValueUpdater final : public wallpaper::IShaderValueUpdater {
@@ -1164,6 +1195,7 @@ void MainHandler::loadScene() {
             .scene_id           = source_paths.scene_id,
             .project_path       = m_source,
             .project_properties = &project_properties,
+            .pkg_version        = ReadPkgVersionFromFile(source_paths.pkg_path),
         };
         scene = m_scene_parser.Parse(request, scene_src, vfs, *m_sound_manager);
         if (scene != nullptr && scene->runtime != nullptr) {

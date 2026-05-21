@@ -1,4 +1,5 @@
 #include "WPLightObject.hpp"
+#include "WPObjectSchema.hpp"
 
 #include "Utils/Logging.h"
 #include "Fs/VFS.h"
@@ -16,5 +17,7 @@ bool WPLightObject::FromJson(const nlohmann::json& json,  fs::VFS&) {
     GET_JSON_NAME_VALUE_NOWARN(json, "visible", visible);
     GET_JSON_NAME_VALUE_NOWARN(json, "name", name);
     GET_JSON_NAME_VALUE_NOWARN(json, "parallaxDepth", parallaxDepth);
+    ParseDependencies(json, dependencies);
+    AbsorbFieldBindings(json, field_bindings);
     return true;
 }
