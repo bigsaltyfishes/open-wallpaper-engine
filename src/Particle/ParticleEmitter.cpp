@@ -86,6 +86,19 @@ inline void ApplySign(Eigen::Vector3d& p, int32_t x, int32_t y, int32_t z) noexc
         p.z() = std::abs(p.z()) * (float)z;
     }
 }
+
+inline Eigen::Vector3d ResolveEmitterOrigin(std::span<const ParticleControlpoint> cps, i32 cp_index,
+                                            const std::array<float, 3>& authored) {
+    Eigen::Vector3d origin {
+        static_cast<double>(authored[0]),
+        static_cast<double>(authored[1]),
+        static_cast<double>(authored[2]),
+    };
+    if (cp_index >= 0 && static_cast<std::size_t>(cp_index) < cps.size()) {
+        origin += cps[static_cast<std::size_t>(cp_index)].offset;
+    }
+    return origin;
+}
 } // namespace
 
 ParticleEmittOp ParticleBoxEmitterArgs::MakeEmittOp(ParticleBoxEmitterArgs a) {
@@ -93,19 +106,22 @@ ParticleEmittOp ParticleBoxEmitterArgs::MakeEmittOp(ParticleBoxEmitterArgs a) {
     return [a, timer](std::vector<Particle>&       ps,
                       std::vector<ParticleInitOp>& inis,
                       u32                          maxcount,
-                      double                       timepass) mutable {
+                      double                       timepass,
+                      std::span<const ParticleControlpoint>
+                          controlpoints) mutable {
         timer += timepass;
-        auto GenBox = [&]() {
+        const Eigen::Vector3d origin = ResolveEmitterOrigin(controlpoints, a.controlpoint, a.orgin);
+        auto                  GenBox = [&]() {
             Eigen::Vector3d pos;
             for (int32_t i = 0; i < 3; i++)
                 pos[i] = algorism::lerp(Random::get(-1.0, 1.0), a.minDistance[i], a.maxDistance[i]);
             auto p = Particle();
-            pos    = pos.cwiseProduct(Eigen::Vector3f { a.directions.data() }.cast<double>());
+            pos = pos.cwiseProduct(Eigen::Vector3f { a.directions.data() }.cast<double>());
             ParticleModify::MoveTo(p, pos);
             ParticleModify::ChangeVelocity(p,
                                            Random::get(a.minSpeed, a.maxSpeed) * pos.normalized());
 
-            ParticleModify::Move(p, a.orgin[0], a.orgin[1], a.orgin[2]);
+            ParticleModify::Move(p, origin);
             return p;
         };
         u32 emit_num = GetEmitNum(timer, a.emitSpeed);
@@ -123,9 +139,12 @@ ParticleEmittOp ParticleSphereEmitterArgs::MakeEmittOp(ParticleSphereEmitterArgs
     return [a, timer](std::vector<Particle>&       ps,
                       std::vector<ParticleInitOp>& inis,
                       u32                          maxcount,
-                      double                       timepass) mutable {
+                      double                       timepass,
+                      std::span<const ParticleControlpoint>
+                          controlpoints) mutable {
         timer += timepass;
-        auto GenSphere = [&]() {
+        const Eigen::Vector3d origin = ResolveEmitterOrigin(controlpoints, a.controlpoint, a.orgin);
+        auto                  GenSphere = [&]() {
             auto   p = Particle();
             double r = algorism::lerp(
                 std::pow(Random::get(0.0, 1.0), 1.0 / 3.0), a.minDistance, a.maxDistance);
@@ -140,7 +159,7 @@ ParticleEmittOp ParticleSphereEmitterArgs::MakeEmittOp(ParticleSphereEmitterArgs
             ParticleModify::ChangeVelocity(p,
                                            Random::get(a.minSpeed, a.maxSpeed) * sp.normalized());
 
-            ParticleModify::Move(p, Eigen::Vector3f { a.orgin.data() }.cast<double>());
+            ParticleModify::Move(p, origin);
             return p;
         };
         u32 emit_num = GetEmitNum(timer, a.emitSpeed);

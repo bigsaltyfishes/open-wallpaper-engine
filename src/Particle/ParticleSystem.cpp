@@ -60,6 +60,18 @@ ParticleSubSystem::SpawnType ParticleSubSystem::Type() const { return m_spawn_ty
 
 u32 ParticleSubSystem::MaxInstanceCount() const { return m_maxcount_instance; };
 
+void ParticleSubSystem::UpdateMouseControlpoints() {
+    const auto            pointer = m_sys.scene.pointerPosition;
+    const Eigen::Vector3d pointer_world {
+        (static_cast<double>(pointer[0]) - 0.5) * static_cast<double>(m_sys.scene.ortho[0]),
+        (0.5 - static_cast<double>(pointer[1])) * static_cast<double>(m_sys.scene.ortho[1]),
+        0.0,
+    };
+    for (auto& cp : m_controlpoints) {
+        if (cp.link_mouse) cp.offset = cp.base_offset + pointer_world;
+    }
+}
+
 void ParticleSubSystem::AddChild(std::unique_ptr<ParticleSubSystem>&& child) {
     m_children.emplace_back(std::move(child));
 }
@@ -84,6 +96,7 @@ void ParticleSubSystem::Emitt() {
     double frameTime    = m_sys.scene.frameTime;
     double particleTime = frameTime * m_rate;
     m_time += particleTime;
+    UpdateMouseControlpoints();
 
     if (m_spawn_type == SpawnType::STATIC) {
         if (m_instances.empty()) m_instances.emplace_back(std::make_unique<ParticleInstance>());
@@ -137,7 +150,11 @@ void ParticleSubSystem::Emitt() {
 
         if (! inst->IsDeath()) {
             for (auto& emittOp : m_emiters) {
-                emittOp(inst->ParticlesVec(), m_initializers, m_maxcount, particleTime);
+                emittOp(inst->ParticlesVec(),
+                        m_initializers,
+                        m_maxcount,
+                        particleTime,
+                        m_controlpoints);
             }
         }
 

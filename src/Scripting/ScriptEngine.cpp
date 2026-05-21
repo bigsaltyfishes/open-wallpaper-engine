@@ -988,6 +988,7 @@ void AppendCommonHostBootstrap(std::ostringstream& wrapper) {
         << "  engine.on = engine.on || function(event, fn) { "
            "__registerCallback(globalThis.__callbacks, event, fn); };\n"
         << "  globalThis.input = globalThis.input || {};\n"
+        << "  globalThis.input.cursorPosition = globalThis.__cursorPosition;\n"
         << "  globalThis.input.cursorWorldPosition = globalThis.__cursorWorldPosition;\n"
         << "  globalThis.__timeouts = globalThis.__timeouts || [];\n"
         << "  globalThis.__timeoutSeq = globalThis.__timeoutSeq || 1;\n"
@@ -1241,6 +1242,12 @@ JSValue CreateCursorWorldPositionObject(JSContext* context, const ScriptHostCont
                         host_context.cursor_world_position.z());
 }
 
+JSValue CreateCursorPositionObject(JSContext* context, const ScriptHostContext& host_context) {
+    return CreateJsVec2(context,
+                        host_context.cursor_normalized_position.x(),
+                        host_context.cursor_normalized_position.y());
+}
+
 SceneScriptBridgeState* GetBridgeState(JSContext* context);
 
 JSValue CreateAudioArray(JSContext* context, uint32_t resolution) {
@@ -1375,8 +1382,14 @@ void UpdateEngineObject(JSContext* context, JSValue global_object,
         std::abs(cache_state.last_host_context.runtime_seconds - host_context.runtime_seconds) >
             1.0e-9 ||
         ! cache_state.last_host_context.canvas_size.isApprox(host_context.canvas_size, 1.0e-6f) ||
+        ! cache_state.last_host_context.cursor_normalized_position.isApprox(
+            host_context.cursor_normalized_position, 1.0e-6f) ||
         ! cache_state.last_host_context.cursor_world_position.isApprox(
-            host_context.cursor_world_position, 1.0e-6f);
+            host_context.cursor_world_position, 1.0e-6f) ||
+        cache_state.last_host_context.cursor_in_window != host_context.cursor_in_window ||
+        cache_state.last_host_context.mouse_buttons_down != host_context.mouse_buttons_down ||
+        cache_state.last_host_context.mouse_buttons_pressed != host_context.mouse_buttons_pressed ||
+        cache_state.last_host_context.mouse_buttons_released != host_context.mouse_buttons_released;
 
     JSValue engine_object = JS_GetPropertyStr(context, global_object, "engine");
     if (JS_IsObject(engine_object)) {
@@ -1400,6 +1413,10 @@ void UpdateEngineObject(JSContext* context, JSValue global_object,
     JSValue input_object = JS_GetPropertyStr(context, global_object, "input");
     if (JS_IsObject(input_object)) {
         if (host_changed) {
+            JS_SetPropertyStr(context,
+                              input_object,
+                              "cursorPosition",
+                              CreateCursorPositionObject(context, host_context));
             JS_SetPropertyStr(context,
                               input_object,
                               "cursorWorldPosition",
@@ -1464,6 +1481,10 @@ void UpdateEngineObject(JSContext* context, JSValue global_object,
     JS_FreeValue(context, registry);
 
     if (host_changed) {
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__cursorPosition",
+                          CreateCursorPositionObject(context, host_context));
         JS_SetPropertyStr(context,
                           global_object,
                           "__cursorWorldPosition",
@@ -1950,8 +1971,11 @@ void ProcessScheduledCallbacks(JSContext* context) {
 }
 
 JSValue BuildCursorEventObject(JSContext* context, const ScriptHostContext& host_context) {
-    JSValue event          = JS_NewObject(context);
+    JSValue event = JS_NewObject(context);
+    JS_SetPropertyStr(context, event, "button", JS_NewInt32(context, host_context.cursor_button));
     JSValue world_position = CreateCursorWorldPositionObject(context, host_context);
+    JS_SetPropertyStr(
+        context, event, "normalizedPosition", CreateCursorPositionObject(context, host_context));
     JS_SetPropertyStr(context, event, "worldPosition", JS_DupValue(context, world_position));
     JS_SetPropertyStr(context, event, "position", world_position);
     return event;
@@ -2161,11 +2185,10 @@ bool EnsureSharedHostBindings(JSContext* context, SceneRuntimeContext* runtime,
                           global_object,
                           "__layerSetScale",
                           JS_NewCFunction(context, JsLayerSetScale, "__layerSetScale", 2));
-        JS_SetPropertyStr(
-            context,
-            global_object,
-            "__layerSetAlignment",
-            JS_NewCFunction(context, JsLayerSetAlignment, "__layerSetAlignment", 2));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__layerSetAlignment",
+                          JS_NewCFunction(context, JsLayerSetAlignment, "__layerSetAlignment", 2));
         JS_SetPropertyStr(context,
                           global_object,
                           "__layerGetAngles",

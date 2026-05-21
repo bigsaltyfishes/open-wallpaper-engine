@@ -63,12 +63,10 @@ int owe_scene_wallpaper_begin_surface_reconfigure(owe_scene_wallpaper* scene);
  * Synchronous: blocks until the new surface is presentable.
  * Returns 0 on success, non-zero on failure.
  */
-int owe_scene_wallpaper_finish_surface_reconfigure(
-    owe_scene_wallpaper* scene,
-    void* metal_layer,
-    uint32_t width, uint32_t height,
-    uint32_t render_width, uint32_t render_height,
-    double display_scale_factor);
+int owe_scene_wallpaper_finish_surface_reconfigure(owe_scene_wallpaper* scene, void* metal_layer,
+                                                   uint32_t width, uint32_t height,
+                                                   uint32_t render_width, uint32_t render_height,
+                                                   double display_scale_factor);
 
 /* Applies SceneWallpaperConfig fields without persisting a duplicate config. */
 int owe_scene_wallpaper_apply_config(owe_scene_wallpaper* scene, const char* source,
@@ -81,6 +79,11 @@ int owe_scene_wallpaper_set_target_fps(owe_scene_wallpaper* scene, uint32_t fps)
 
 /* Direct SceneWallpaper::setPaused forwarding for live playback control. */
 int owe_scene_wallpaper_set_paused(owe_scene_wallpaper* scene, bool paused);
+
+/* Direct mouse/pointer forwarding to SceneWallpaper. Coordinates are normalized canvas space. */
+int owe_scene_wallpaper_mouse_input(owe_scene_wallpaper* scene, double x, double y);
+int owe_scene_wallpaper_mouse_button(owe_scene_wallpaper* scene, int button, bool pressed);
+int owe_scene_wallpaper_mouse_enter(owe_scene_wallpaper* scene, bool entered);
 
 /* Direct property forwarding to SceneWallpaper::setProperty*. */
 int owe_scene_wallpaper_set_property_bool(owe_scene_wallpaper* scene, const char* name, bool value);
@@ -124,7 +127,8 @@ const char* owe_property_project_property_override_json(void);
 const char* owe_property_project_property_reset(void);
 
 /* Audio-response sample submission shared by all renderer scenes. */
-int owe_audio_submit_mono_frames(uint32_t sample_rate, uint32_t frame_count, const float* pcm_frames);
+int owe_audio_submit_mono_frames(uint32_t sample_rate, uint32_t frame_count,
+                                 const float* pcm_frames);
 int owe_audio_submit_frames(uint32_t sample_rate, uint32_t frame_count, const float* pcm_frames);
 
 /* Thread-local error text for the last non-zero-returning call on this thread. */

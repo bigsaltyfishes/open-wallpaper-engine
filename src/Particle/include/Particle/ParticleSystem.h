@@ -64,6 +64,7 @@ public:
     ~ParticleSubSystem();
 
     void Emitt();
+    void UpdateMouseControlpoints();
 
     ParticleInstance* QueryNewInstance();
 

@@ -48,6 +48,11 @@ public:
     void          ResetProjectPropertyOverride();
     void          AttachScene(Scene* scene);
     void          SetCursorWorldPosition(const Eigen::Vector3f& value);
+    void          SetCursorInput(float x, float y);
+    void          SetCursorEnter(bool entered);
+    void          SetCursorButton(int button, bool pressed);
+    void          SetCursorButtons(uint32_t down, uint32_t pressed, uint32_t released);
+    void          BeginFrame();
     DynamicValue* FindPropertyValue(std::string_view name) const;
     void          RegisterScriptedValue(ScriptedDynamicValue* value);
     void          RegisterNode(std::string name, SceneNode* node);
@@ -105,12 +110,12 @@ public:
     video::VideoPlaybackState
                                  ResolveVideoPlaybackState(std::string_view texture_key,
                                                            double           fallback_scene_elapsed_seconds) const;
-    void                         DispatchCursorClick();
-    void                         DispatchCursorDown();
+    void                         DispatchCursorClick(int button = 0);
+    void                         DispatchCursorDown(int button = 0);
     void                         DispatchCursorEnter();
     void                         DispatchCursorLeave();
     void                         DispatchCursorMove();
-    void                         DispatchCursorUp();
+    void                         DispatchCursorUp(int button = 0);
     void                         DispatchMediaThumbnailChanged(const Eigen::Vector3f& primary_color,
                                                                const Eigen::Vector3f& text_color);
     void                         SetMediaIntegrationEnabled(bool enabled);
@@ -151,9 +156,9 @@ private:
         DynamicValue*  value { nullptr };
     };
     struct NodeAlignmentBinding {
-        std::string      alignment;
-        Eigen::Vector3f  origin { Eigen::Vector3f::Zero() };
-        Eigen::Vector3f  scale { Eigen::Vector3f::Ones() };
+        std::string     alignment;
+        Eigen::Vector3f origin { Eigen::Vector3f::Zero() };
+        Eigen::Vector3f scale { Eigen::Vector3f::Ones() };
     };
     struct VideoTexturePlaybackBinding {
         double duration_seconds { 0.0 };

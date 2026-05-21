@@ -44,6 +44,7 @@
 #include <fstream>
 #include <future>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -82,9 +83,9 @@ uint16_t ParsePkgVersionStamp(std::string_view stamp) {
         return SceneParseRequest::kUnknownPkgVersion;
     }
 
-    uint16_t version { SceneParseRequest::kUnknownPkgVersion };
-    const auto* first = stamp.data() + prefix.size();
-    const auto* last  = stamp.data() + stamp.size();
+    uint16_t    version { SceneParseRequest::kUnknownPkgVersion };
+    const auto* first    = stamp.data() + prefix.size();
+    const auto* last     = stamp.data() + stamp.size();
     const auto [ptr, ec] = std::from_chars(first, last, version);
     if (ec != std::errc {} || ptr != last) return SceneParseRequest::kUnknownPkgVersion;
     return version;
@@ -518,9 +519,45 @@ public:
 
     bool renderInited() const { return m_render->inited(); }
 
-    void setMousePos(double x, double y) { m_mouse_pos.store(std::array { (float)x, (float)y }); }
+    struct MouseButtonSnapshot {
+        uint32_t down { 0 };
+        uint32_t pressed { 0 };
+        uint32_t released { 0 };
+    };
+
+    void setMousePos(double x, double y) {
+        m_mouse_pos.store(std::array {
+            std::clamp(static_cast<float>(x), 0.0f, 1.0f),
+            std::clamp(static_cast<float>(y), 0.0f, 1.0f),
+        });
+    }
+    void setMouseButton(int button, bool pressed) {
+        if (button < 0 || button > 31) return;
+        const uint32_t   mask = 1u << static_cast<uint32_t>(button);
+        std::scoped_lock lock(m_mouse_buttons_mutex);
+        if (pressed) {
+            if ((m_mouse_buttons.down & mask) == 0) {
+                m_mouse_buttons.down |= mask;
+                m_mouse_buttons.pressed |= mask;
+            }
+            return;
+        }
+        if ((m_mouse_buttons.down & mask) != 0) {
+            m_mouse_buttons.down &= ~mask;
+            m_mouse_buttons.released |= mask;
+        }
+    }
+    void setMouseInWindow(bool entered) { m_cursor_in_window.store(entered); }
 
 private:
+    MouseButtonSnapshot consumeMouseButtonSnapshot() {
+        std::scoped_lock    lock(m_mouse_buttons_mutex);
+        MouseButtonSnapshot snapshot = m_mouse_buttons;
+        m_mouse_buttons.pressed      = 0;
+        m_mouse_buttons.released     = 0;
+        return snapshot;
+    }
+
     void rebuildRenderGraph() {
         if (m_scene == nullptr) return;
 
@@ -577,13 +614,36 @@ private:
             // LOG_INFO("frame info, fps: %.1f, frametime: %.1f", 1.0f, 1000.0f*m_scene->frameTime);
             m_scene->shaderValueUpdater->FrameBegin();
             {
-                auto pos = m_mouse_pos.load();
+                auto pos                 = m_mouse_pos.load();
+                m_scene->pointerPosition = pos;
                 m_scene->shaderValueUpdater->MouseInput(pos[0], pos[1]);
                 if (m_scene->runtime != nullptr) {
-                    m_scene->runtime->SetCursorWorldPosition(
-                        Eigen::Vector3f(pos[0] * static_cast<float>(m_scene->ortho[0]),
-                                        pos[1] * static_cast<float>(m_scene->ortho[1]),
-                                        0.0f));
+                    m_scene->runtime->SetCursorInput(pos[0], pos[1]);
+                    m_scene->runtime->SetCursorEnter(m_cursor_in_window.load());
+                    const MouseButtonSnapshot buttons = consumeMouseButtonSnapshot();
+                    m_scene->runtime->SetCursorButtons(
+                        buttons.down, buttons.pressed, buttons.released);
+                    const bool cursor_in_window = m_cursor_in_window.load();
+                    if (cursor_in_window && ! m_cursor_was_in_window) {
+                        m_scene->runtime->DispatchCursorEnter();
+                    } else if (! cursor_in_window && m_cursor_was_in_window) {
+                        m_scene->runtime->DispatchCursorLeave();
+                    }
+                    m_cursor_was_in_window = cursor_in_window;
+
+                    if (cursor_in_window) {
+                        m_scene->runtime->DispatchCursorMove();
+                        for (int button = 0; button < 32; ++button) {
+                            const uint32_t mask = 1u << static_cast<uint32_t>(button);
+                            if ((buttons.pressed & mask) != 0) {
+                                m_scene->runtime->DispatchCursorDown(button);
+                                m_scene->runtime->DispatchCursorClick(button);
+                            }
+                            if ((buttons.released & mask) != 0) {
+                                m_scene->runtime->DispatchCursorUp(button);
+                            }
+                        }
+                    }
                 }
             }
             m_scene->paritileSys->Emitt();
@@ -705,7 +765,7 @@ private:
     }
     MHANDLER_CMD(BEGIN_SURFACE_RECONFIGURE) {
         std::shared_ptr<std::promise<bool>> promise;
-        if (!msg->findObject("promise", &promise)) {
+        if (! msg->findObject("promise", &promise)) {
             return;
         }
         try {
@@ -721,11 +781,11 @@ private:
     }
     MHANDLER_CMD(FINISH_SURFACE_RECONFIGURE) {
         std::shared_ptr<std::promise<bool>> promise;
-        std::shared_ptr<RenderInitInfo> info;
-        if (!msg->findObject("promise", &promise)) {
+        std::shared_ptr<RenderInitInfo>     info;
+        if (! msg->findObject("promise", &promise)) {
             return;
         }
-        if (!msg->findObject("info", &info)) {
+        if (! msg->findObject("info", &info)) {
             promise->set_value(false);
             return;
         }
@@ -753,14 +813,18 @@ private:
     std::unique_ptr<vulkan::VulkanRender> m_render;
     std::unique_ptr<rg::RenderGraph>      m_rg { nullptr };
 
-    FillMode             m_fillmode { FillMode::ASPECTFIT };
-    bool                 m_fillmode_explicit { false };
-    WallpaperScalingMode m_scalingmode { WallpaperScalingMode::FIT };
-    float                m_scalingfactor { 1.0f };
-    bool                 m_media_integration_enabled { false };
+    FillMode                                 m_fillmode { FillMode::ASPECTFIT };
+    bool                                     m_fillmode_explicit { false };
+    WallpaperScalingMode                     m_scalingmode { WallpaperScalingMode::FIT };
+    float                                    m_scalingfactor { 1.0f };
+    bool                                     m_media_integration_enabled { false };
     std::optional<SystemMediaArtworkPayload> m_pending_system_media_artwork {};
 
     std::atomic<std::array<float, 2>> m_mouse_pos { std::array { 0.5f, 0.5f } };
+    std::mutex                        m_mouse_buttons_mutex;
+    MouseButtonSnapshot               m_mouse_buttons {};
+    std::atomic<bool>                 m_cursor_in_window { false };
+    bool                              m_cursor_was_in_window { false };
 };
 } // namespace wallpaper
 
@@ -860,6 +924,14 @@ void SceneWallpaper::mouseInput(double x, double y) {
     m_main_handler->renderHandler()->setMousePos(x, y);
 }
 
+void SceneWallpaper::mouseButton(int button, bool pressed) {
+    m_main_handler->renderHandler()->setMouseButton(button, pressed);
+}
+
+void SceneWallpaper::mouseEnter(bool entered) {
+    m_main_handler->renderHandler()->setMouseInWindow(entered);
+}
+
 void SceneWallpaper::applySystemMediaArtwork(uint32_t width, uint32_t height, const uint8_t* rgba,
                                              std::size_t rgba_len) {
     if (width == 0 || height == 0 || rgba == nullptr) return;
@@ -916,7 +988,7 @@ MHANDLER_CMD_IMPL(MainHandler, APPLY_CONFIG) {
     std::shared_ptr<SceneWallpaperConfig> config;
     if (! msg->findObject("config", &config) || config == nullptr) return;
 
-    const bool paused = config->paused;
+    const bool paused      = config->paused;
     const bool should_load = applyConfig(std::move(*config));
     if (should_load && m_render_handler != nullptr) CALL_MHANDLER_CMD(LOAD_SCENE, msg);
     setPaused(paused);
@@ -1051,12 +1123,12 @@ bool MainHandler::applyConfig(SceneWallpaperConfig config) {
         should_load = true;
     }
     if (m_assets != config.assets) {
-        m_assets = std::move(config.assets);
+        m_assets    = std::move(config.assets);
         should_load = true;
     }
     if (m_cache_path != config.cache_path) {
         m_cache_path = std::move(config.cache_path);
-        should_load = true;
+        should_load  = true;
     }
 
     if (config.has_project_property_override) {

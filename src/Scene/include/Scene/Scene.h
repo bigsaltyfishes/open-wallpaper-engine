@@ -42,7 +42,8 @@ public:
 
     std::string scene_id { "unknown_id" };
 
-    bool first_frame_ok { false };
+    bool                 first_frame_ok { false };
+    std::array<float, 2> pointerPosition { 0.5f, 0.5f };
 
     SceneMesh default_effect_mesh;
 
@@ -56,8 +57,8 @@ public:
 
     double elapsingTime { 0.0f }, frameTime { 0.0f };
     void   PassFrameTime(double t) {
-          frameTime = t;
-          elapsingTime += t;
+        frameTime = t;
+        elapsingTime += t;
     }
 
     void UpdateLinkedCamera(const std::string& name) {
@@ -78,20 +79,18 @@ public:
         return std::string(name);
     }
 
-    bool HasRenderTarget(std::string_view name) const {
-        return FindRenderTarget(name) != nullptr;
-    }
+    bool HasRenderTarget(std::string_view name) const { return FindRenderTarget(name) != nullptr; }
 
     SceneRenderTarget* FindRenderTarget(std::string_view name) {
         const std::string resolved = ResolveRenderTargetName(name);
-        auto it = renderTargets.find(resolved);
+        auto              it       = renderTargets.find(resolved);
         if (it == renderTargets.end()) return nullptr;
         return &it->second;
     }
 
     const SceneRenderTarget* FindRenderTarget(std::string_view name) const {
         const std::string resolved = ResolveRenderTargetName(name);
-        auto it = renderTargets.find(resolved);
+        auto              it       = renderTargets.find(resolved);
         if (it == renderTargets.end()) return nullptr;
         return &it->second;
     }

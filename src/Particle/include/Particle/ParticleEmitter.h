@@ -16,6 +16,7 @@ namespace wallpaper
 struct ParticleControlpoint {
     bool            link_mouse { false };
     bool            worldspace { false };
+    Eigen::Vector3d base_offset { 0, 0, 0 };
     Eigen::Vector3d offset { 0, 0, 0 };
 };
 
@@ -30,8 +31,9 @@ using ParticleInitOp = std::function<void(Particle&, double)>;
 // particle index lifetime-percent passTime
 using ParticleOperatorOp = std::function<void(const ParticleInfo&)>;
 
-using ParticleEmittOp = std::function<void(std::vector<Particle>&, std::vector<ParticleInitOp>&,
-                                           uint32_t maxcount, double timepass)>;
+using ParticleEmittOp =
+    std::function<void(std::vector<Particle>&, std::vector<ParticleInitOp>&, uint32_t maxcount,
+                       double timepass, std::span<const ParticleControlpoint> controlpoints)>;
 
 struct ParticleBoxEmitterArgs {
     std::array<float, 3> directions;
@@ -44,6 +46,7 @@ struct ParticleBoxEmitterArgs {
     u32                  instantaneous;
     float                minSpeed;
     float                maxSpeed;
+    i32                  controlpoint { 0 };
 
     static ParticleEmittOp MakeEmittOp(ParticleBoxEmitterArgs);
 };
@@ -60,6 +63,7 @@ struct ParticleSphereEmitterArgs {
     u32                    instantaneous;
     float                  minSpeed;
     float                  maxSpeed;
+    i32                    controlpoint { 0 };
 
     static ParticleEmittOp MakeEmittOp(ParticleSphereEmitterArgs);
 };

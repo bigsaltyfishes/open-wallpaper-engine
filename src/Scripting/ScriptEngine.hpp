@@ -21,9 +21,15 @@ class SceneRuntimeContext;
 
 struct ScriptHostContext {
     Eigen::Vector2f canvas_size { 0.0f, 0.0f };
+    Eigen::Vector2f cursor_normalized_position { 0.5f, 0.5f };
     Eigen::Vector3f cursor_world_position { 0.0f, 0.0f, 0.0f };
     double          frame_time { 0.0 };
     double          runtime_seconds { 0.0 };
+    bool            cursor_in_window { false };
+    int             cursor_button { 0 };
+    uint32_t        mouse_buttons_down { 0 };
+    uint32_t        mouse_buttons_pressed { 0 };
+    uint32_t        mouse_buttons_released { 0 };
 };
 
 struct ScriptStartupMetrics {

@@ -290,6 +290,35 @@ extern "C" int owe_scene_wallpaper_set_paused(owe_scene_wallpaper* scene, bool p
     return 0;
 }
 
+extern "C" int owe_scene_wallpaper_mouse_input(owe_scene_wallpaper* scene, double x, double y)
+{
+    clear_last_error();
+    if (!valid_scene(scene)) return finish_with_error("scene must not be null");
+    if (!std::isfinite(x) || !std::isfinite(y)) return finish_with_error("mouse coordinates must be finite");
+
+    scene->scene.mouseInput(x, y);
+    return 0;
+}
+
+extern "C" int owe_scene_wallpaper_mouse_button(owe_scene_wallpaper* scene, int button, bool pressed)
+{
+    clear_last_error();
+    if (!valid_scene(scene)) return finish_with_error("scene must not be null");
+    if (button < 0 || button > 31) return finish_with_error("mouse button must be in range 0..31");
+
+    scene->scene.mouseButton(button, pressed);
+    return 0;
+}
+
+extern "C" int owe_scene_wallpaper_mouse_enter(owe_scene_wallpaper* scene, bool entered)
+{
+    clear_last_error();
+    if (!valid_scene(scene)) return finish_with_error("scene must not be null");
+
+    scene->scene.mouseEnter(entered);
+    return 0;
+}
+
 extern "C" int owe_scene_wallpaper_set_property_bool(
     owe_scene_wallpaper* scene,
     const char* name,

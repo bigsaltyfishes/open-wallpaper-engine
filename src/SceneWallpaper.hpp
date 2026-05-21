@@ -79,6 +79,8 @@ public:
     void setCachePath(std::string cache_path);
     void setTargetFps(uint32_t fps);
     void mouseInput(double x, double y);
+    void mouseButton(int button, bool pressed);
+    void mouseEnter(bool entered);
     void applySystemMediaArtwork(uint32_t width, uint32_t height, const uint8_t* rgba,
                                  std::size_t rgba_len);
 

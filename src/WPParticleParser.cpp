@@ -21,6 +21,15 @@ namespace PM = ParticleModify;
 namespace
 {
 
+inline i32 NormalizeControlpointIndex(i32 value) {
+    if (value < 0) return 0;
+    if (value >= 8) {
+        LOG_ERROR("wrong contropoint index %d", value);
+        return value % 8;
+    }
+    return value;
+}
+
 inline void Color(Particle& p, const std::array<float, 3> min, const std::array<float, 3> max) {
     double               random = Random::get(0.0, 1.0);
     std::array<float, 3> result;
@@ -415,12 +424,16 @@ struct ControlPointForce {
     static auto ReadFromJson(const nlohmann::json& j) {
         ControlPointForce v;
         GET_JSON_NAME_VALUE_NOWARN(j, "controlpoint", v.controlpoint);
-        if (v.controlpoint >= 8) LOG_ERROR("wrong contropoint index %d", v.controlpoint);
-        v.controlpoint %= 8;
+        v.controlpoint = NormalizeControlpointIndex(v.controlpoint);
 
         GET_JSON_NAME_VALUE_NOWARN(j, "scale", v.scale);
-        GET_JSON_NAME_VALUE_NOWARN(j, "threadhold", v.threshold);
+        if (j.contains("threshold")) {
+            GET_JSON_NAME_VALUE_NOWARN(j, "threshold", v.threshold);
+        } else {
+            GET_JSON_NAME_VALUE_NOWARN(j, "threadhold", v.threshold);
+        }
 
+        GET_JSON_NAME_VALUE_NOWARN(j, "origin", v.origin);
         GET_JSON_NAME_VALUE_NOWARN(j, "offset", v.origin);
         return v;
     };
@@ -586,8 +599,6 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                 }
             };
         } else if (name == "controlpointattract") {
-            break;
-
             ControlPointForce c = ControlPointForce::ReadFromJson(wpj);
             return [=](const ParticleInfo& info) {
                 Vector3d offset = info.controlpoints[c.controlpoint].offset +
@@ -595,7 +606,7 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                 for (auto& p : info.particles) {
                     Vector3d diff     = offset - PM::GetPos(p).cast<double>();
                     double   distance = diff.norm();
-                    if (distance < c.threshold) {
+                    if (distance > 1.0e-6 && distance < c.threshold) {
                         PM::Accelerate(p, diff.normalized() * c.scale, info.time_pass);
                     }
                 }
@@ -618,6 +629,7 @@ ParticleEmittOp WPParticleParser::genParticleEmittOp(const wpscene::Emitter& wpe
         box.instantaneous = wpe.instantaneous;
         box.minSpeed      = wpe.speedmin;
         box.maxSpeed      = wpe.speedmax;
+        box.controlpoint  = wpe.controlpoint;
         box.sort          = sort;
         return ParticleBoxEmitterArgs::MakeEmittOp(box);
     } else if (wpe.name == "sphererandom") {
@@ -632,9 +644,14 @@ ParticleEmittOp WPParticleParser::genParticleEmittOp(const wpscene::Emitter& wpe
         sphere.instantaneous = wpe.instantaneous;
         sphere.minSpeed      = wpe.speedmin;
         sphere.maxSpeed      = wpe.speedmax;
+        sphere.controlpoint  = wpe.controlpoint;
         sphere.sort          = sort;
         return ParticleSphereEmitterArgs::MakeEmittOp(sphere);
     } else
-        return [](std::vector<Particle>&, std::vector<ParticleInitOp>&, uint32_t, float) {
+        return [](std::vector<Particle>&,
+                  std::vector<ParticleInitOp>&,
+                  uint32_t,
+                  double,
+                  std::span<const ParticleControlpoint>) {
         };
 }

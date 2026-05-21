@@ -70,10 +70,10 @@ struct ParseContext {
     std::shared_ptr<SceneNode> global_perspective_camera_node;
 };
 
-using WPObjectVar = std::variant<wpscene::WPImageObject, wpscene::WPParticleObject,
-                                 wpscene::WPSoundObject, wpscene::WPLightObject,
-                                 wpscene::WPTextObject, wpscene::WPModelObject,
-                                 wpscene::WPCameraObject>;
+using WPObjectVar =
+    std::variant<wpscene::WPImageObject, wpscene::WPParticleObject, wpscene::WPSoundObject,
+                 wpscene::WPLightObject, wpscene::WPTextObject, wpscene::WPModelObject,
+                 wpscene::WPCameraObject>;
 
 struct RawLayerObject {
     int32_t              id { 0 };
@@ -193,9 +193,8 @@ void QueueSceneScriptIfNeeded(ParseContext& context, std::string_view layer_name
 
 bool IsLayerObject(const nlohmann::json& object) {
     return ! object.contains("image") && ! object.contains("particle") &&
-           ! object.contains("sound") && ! object.contains("light") &&
-           ! object.contains("text") && ! object.contains("model") &&
-           ! object.contains("camera");
+           ! object.contains("sound") && ! object.contains("light") && ! object.contains("text") &&
+           ! object.contains("model") && ! object.contains("camera");
 }
 
 bool IsSchemaOnlyObject(const nlohmann::json& object) {
@@ -539,7 +538,9 @@ void LoadControlPoint(ParticleSubSystem& pSys, const wpscene::Particle& wp) {
     std::span<ParticleControlpoint> pcs = pSys.Controlpoints();
     usize                           s   = std::min(pcs.size(), wp.controlpoints.size());
     for (usize i = 0; i < s; i++) {
-        pcs[i].offset = Eigen::Vector3d { array_cast<double>(wp.controlpoints[i].offset).data() };
+        pcs[i].base_offset =
+            Eigen::Vector3d { array_cast<double>(wp.controlpoints[i].offset).data() };
+        pcs[i].offset = pcs[i].base_offset;
         pcs[i].link_mouse =
             wp.controlpoints[i].flags[wpscene::ParticleControlpoint::FlagEnum::link_mouse];
         pcs[i].worldspace =
@@ -882,8 +883,8 @@ std::string ResolveConstvalueGlName(const std::string& name, const WPShaderInfo&
     return {};
 }
 
-std::unique_ptr<DynamicValue> MakeMaterialConstantValue(
-    const wpscene::WPConstantShaderValue& source) {
+std::unique_ptr<DynamicValue>
+MakeMaterialConstantValue(const wpscene::WPConstantShaderValue& source) {
     const auto& value = source.value;
 
     if (value.size() >= 4) {
@@ -933,7 +934,8 @@ void RegisterMaterialConstants(ParseContext& context, SceneMaterial* material,
             property_value != nullptr) {
             dynamic_value->connect(property_value);
         }
-        context.scene->runtime->RegisterMaterialConstant(material, glname, std::move(dynamic_value));
+        context.scene->runtime->RegisterMaterialConstant(
+            material, glname, std::move(dynamic_value));
     }
 }
 
@@ -1375,9 +1377,8 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                                  &passthrough_material,
                                  &passthrough_sv_data,
                                  &passthrough_shader_info)) {
-                    LoadConstvalue(passthrough_material,
-                                   passthrough_wp_material,
-                                   passthrough_shader_info);
+                    LoadConstvalue(
+                        passthrough_material, passthrough_wp_material, passthrough_shader_info);
                     auto passthrough_mesh = std::make_shared<SceneMesh>();
                     passthrough_mesh->AddMaterial(std::move(passthrough_material));
                     RegisterMaterialConstants(context,
@@ -1975,9 +1976,12 @@ std::shared_ptr<Scene> WPSceneParser::Parse(const SceneParseRequest& request,
                        [&context](wpscene::WPLightObject& obj) {
                            ParseLightObj(context, obj);
                        },
-                       [](wpscene::WPTextObject&) {},
-                       [](wpscene::WPModelObject&) {},
-                       [](wpscene::WPCameraObject&) {},
+                       [](wpscene::WPTextObject&) {
+                       },
+                       [](wpscene::WPModelObject&) {
+                       },
+                       [](wpscene::WPCameraObject&) {
+                       },
                    },
                    obj);
     }

@@ -159,6 +159,24 @@ gtest_discover_tests(
     PROPERTIES TIMEOUT 30
     DISCOVERY_TIMEOUT 60
 )
+add_executable(mouse_input_test mouse_input_test.cpp)
+target_link_libraries(mouse_input_test PRIVATE ${PROJECT_NAME} wpScene GTest::gtest_main)
+target_include_directories(mouse_input_test PRIVATE .)
+target_compile_features(mouse_input_test PRIVATE cxx_std_20)
+gtest_discover_tests(
+    mouse_input_test
+    PROPERTIES TIMEOUT 30
+    DISCOVERY_TIMEOUT 60
+)
+add_executable(particle_mouse_controlpoint_test particle_mouse_controlpoint_test.cpp)
+target_link_libraries(particle_mouse_controlpoint_test PRIVATE ${PROJECT_NAME} wpScene wpParticle GTest::gtest_main)
+target_include_directories(particle_mouse_controlpoint_test PRIVATE .)
+target_compile_features(particle_mouse_controlpoint_test PRIVATE cxx_std_20)
+gtest_discover_tests(
+    particle_mouse_controlpoint_test
+    PROPERTIES TIMEOUT 30
+    DISCOVERY_TIMEOUT 60
+)
 add_executable(vulkan_render_batch_planner_smoke vulkan_render_batch_planner_smoke.cpp)
 target_link_libraries(vulkan_render_batch_planner_smoke PRIVATE wpVulkanRender)
 target_include_directories(vulkan_render_batch_planner_smoke PRIVATE .)

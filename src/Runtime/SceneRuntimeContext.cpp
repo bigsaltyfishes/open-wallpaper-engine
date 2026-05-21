@@ -42,9 +42,8 @@ struct ClonedMaterialBinding {
     SceneMaterial* cloned_material { nullptr };
 };
 
-std::shared_ptr<SceneMesh> CloneMesh(
-    SceneMesh& mesh,
-    std::vector<ClonedMaterialBinding>* material_bindings) {
+std::shared_ptr<SceneMesh> CloneMesh(SceneMesh&                          mesh,
+                                     std::vector<ClonedMaterialBinding>* material_bindings) {
     auto clone = std::make_shared<SceneMesh>(mesh.Dynamic());
     clone->SetPrimitive(mesh.Primitive());
     clone->SetPointSize(mesh.PointSize());
@@ -62,10 +61,8 @@ std::shared_ptr<SceneMesh> CloneMesh(
     return clone;
 }
 
-std::shared_ptr<SceneNode> CloneNodeShallow(
-    SceneNode& node,
-    std::string name,
-    std::vector<ClonedMaterialBinding>* material_bindings) {
+std::shared_ptr<SceneNode> CloneNodeShallow(SceneNode& node, std::string name,
+                                            std::vector<ClonedMaterialBinding>* material_bindings) {
     auto clone = std::make_shared<SceneNode>(
         node.Translate(), node.Scale(), node.Rotation(), std::move(name));
     clone->SetVisible(node.Visible());
@@ -155,7 +152,7 @@ ShaderValue ShaderValueFromDynamicValue(const DynamicValue& value) {
     case DynamicValue::Vec3: return ShaderValue(value.getVec3().data(), 3);
     case DynamicValue::Vec2: return ShaderValue(value.getVec2().data(), 2);
     case DynamicValue::IVec4: {
-        const auto          source = value.getIVec4();
+        const auto           source = value.getIVec4();
         std::array<float, 4> converted {
             static_cast<float>(source.x()),
             static_cast<float>(source.y()),
@@ -165,7 +162,7 @@ ShaderValue ShaderValueFromDynamicValue(const DynamicValue& value) {
         return ShaderValue(converted);
     }
     case DynamicValue::IVec3: {
-        const auto          source = value.getIVec3();
+        const auto           source = value.getIVec3();
         std::array<float, 3> converted {
             static_cast<float>(source.x()),
             static_cast<float>(source.y()),
@@ -174,7 +171,7 @@ ShaderValue ShaderValueFromDynamicValue(const DynamicValue& value) {
         return ShaderValue(converted);
     }
     case DynamicValue::IVec2: {
-        const auto          source = value.getIVec2();
+        const auto           source = value.getIVec2();
         std::array<float, 2> converted {
             static_cast<float>(source.x()),
             static_cast<float>(source.y()),
@@ -232,9 +229,10 @@ SceneRuntimeContext::SceneRuntimeContext(SceneRuntimeBootstrap bootstrap)
       m_project_properties(bootstrap.project_properties) {
     m_host_context->canvas_size = Eigen::Vector2f(static_cast<float>(bootstrap.canvas_width),
                                                   static_cast<float>(bootstrap.canvas_height));
-    m_host_context->cursor_world_position = Eigen::Vector3f::Zero();
-    m_host_context->frame_time            = 0.0;
-    m_host_context->runtime_seconds       = 0.0;
+    m_host_context->cursor_normalized_position = Eigen::Vector2f(0.5f, 0.5f);
+    m_host_context->cursor_world_position      = Eigen::Vector3f::Zero();
+    m_host_context->frame_time                 = 0.0;
+    m_host_context->runtime_seconds            = 0.0;
 
     for (const auto& [name, value] : m_project_properties) {
         m_property_values.emplace(name, MakePropertyValue(value));
@@ -351,6 +349,45 @@ void SceneRuntimeContext::SetCursorWorldPosition(const Eigen::Vector3f& value) {
     m_host_context->cursor_world_position = value;
 }
 
+void SceneRuntimeContext::SetCursorInput(float x, float y) {
+    x                                          = std::clamp(x, 0.0f, 1.0f);
+    y                                          = std::clamp(y, 0.0f, 1.0f);
+    m_host_context->cursor_normalized_position = Eigen::Vector2f(x, y);
+    m_host_context->cursor_world_position      = Eigen::Vector3f(
+        x * m_host_context->canvas_size.x(), y * m_host_context->canvas_size.y(), 0.0f);
+}
+
+void SceneRuntimeContext::SetCursorEnter(bool entered) {
+    m_host_context->cursor_in_window = entered;
+}
+
+void SceneRuntimeContext::SetCursorButton(int button, bool pressed) {
+    if (button < 0 || button > 31) return;
+    const uint32_t mask = 1u << static_cast<uint32_t>(button);
+    if (pressed) {
+        if ((m_host_context->mouse_buttons_down & mask) == 0) {
+            m_host_context->mouse_buttons_down |= mask;
+            m_host_context->mouse_buttons_pressed |= mask;
+        }
+        return;
+    }
+    if ((m_host_context->mouse_buttons_down & mask) != 0) {
+        m_host_context->mouse_buttons_down &= ~mask;
+        m_host_context->mouse_buttons_released |= mask;
+    }
+}
+
+void SceneRuntimeContext::SetCursorButtons(uint32_t down, uint32_t pressed, uint32_t released) {
+    m_host_context->mouse_buttons_down     = down;
+    m_host_context->mouse_buttons_pressed  = pressed;
+    m_host_context->mouse_buttons_released = released;
+}
+
+void SceneRuntimeContext::BeginFrame() {
+    m_host_context->mouse_buttons_pressed  = 0;
+    m_host_context->mouse_buttons_released = 0;
+}
+
 DynamicValue* SceneRuntimeContext::FindPropertyValue(std::string_view name) const {
     const auto iterator = m_property_values.find(std::string(name));
     if (iterator == m_property_values.end()) return nullptr;
@@ -363,9 +400,9 @@ void SceneRuntimeContext::RegisterScriptedValue(ScriptedDynamicValue* value) {
 
 void SceneRuntimeContext::RegisterNode(std::string name, SceneNode* node) {
     if (node == nullptr || name.empty()) return;
-    std::string key = std::move(name);
-    m_nodes[key]    = node;
-    auto& alignment = m_node_alignment[key];
+    std::string key  = std::move(name);
+    m_nodes[key]     = node;
+    auto& alignment  = m_node_alignment[key];
     alignment.origin = node->Translate();
     alignment.scale  = node->Scale();
 }
@@ -659,7 +696,7 @@ std::string SceneRuntimeContext::CreateLayerFromTemplate(std::string_view reques
     RegisterNode(generated_name, generated.get());
     RegisterNodeSize(generated_name, binding.size);
     m_node_template_paths[generated_name] = binding.canonical_path;
-    const auto source_constant_count = m_material_constants.size();
+    const auto source_constant_count      = m_material_constants.size();
     for (const auto& material_binding : material_bindings) {
         if (material_binding.source_material == nullptr ||
             material_binding.cloned_material == nullptr) {
@@ -671,9 +708,8 @@ std::string SceneRuntimeContext::CreateLayerFromTemplate(std::string_view reques
                 constant_binding.value == nullptr) {
                 continue;
             }
-            ApplyMaterialConstant(*material_binding.cloned_material,
-                                  constant_binding.name,
-                                  *constant_binding.value);
+            ApplyMaterialConstant(
+                *material_binding.cloned_material, constant_binding.name, *constant_binding.value);
             m_material_constants.push_back(MaterialConstantBinding {
                 .material = material_binding.cloned_material,
                 .name     = constant_binding.name,
@@ -681,7 +717,7 @@ std::string SceneRuntimeContext::CreateLayerFromTemplate(std::string_view reques
             });
         }
     }
-    m_scene_graph_mutated                 = true;
+    m_scene_graph_mutated = true;
     return generated_name;
 }
 
@@ -898,7 +934,7 @@ void SceneRuntimeContext::ApplyNodeTransform(std::string_view name) {
     const auto node_iterator = m_nodes.find(std::string(name));
     if (node_iterator == m_nodes.end() || node_iterator->second == nullptr) return;
 
-    auto& binding = m_node_alignment[std::string(name)];
+    auto&           binding   = m_node_alignment[std::string(name)];
     Eigen::Vector3f translate = binding.origin;
     const auto      size      = NodeSize(name);
 
@@ -939,14 +975,16 @@ void DispatchToScripts(std::vector<wallpaper::ScriptedDynamicValue*>&           
 }
 } // namespace
 
-void SceneRuntimeContext::DispatchCursorClick() {
+void SceneRuntimeContext::DispatchCursorClick(int button) {
+    m_host_context->cursor_button = button;
     DispatchToScripts(
         m_scripted_values, m_scene_scripts, *m_host_context, [](auto& target, const auto& host) {
             target.DispatchCursorClick(host);
         });
 }
 
-void SceneRuntimeContext::DispatchCursorDown() {
+void SceneRuntimeContext::DispatchCursorDown(int button) {
+    m_host_context->cursor_button = button;
     DispatchToScripts(
         m_scripted_values, m_scene_scripts, *m_host_context, [](auto& target, const auto& host) {
             target.DispatchCursorDown(host);
@@ -974,7 +1012,8 @@ void SceneRuntimeContext::DispatchCursorMove() {
         });
 }
 
-void SceneRuntimeContext::DispatchCursorUp() {
+void SceneRuntimeContext::DispatchCursorUp(int button) {
+    m_host_context->cursor_button = button;
     DispatchToScripts(
         m_scripted_values, m_scene_scripts, *m_host_context, [](auto& target, const auto& host) {
             target.DispatchCursorUp(host);
