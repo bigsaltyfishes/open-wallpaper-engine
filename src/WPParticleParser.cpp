@@ -459,7 +459,6 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                     Vector3d acc =
                         algorism::DragForce(PM::GetVelocity(p).cast<double>(), drag) + vecG;
                     PM::Accelerate(p, speed * acc, info.time_pass);
-                    PM::MoveByTime(p, info.time_pass);
                 }
             };
         } else if (name == "angularmovement") {
@@ -473,7 +472,6 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                     Vector3d acc =
                         algorism::DragForce(PM::GetAngular(p).cast<double>(), drag) + vecF;
                     PM::AngularAccelerate(p, acc, info.time_pass);
-                    PM::RotateByTime(p, info.time_pass);
                 }
             };
         } else if (name == "sizechange") {

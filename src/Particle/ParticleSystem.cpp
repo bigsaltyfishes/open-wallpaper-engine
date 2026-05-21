@@ -204,6 +204,12 @@ void ParticleSubSystem::Emitt() {
         std::for_each(m_operators.begin(), m_operators.end(), [&info](ParticleOperatorOp& op) {
             op(info);
         });
+
+        for (auto& p : info.particles) {
+            if (! ParticleModify::LifetimeOk(p)) continue;
+            ParticleModify::MoveByTime(p, particleTime);
+            ParticleModify::RotateByTime(p, particleTime);
+        }
     }
 
     m_mesh->SetDirty();

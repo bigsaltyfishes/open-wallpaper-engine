@@ -1,4 +1,5 @@
 #include "Particle/ParticleEmitter.h"
+#include "Interface/IParticleRawGener.h"
 #include "Particle/ParticleModify.h"
 #include "Particle/ParticleSystem.h"
 #include "Scene/Scene.h"
@@ -15,6 +16,23 @@ namespace wallpaper
 {
 namespace
 {
+
+class CapturingParticleRawGener final : public IParticleRawGener {
+public:
+    void GenGLData(std::span<const std::unique_ptr<ParticleInstance>> instances,
+                   SceneMesh&,
+                   ParticleRawGenSpecOp&) override {
+        particles.clear();
+        for (const auto& instance : instances) {
+            if (instance) {
+                const auto instanceParticles = instance->Particles();
+                particles.insert(particles.end(), instanceParticles.begin(), instanceParticles.end());
+            }
+        }
+    }
+
+    std::vector<Particle> particles;
+};
 
 Particle FirstSpawnedParticle(ParticleEmittOp&                      emitter,
                               std::span<const ParticleControlpoint> controlpoints) {
@@ -194,6 +212,64 @@ TEST(ParticleMouseControlpoint, MouseControlpointUpdatesEmitterOrigin) {
     EXPECT_DOUBLE_EQ(controlpoints[0].offset.x(), 51.0);
     EXPECT_DOUBLE_EQ(controlpoints[0].offset.y(), 27.0);
     EXPECT_DOUBLE_EQ(controlpoints[0].offset.z(), 3.0);
+}
+
+TEST(ParticleMouseControlpoint, MovementIntegratesAfterControlpointAttractUpdatesVelocity) {
+    Scene scene;
+    scene.frameTime = 1.0;
+
+    auto* rawGener = new CapturingParticleRawGener();
+    auto  mesh     = std::make_shared<SceneMesh>(true);
+
+    ParticleSystem system(scene);
+    system.gener.reset(rawGener);
+
+    ParticleSubSystem subsystem(system,
+                                mesh,
+                                8,
+                                1.0,
+                                1,
+                                1.0,
+                                ParticleSubSystem::SpawnType::STATIC,
+                                [](const Particle&, const ParticleRawGenSpec&) {
+                                });
+
+    subsystem.Controlpoints()[0].offset = Eigen::Vector3d(10.0, 0.0, 0.0);
+
+    subsystem.AddEmitter([](std::vector<Particle>& particles,
+                            std::vector<ParticleInitOp>&,
+                            uint32_t,
+                            double,
+                            std::span<const ParticleControlpoint>) {
+        if (! particles.empty()) return;
+
+        Particle particle;
+        ParticleModify::MoveTo(particle, 0.0, 0.0, 0.0);
+        ParticleModify::InitVelocity(particle, 1.0, 0.0, 0.0);
+        ParticleModify::InitLifetime(particle, 2.0f);
+        particles.emplace_back(particle);
+    });
+
+    WPParticleParser parser;
+    subsystem.AddOperator(parser.genParticleOperatorOp(nlohmann::json {
+                            { "name", "movement" },
+                            { "gravity", { 0.0f, 0.0f, 0.0f } },
+                            { "drag", 0.0f },
+                        },
+                                                       wpscene::ParticleInstanceoverride {}));
+    subsystem.AddOperator(parser.genParticleOperatorOp(nlohmann::json {
+                            { "name", "controlpointattract" },
+                            { "controlpoint", 0 },
+                            { "scale", 2.0f },
+                            { "threshold", 20.0f },
+                        },
+                                                       wpscene::ParticleInstanceoverride {}));
+
+    subsystem.Emitt();
+
+    ASSERT_EQ(rawGener->particles.size(), 1u);
+    EXPECT_FLOAT_EQ(rawGener->particles[0].velocity.x(), 3.0f);
+    EXPECT_FLOAT_EQ(rawGener->particles[0].position.x(), 3.0f);
 }
 
 } // namespace
