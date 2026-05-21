@@ -1,0 +1,521 @@
+#include "Runtime/DynamicValue.hpp"
+#include "Runtime/SceneRuntimeContext.hpp"
+#include "Runtime/SceneSettingResolver.hpp"
+#include "Scene/Scene.h"
+#include "Scene/SceneNode.h"
+#include "WPShaderValueUpdater.hpp"
+#include "Scene/include/Scene/SceneMesh.h"
+#include "Scripting/ScriptEngine.hpp"
+
+#include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
+
+#include <algorithm>
+#include <chrono>
+#include <memory>
+#include <thread>
+#include <unordered_map>
+
+namespace wallpaper
+{
+namespace
+{
+
+DynamicValue EvaluateScalar(ScriptEngine& engine, std::string script,
+                            const ScriptHostContext& host = {}) {
+    DynamicValue initial(0.0f);
+    auto result = engine.Evaluate(script, {}, initial, host);
+    if (result == nullptr) return DynamicValue();
+    return *result;
+}
+
+std::unique_ptr<SceneRuntimeContext> MakeRuntimeWithScene(Scene& scene) {
+    auto runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {
+        .canvas_width  = 1920,
+        .canvas_height = 1080,
+    });
+    if (runtime != nullptr) {
+        runtime->AttachScene(&scene);
+    }
+    return runtime;
+}
+
+TEST(ScriptRuntimeCompat, ThisLayerAndThisSceneResolveCurrentLayer) {
+    auto runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {
+        .canvas_width  = 1920,
+        .canvas_height = 1080,
+    });
+    ASSERT_NE(runtime, nullptr);
+
+    auto node = std::make_shared<SceneNode>();
+    node->SetTranslate(Eigen::Vector3f(12.0f, 34.0f, 0.0f));
+    runtime->RegisterNode("probe", node.get());
+    runtime->RegisterNodeSize("probe", Eigen::Vector2f(320.0f, 240.0f));
+
+    auto program = runtime->scriptEngine().CreatePropertyScriptProgram(
+        runtime.get(),
+        R"JS(
+export function update(value) {
+  var same = thisLayer === thisScene.getLayer('probe') ? 1 : 0;
+  return same + thisLayer.origin.x * 10 + thisLayer.size.y * 1000;
+}
+)JS",
+        "probe",
+        {},
+        DynamicValue(0.0f),
+        runtime->hostContext());
+    ASSERT_NE(program, nullptr);
+
+    const auto result = program->Evaluate(runtime->hostContext(), DynamicValue(0.0f));
+    ASSERT_NE(result, nullptr);
+    EXPECT_FLOAT_EQ(result->getFloat(), 1.0f + 120.0f + 240000.0f);
+    EXPECT_EQ(runtime->scriptErrorCount(), 0u);
+}
+
+TEST(ScriptRuntimeCompat, SceneNodeIdentityIsStableAcrossLookups) {
+    auto runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {});
+    ASSERT_NE(runtime, nullptr);
+
+    auto node = std::make_shared<SceneNode>();
+    runtime->RegisterNode("probe", node.get());
+
+    auto program = runtime->scriptEngine().CreatePropertyScriptProgram(
+        runtime.get(),
+        R"JS(
+var cached = thisScene.getObject('probe');
+export function update(value) {
+  return (cached === thisScene.getLayer('probe') &&
+          cached === thisLayer &&
+          thisScene.getSprite('probe') === thisLayer) ? 7 : -1;
+}
+)JS",
+        "probe",
+        {},
+        DynamicValue(0.0f),
+        runtime->hostContext());
+    ASSERT_NE(program, nullptr);
+
+    const auto result = program->Evaluate(runtime->hostContext(), DynamicValue(0.0f));
+    ASSERT_NE(result, nullptr);
+    EXPECT_FLOAT_EQ(result->getFloat(), 7.0f);
+    EXPECT_EQ(runtime->scriptErrorCount(), 0u);
+}
+
+TEST(ScriptRuntimeCompat, SetTimeoutGlobalAndEngineAliasesFireOnceAndCancel) {
+    ScriptEngine      engine;
+    ScriptHostContext host {};
+    host.runtime_seconds = 0.0;
+
+    auto program = engine.CreatePropertyScriptProgram(
+        nullptr,
+        R"JS(
+var fired = 0;
+var canceled = 0;
+setTimeout(function() { fired += 1; }, 100);
+var handle = engine.setTimeout(function() { canceled += 1; }, 100);
+clearTimeout(handle);
+export function update(value) { return fired * 10 + canceled; }
+)JS",
+        "",
+        {},
+        DynamicValue(0.0f),
+        host);
+    ASSERT_NE(program, nullptr);
+
+    host.runtime_seconds = 0.05;
+    auto before = program->Evaluate(host, DynamicValue(0.0f));
+    ASSERT_NE(before, nullptr);
+    EXPECT_FLOAT_EQ(before->getFloat(), 0.0f);
+
+    host.runtime_seconds = 0.15;
+    auto after = program->Evaluate(host, DynamicValue(0.0f));
+    ASSERT_NE(after, nullptr);
+    EXPECT_FLOAT_EQ(after->getFloat(), 10.0f);
+
+    host.runtime_seconds = 0.30;
+    auto later = program->Evaluate(host, DynamicValue(0.0f));
+    ASSERT_NE(later, nullptr);
+    EXPECT_FLOAT_EQ(later->getFloat(), 10.0f);
+}
+
+TEST(ScriptRuntimeCompat, ThrowingOneShotTimeoutDoesNotFireAgainOrBlockLaterTimers) {
+    auto runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {});
+    ASSERT_NE(runtime, nullptr);
+
+    ScriptHostContext host {};
+    host.runtime_seconds = 0.0;
+
+    auto program = runtime->scriptEngine().CreatePropertyScriptProgram(
+        runtime.get(),
+        R"JS(
+var later = 0;
+setTimeout(function() { throw new Error('timeout failed once'); }, 100);
+setTimeout(function() { later += 1; }, 150);
+export function update(value) { return later; }
+)JS",
+        "",
+        {},
+        DynamicValue(0.0f),
+        host);
+    ASSERT_NE(program, nullptr);
+
+    host.runtime_seconds = 0.12;
+    auto first_due = program->Evaluate(host, DynamicValue(0.0f));
+    ASSERT_NE(first_due, nullptr);
+    EXPECT_FLOAT_EQ(first_due->getFloat(), 0.0f);
+    ASSERT_EQ(runtime->scriptErrorCount(), 1u);
+
+    host.runtime_seconds = 0.20;
+    auto later_due = program->Evaluate(host, DynamicValue(0.0f));
+    ASSERT_NE(later_due, nullptr);
+    EXPECT_FLOAT_EQ(later_due->getFloat(), 1.0f);
+    EXPECT_EQ(runtime->scriptErrorCount(), 1u);
+}
+
+TEST(ScriptRuntimeCompat, ThrowingIntervalDoesNotBlockLaterTimersOrKeepStaleDeadline) {
+    auto runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {});
+    ASSERT_NE(runtime, nullptr);
+
+    ScriptHostContext host {};
+    host.runtime_seconds = 0.0;
+
+    auto program = runtime->scriptEngine().CreatePropertyScriptProgram(
+        runtime.get(),
+        R"JS(
+var later = 0;
+var throwCount = 0;
+setInterval(function() {
+  throwCount += 1;
+  if (throwCount <= 1) throw new Error('interval failed once');
+}, 100);
+setTimeout(function() { later += 1; }, 150);
+export function update(value) { return later * 100 + throwCount; }
+)JS",
+        "",
+        {},
+        DynamicValue(0.0f),
+        host);
+    ASSERT_NE(program, nullptr);
+
+    host.runtime_seconds = 0.12;
+    auto first_due = program->Evaluate(host, DynamicValue(0.0f));
+    ASSERT_NE(first_due, nullptr);
+    EXPECT_FLOAT_EQ(first_due->getFloat(), 1.0f);
+    ASSERT_EQ(runtime->scriptErrorCount(), 1u);
+
+    host.runtime_seconds = 0.16;
+    auto later_due = program->Evaluate(host, DynamicValue(0.0f));
+    ASSERT_NE(later_due, nullptr);
+    EXPECT_FLOAT_EQ(later_due->getFloat(), 101.0f);
+    EXPECT_EQ(runtime->scriptErrorCount(), 1u);
+
+    host.runtime_seconds = 0.18;
+    auto before_next_interval = program->Evaluate(host, DynamicValue(0.0f));
+    ASSERT_NE(before_next_interval, nullptr);
+    EXPECT_FLOAT_EQ(before_next_interval->getFloat(), 101.0f);
+    EXPECT_EQ(runtime->scriptErrorCount(), 1u);
+}
+
+TEST(ScriptRuntimeCompat, LocalStorageRoundTripsObjectsInSharedRuntime) {
+    ScriptEngine      engine;
+    ScriptHostContext host {};
+
+    auto writer = engine.CreatePropertyScriptProgram(
+        nullptr,
+        R"JS(
+localStorage.set('number', 42);
+localStorage.set('object', { nested: { value: 8 } });
+export function update(value) { return 0; }
+)JS",
+        "",
+        {},
+        DynamicValue(0.0f),
+        host);
+    ASSERT_NE(writer, nullptr);
+    ASSERT_NE(writer->Evaluate(host, DynamicValue(0.0f)), nullptr);
+
+    auto reader = engine.CreatePropertyScriptProgram(
+        nullptr,
+        R"JS(
+export function update(value) {
+  var object = localStorage.get('object');
+  return localStorage.get('number') + object.nested.value;
+}
+)JS",
+        "",
+        {},
+        DynamicValue(0.0f),
+        host);
+    ASSERT_NE(reader, nullptr);
+    const auto result = reader->Evaluate(host, DynamicValue(0.0f));
+    ASSERT_NE(result, nullptr);
+    EXPECT_FLOAT_EQ(result->getFloat(), 50.0f);
+}
+
+TEST(ScriptRuntimeCompat, WEMathProvidesWallpaperEngineAliases) {
+    ScriptEngine engine;
+    const auto result = EvaluateScalar(
+        engine,
+        R"JS(
+import * as M from 'WEMath';
+export function update(value) {
+  return Math.round(M.smoothStep(0, 1, 0.5) * 100) +
+         Math.round(M.smoothstep(0, 1, 0.5) * 100) * 100 +
+         Math.round(M.deg2rad(180) * 1000) * 10000 +
+         Math.round(M.rad2deg(Math.PI)) * 1000000000;
+}
+)JS");
+    EXPECT_FLOAT_EQ(result.getFloat(), 50.0f + 50.0f * 100.0f + 3142.0f * 10000.0f +
+                                           180.0f * 1000000000.0f);
+}
+
+TEST(ScriptRuntimeCompat, Vec3SupportsCopyAndScalarSplat) {
+    ScriptEngine engine;
+    const auto result = EvaluateScalar(
+        engine,
+        R"JS(
+export function update(value) {
+  var splat = new Vec3(3);
+  var copy = splat.copy();
+  copy.x = 9;
+  return splat.x + splat.y * 10 + splat.z * 100 + copy.x * 1000;
+}
+)JS");
+    EXPECT_FLOAT_EQ(result.getFloat(), 9333.0f);
+}
+
+TEST(ScriptRuntimeCompat, CreateLayerClonesTemplateAndFansOutMaterialBindings) {
+    Scene scene;
+    auto  runtime = MakeRuntimeWithScene(scene);
+    ASSERT_NE(runtime, nullptr);
+
+    auto source_node = std::make_shared<SceneNode>(
+        Eigen::Vector3f(100.0f, 50.0f, 0.0f),
+        Eigen::Vector3f::Ones(),
+        Eigen::Vector3f::Zero(),
+        "source");
+    auto source_mesh = std::make_shared<SceneMesh>();
+    source_mesh->AddMaterial(SceneMaterial {});
+    source_node->AddMesh(source_mesh);
+    scene.sceneGraph->AppendChild(source_node);
+
+    DynamicValue tint(Eigen::Vector3f(0.25f, 0.5f, 0.75f));
+    runtime->RegisterNode("source", source_node.get());
+    runtime->RegisterLayerTemplate("models/workshop/123456/bar.json",
+                                   source_node,
+                                   Eigen::Vector2f(20.0f, 10.0f));
+    runtime->RegisterMaterialConstant(source_mesh->Material(), "g_Tint", std::make_unique<DynamicValue>(tint));
+
+    runtime->RegisterSceneScript(
+        R"JS(
+function update() {
+  var a = thisScene.createLayer('models/bar.json');
+  var b = thisScene.createLayer('models/bar.json');
+  a.origin = new Vec3(10, 20, 0);
+  b.origin = new Vec3(30, 40, 0);
+}
+)JS",
+        "source");
+
+    runtime->Tick(1.0 / 60.0);
+
+    ASSERT_EQ(scene.sceneGraph->GetChildren().size(), 3u);
+    EXPECT_TRUE(runtime->ConsumeSceneGraphMutationFlag());
+    for (const auto& child : scene.sceneGraph->GetChildren()) {
+        if (child.get() == source_node.get()) continue;
+        ASSERT_NE(child->Mesh(), nullptr);
+        ASSERT_NE(child->Mesh()->Material(), nullptr);
+        const auto constant = child->Mesh()->Material()->customShader.constValues.find("g_Tint");
+        ASSERT_NE(constant, child->Mesh()->Material()->customShader.constValues.end());
+        ASSERT_EQ(constant->second.size(), 3u);
+        EXPECT_FLOAT_EQ(constant->second[0], 0.25f);
+        EXPECT_FLOAT_EQ(constant->second[1], 0.5f);
+        EXPECT_FLOAT_EQ(constant->second[2], 0.75f);
+    }
+    EXPECT_EQ(runtime->scriptErrorCount(), 0u);
+}
+
+TEST(ScriptRuntimeCompat, VisibleOnlyBindingIgnoresObjectReturn) {
+    auto runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {
+        .project_properties = {
+            { "visible", RuntimeScalarValue::Bool(false) },
+        },
+    });
+    ASSERT_NE(runtime, nullptr);
+
+    auto node = std::make_shared<SceneNode>();
+    runtime->RegisterNodeVisibility(
+        "probe",
+        node.get(),
+        ResolveBoolSetting(
+            *runtime,
+            nlohmann::json {
+                { "script", "export function update(value) { return { x: 1 }; }" },
+                { "user", "visible" },
+                { "value", true },
+            },
+            "probe"));
+
+    runtime->Tick(1.0 / 60.0);
+    EXPECT_FALSE(runtime->NodeVisible("probe"));
+    EXPECT_FALSE(node->Visible());
+    EXPECT_EQ(runtime->scriptErrorCount(), 0u);
+}
+
+TEST(ScriptRuntimeCompat, ScriptPropertiesUseUserPropertyWrites) {
+    auto runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {
+        .canvas_width  = 1000,
+        .canvas_height = 500,
+        .project_properties = {
+            { "x", RuntimeScalarValue::Float(0.8f) },
+        },
+    });
+    ASSERT_NE(runtime, nullptr);
+
+    auto node = std::make_shared<SceneNode>();
+    runtime->RegisterNode("probe", node.get());
+    runtime->RegisterNodeTranslate(
+        "probe",
+        node.get(),
+        ResolveVec3Setting(
+            *runtime,
+            nlohmann::json {
+                {
+                    "script",
+                    R"JS(
+export var scriptProperties = createScriptProperties()
+  .addSlider({ name: 'x', value: 0.5 })
+  .finish();
+export function update(value) {
+  value.x = scriptProperties.x * engine.canvasSize.x;
+  return value;
+}
+)JS",
+                },
+                { "scriptproperties", { { "x", { { "user", "x" }, { "value", 0.5f } } } } },
+                { "value", "0 0 0" },
+            },
+            "probe"));
+
+    runtime->Tick(1.0 / 60.0);
+    EXPECT_FLOAT_EQ(runtime->NodeTranslate("probe").x(), 800.0f);
+
+    runtime->ApplyProjectPropertyOverride({
+        { "x", RuntimeScalarValue::Float(0.25f) },
+    });
+    runtime->Tick(1.0 / 60.0);
+    EXPECT_FLOAT_EQ(runtime->NodeTranslate("probe").x(), 250.0f);
+    EXPECT_EQ(runtime->scriptErrorCount(), 0u);
+}
+
+TEST(ScriptRuntimeCompat, CursorCallbacksReceiveButtonAndPositions) {
+    auto runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {
+        .canvas_width  = 1920,
+        .canvas_height = 1080,
+    });
+    ASSERT_NE(runtime, nullptr);
+
+    auto node = std::make_shared<SceneNode>();
+    node->SetVisible(false);
+    runtime->RegisterNode("probe", node.get());
+    runtime->RegisterSceneScript(
+        R"JS(
+var ok = 0;
+function cursorDown(event) {
+  if (event.button === 1 &&
+      event.normalizedPosition.x === 0.25 &&
+      event.position.x === 480 &&
+      event.worldPosition.y === 810) ok++;
+}
+function update() {
+  if (ok === 1) scene.getObject('probe').visible = true;
+}
+)JS",
+        "");
+
+    runtime->SetCursorInput(0.25f, 0.75f);
+    runtime->SetCursorButton(1, true);
+    runtime->DispatchCursorDown(1);
+    runtime->Tick(1.0 / 60.0);
+
+    EXPECT_TRUE(runtime->NodeVisible("probe"));
+    EXPECT_EQ(runtime->scriptErrorCount(), 0u);
+}
+
+TEST(AudioResponseCompat, ShaderSpectrumUniformsUseVec4ArrayStride) {
+    audio::ResetAudioResponseServiceForTesting();
+
+    std::array<float, 200> samples {};
+    for (std::size_t index = 0; index < samples.size(); ++index) {
+        samples[index] = std::sin(static_cast<float>(index) * 0.05f);
+    }
+
+    std::string error;
+    for (uint32_t submit = 0; submit < 6u; ++submit) {
+        ASSERT_TRUE(audio::SubmitMonoAudioFrames(
+            12000u,
+            static_cast<uint32_t>(samples.size()),
+            samples.data(),
+            &error))
+            << error;
+    }
+
+    audio::AudioSpectrumSnapshot snapshot {};
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        snapshot = audio::CurrentAudioSpectrumSnapshot();
+        if (snapshot.generation > 0u) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    ASSERT_GT(snapshot.generation, 0u);
+
+    Scene scene;
+    scene.runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {});
+    ASSERT_NE(scene.runtime, nullptr);
+    scene.runtime->AttachScene(&scene);
+    scene.runtime->MarkSceneRequiresAudioResponse();
+    scene.runtime->SetAudioResponseEnabled(true);
+    scene.activeCamera = new SceneCamera(1920, 1080, 0.01f, 1000.0f);
+
+    auto node = std::make_shared<SceneNode>();
+    auto mesh = std::make_shared<SceneMesh>();
+    mesh->AddMaterial(SceneMaterial {});
+    node->AddMesh(mesh);
+
+    WPShaderValueUpdater updater(&scene);
+    updater.InitUniforms(node.get(), [](std::string_view name) {
+        return name == "g_AudioSpectrum16Left" || name == "g_AudioSpectrum16Right" ||
+               name == "g_AudioSpectrum32Left" || name == "g_AudioSpectrum32Right" ||
+               name == "g_AudioSpectrum64Left" || name == "g_AudioSpectrum64Right";
+    });
+
+    sprite_map_t values;
+    std::unordered_map<std::string, ShaderValue> updates;
+    updater.UpdateUniforms(node.get(), values, [&](std::string_view name, ShaderValue value) {
+        updates.emplace(std::string(name), std::move(value));
+    });
+
+    auto expect_packed = [&](const char* name, const auto& source, std::size_t count) {
+        const auto it = updates.find(name);
+        ASSERT_NE(it, updates.end()) << name;
+        ASSERT_EQ(it->second.size(), count * 4u) << name;
+        for (std::size_t index = 0; index < count; ++index) {
+            EXPECT_FLOAT_EQ(it->second[index * 4u], source[index]) << name << "[" << index << "]";
+            EXPECT_FLOAT_EQ(it->second[index * 4u + 1u], 0.0f) << name << "[" << index << "].y";
+            EXPECT_FLOAT_EQ(it->second[index * 4u + 2u], 0.0f) << name << "[" << index << "].z";
+            EXPECT_FLOAT_EQ(it->second[index * 4u + 3u], 0.0f) << name << "[" << index << "].w";
+        }
+    };
+
+    expect_packed("g_AudioSpectrum16Left", snapshot.left16, snapshot.left16.size());
+    expect_packed("g_AudioSpectrum16Right", snapshot.right16, snapshot.right16.size());
+    expect_packed("g_AudioSpectrum32Left", snapshot.left32, snapshot.left32.size());
+    expect_packed("g_AudioSpectrum32Right", snapshot.right32, snapshot.right32.size());
+    expect_packed("g_AudioSpectrum64Left", snapshot.left64, snapshot.left64.size());
+    expect_packed("g_AudioSpectrum64Right", snapshot.right64, snapshot.right64.size());
+
+    delete scene.activeCamera;
+    scene.activeCamera = nullptr;
+}
+
+} // namespace
+} // namespace wallpaper

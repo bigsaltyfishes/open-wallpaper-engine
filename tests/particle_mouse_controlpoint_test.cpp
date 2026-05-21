@@ -48,6 +48,21 @@ TEST(ParticleMouseControlpoint, EmitterControlpointOffsetsBoxSpawnOrigin) {
     EXPECT_FLOAT_EQ(particle.position.z(), 37.0f);
 }
 
+TEST(ParticleMouseControlpoint, EmitterParsesAudioResponseParameters) {
+    wpscene::Emitter emitter;
+
+    ASSERT_TRUE(emitter.FromJson(nlohmann::json {
+        { "name", "boxrandom" },
+        { "audioprocessingmode", 2 },
+        { "controlpoint", 3 },
+        { "rate", 4.0f },
+    }));
+
+    EXPECT_EQ(emitter.audioprocessingmode, 2u);
+    EXPECT_EQ(emitter.controlpoint, 3);
+    EXPECT_FLOAT_EQ(emitter.rate, 4.0f);
+}
+
 TEST(ParticleMouseControlpoint, ControlpointAttractReadsThresholdAndOrigin) {
     nlohmann::json json {
         { "name", "controlpointattract" },

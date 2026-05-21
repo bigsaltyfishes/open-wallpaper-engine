@@ -14,6 +14,7 @@
 #include <chrono>
 #include <ctime>
 #include <numeric>
+#include <vector>
 
 using namespace wallpaper;
 using namespace Eigen;
@@ -223,35 +224,31 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
             ? m_scene->runtime->CurrentAudioSpectrumSnapshot()
             : wallpaper::audio::AudioSpectrumSnapshot {};
 
+        const auto pushAudioSpectrum = [&updateOp](std::string_view name, const auto& values) {
+            std::vector<float> packed(values.size() * 4u, 0.0f);
+            for (std::size_t index = 0; index < values.size(); ++index) {
+                packed[index * 4u] = values[index];
+            }
+            updateOp(name, std::span<const float> { packed.data(), packed.size() });
+        };
+
         if (info.has_AudioSpectrum16Left) {
-            updateOp(
-                G_AUDIO_SPECTRUM16_LEFT,
-                std::span<const float> { snapshot.left16.data(), snapshot.left16.size() });
+            pushAudioSpectrum(G_AUDIO_SPECTRUM16_LEFT, snapshot.left16);
         }
         if (info.has_AudioSpectrum16Right) {
-            updateOp(
-                G_AUDIO_SPECTRUM16_RIGHT,
-                std::span<const float> { snapshot.right16.data(), snapshot.right16.size() });
+            pushAudioSpectrum(G_AUDIO_SPECTRUM16_RIGHT, snapshot.right16);
         }
         if (info.has_AudioSpectrum32Left) {
-            updateOp(
-                G_AUDIO_SPECTRUM32_LEFT,
-                std::span<const float> { snapshot.left32.data(), snapshot.left32.size() });
+            pushAudioSpectrum(G_AUDIO_SPECTRUM32_LEFT, snapshot.left32);
         }
         if (info.has_AudioSpectrum32Right) {
-            updateOp(
-                G_AUDIO_SPECTRUM32_RIGHT,
-                std::span<const float> { snapshot.right32.data(), snapshot.right32.size() });
+            pushAudioSpectrum(G_AUDIO_SPECTRUM32_RIGHT, snapshot.right32);
         }
         if (info.has_AudioSpectrum64Left) {
-            updateOp(
-                G_AUDIO_SPECTRUM64_LEFT,
-                std::span<const float> { snapshot.left64.data(), snapshot.left64.size() });
+            pushAudioSpectrum(G_AUDIO_SPECTRUM64_LEFT, snapshot.left64);
         }
         if (info.has_AudioSpectrum64Right) {
-            updateOp(
-                G_AUDIO_SPECTRUM64_RIGHT,
-                std::span<const float> { snapshot.right64.data(), snapshot.right64.size() });
+            pushAudioSpectrum(G_AUDIO_SPECTRUM64_RIGHT, snapshot.right64);
         }
     }
 
@@ -273,7 +270,7 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
             const Vector2f mouseCentered = Vector2f(&m_mousePos[0]) - Vector2f { 0.5f, 0.5f };
             para = Vector2f { 0.5f, 0.5f } +
                    (Scaling(1.0f, -1.0f) * mouseCentered) * m_parallax.mouseinfluence;
-        }        m_parallax.mouseinfluence;
+        }
         updateOp(G_PARALLAXPOSITION, std::array { para[0], para[1] });
     }
 

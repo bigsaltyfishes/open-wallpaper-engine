@@ -150,6 +150,35 @@ TEST(AudioResponseMonoTest, MonoSubmitUpdatesSnapshotAt12Khz) {
     EXPECT_EQ(snapshot.right16, snapshot.average16);
 }
 
+TEST(AudioResponseMonoTest, SixtyFourBinFrameInputsPopulateAllSpectrumResolutions) {
+    ResetAudioResponseServiceForTesting();
+
+    std::array<float, 64> samples {};
+    for (std::size_t index = 0; index < samples.size(); ++index) {
+        samples[index] = std::sin(static_cast<float>(index) * 0.15f);
+    }
+
+    std::string error;
+    for (uint32_t submit = 0; submit < 20u; ++submit) {
+        ASSERT_TRUE(SubmitMonoAudioFrames(
+            kSubmitSampleRate,
+            static_cast<uint32_t>(samples.size()),
+            samples.data(),
+            &error))
+            << error;
+    }
+
+    auto snapshot = WaitForGeneration();
+    EXPECT_GT(snapshot.generation, 0u);
+    EXPECT_TRUE(HasNonZeroAverage64Bin(snapshot));
+    EXPECT_EQ(snapshot.left16, snapshot.average16);
+    EXPECT_EQ(snapshot.right16, snapshot.average16);
+    EXPECT_EQ(snapshot.left32, snapshot.average32);
+    EXPECT_EQ(snapshot.right32, snapshot.average32);
+    EXPECT_EQ(snapshot.left64, snapshot.average64);
+    EXPECT_EQ(snapshot.right64, snapshot.average64);
+}
+
 TEST(AudioResponseMonoTest, MonoSubmitRejectsInvalidInput) {
     ResetAudioResponseServiceForTesting();
 

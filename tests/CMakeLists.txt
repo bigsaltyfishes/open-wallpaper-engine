@@ -159,6 +159,15 @@ gtest_discover_tests(
     PROPERTIES TIMEOUT 30
     DISCOVERY_TIMEOUT 60
 )
+add_executable(script_runtime_compat_test script_runtime_compat_test.cpp)
+target_link_libraries(script_runtime_compat_test PRIVATE ${PROJECT_NAME} wpScene wpFs GTest::gtest_main)
+target_include_directories(script_runtime_compat_test PRIVATE .)
+target_compile_features(script_runtime_compat_test PRIVATE cxx_std_20)
+gtest_discover_tests(
+    script_runtime_compat_test
+    PROPERTIES TIMEOUT 30
+    DISCOVERY_TIMEOUT 60
+)
 add_executable(mouse_input_test mouse_input_test.cpp)
 target_link_libraries(mouse_input_test PRIVATE ${PROJECT_NAME} wpScene GTest::gtest_main)
 target_include_directories(mouse_input_test PRIVATE .)
