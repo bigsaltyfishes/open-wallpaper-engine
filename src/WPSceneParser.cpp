@@ -23,6 +23,7 @@
 #include "Runtime/RuntimeImageSource.hpp"
 #include "Runtime/SceneRuntimeContext.hpp"
 #include "Runtime/SceneSettingResolver.hpp"
+#include "Text/TextLayer.hpp"
 #include "wpscene/WPImageObject.h"
 #include "wpscene/WPParticleObject.h"
 #include "wpscene/WPSoundObject.h"
@@ -33,6 +34,7 @@
 #include "Fs/VFS.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -836,6 +838,162 @@ void LoadAlignment(SceneNode& node, std::string_view align, Vector2f size) {
     if (contains("bottom")) trans.y() += size.y();
 
     node.SetTranslate(trans);
+}
+
+std::string JsonStringOrObjectValue(const nlohmann::json& value, std::string_view fallback_key) {
+    if (value.is_string()) return value.get<std::string>();
+    if (! value.is_object()) return {};
+    if (value.contains("value") && value.at("value").is_string()) {
+        return value.at("value").get<std::string>();
+    }
+    if (! fallback_key.empty() && value.contains(fallback_key) &&
+        value.at(fallback_key).is_string()) {
+        return value.at(fallback_key).get<std::string>();
+    }
+    return {};
+}
+
+std::string TextAnchorForObject(const wpscene::WPTextObject& obj) {
+    if (! obj.horizontalalign.empty() || ! obj.verticalalign.empty()) {
+        std::string anchor = obj.horizontalalign;
+        if (! obj.verticalalign.empty()) {
+            if (! anchor.empty()) anchor += ' ';
+            anchor += obj.verticalalign;
+        }
+        return anchor;
+    }
+    if (! obj.anchor.empty()) return obj.anchor;
+    return obj.alignment;
+}
+
+std::string TextRuntimeName(const wpscene::WPTextObject& obj) {
+    if (! obj.name.empty()) return obj.name;
+    return "__we_text_" + std::to_string(obj.id);
+}
+
+TextLayerState ResolveTextLayerState(const wpscene::WPTextObject& obj, fs::VFS& vfs,
+                                     std::string text, std::string font_key,
+                                     Eigen::Vector2f explicit_size, std::string anchor,
+                                     std::string layer_key) {
+    TextLayerState state {
+        .text             = std::move(text),
+        .layer_key        = std::move(layer_key),
+        .font_key         = font_key,
+        .point_size       = obj.pointsize,
+        .padding          = static_cast<float>(obj.padding),
+        .explicit_size    = explicit_size,
+        .horizontal_align = obj.horizontalalign.empty() ? obj.alignment : obj.horizontalalign,
+        .vertical_align   = obj.verticalalign,
+        .anchor           = std::move(anchor),
+    };
+
+    constexpr std::string_view system_prefix = "systemfont_";
+    const auto                 filename      = std::filesystem::path(font_key).filename().string();
+    if (filename.starts_with(system_prefix)) {
+        state.resolved_font_kind     = "system";
+        state.resolved_font_identity = filename.substr(system_prefix.size());
+        return state;
+    }
+
+    if (! font_key.empty()) {
+        std::string candidate = font_key;
+        if (candidate.starts_with("assets/")) candidate = "/" + candidate;
+        if (! candidate.starts_with('/')) candidate = "/assets/" + candidate;
+        if (vfs.Contains(candidate)) {
+            state.resolved_font_kind     = "asset";
+            state.resolved_font_identity = font_key;
+            state.resolved_font_path     = candidate;
+            return state;
+        }
+        if (font_key.starts_with('/') && vfs.Contains(font_key)) {
+            state.resolved_font_kind     = "asset";
+            state.resolved_font_identity = font_key;
+            state.resolved_font_path     = font_key;
+            return state;
+        }
+    }
+
+    state.resolved_font_kind     = "family";
+    state.resolved_font_identity = font_key.empty() ? "default" : font_key;
+    return state;
+}
+
+void ParseTextObj(ParseContext& context, wpscene::WPTextObject& obj) {
+    const auto runtime_name = TextRuntimeName(obj);
+    const auto text     = JsonStringOrObjectValue(obj.text, "text");
+    const auto font_key = JsonStringOrObjectValue(obj.font, {});
+    const auto padding  = static_cast<float>(obj.padding);
+    auto       size     = Eigen::Vector2f(obj.size[0], obj.size[1]);
+    if (size.x() <= 0.0f || size.y() <= 0.0f) {
+        size = EstimateTextLayerSize(text, obj.pointsize, padding);
+    }
+
+    auto node_iterator = context.layer_nodes.find(obj.id);
+    auto node = node_iterator != context.layer_nodes.end() && node_iterator->second != nullptr
+                    ? node_iterator->second
+                    : std::make_shared<SceneNode>();
+    const auto previous_runtime_name = node->Name();
+    node->SetName(runtime_name);
+    node->SetTranslate(Vector3f(obj.origin.data()));
+    node->SetScale(Vector3f(obj.scale.data()));
+    node->SetRotation(Vector3f(obj.angles.data()));
+    node->SetVisible(obj.visible);
+    node->ID() = obj.id;
+
+    auto mesh = std::make_shared<SceneMesh>();
+    GenCardMesh(*mesh,
+                { static_cast<uint16_t>(std::clamp(size.x(), 1.0f, 65535.0f)),
+                  static_cast<uint16_t>(std::clamp(size.y(), 1.0f, 65535.0f)) });
+    node->AddMesh(mesh);
+
+    const auto anchor = TextAnchorForObject(obj);
+    const bool allow_script_update =
+        AllowSceneScriptsForVisibilitySetting(obj.dynamic_visible, obj.visible_setting);
+
+    if (context.scene->runtime != nullptr) {
+        if (! previous_runtime_name.empty() && previous_runtime_name != runtime_name) {
+            context.scene->runtime->UnregisterNode(previous_runtime_name);
+        }
+        context.scene->runtime->RegisterNode(runtime_name, node.get());
+        context.scene->runtime->RegisterNodeVisibility(
+            runtime_name,
+            node.get(),
+            ResolveBoolSetting(*context.scene->runtime,
+                               obj.dynamic_visible ? obj.visible_setting
+                                                   : nlohmann::json(obj.visible),
+                               runtime_name,
+                               allow_script_update));
+        context.scene->runtime->RegisterTextLayer(runtime_name,
+                                                  ResolveTextLayerState(
+                                                      obj,
+                                                      *context.vfs,
+                                                      text,
+                                                      font_key,
+                                                      Eigen::Vector2f(obj.size[0], obj.size[1]),
+                                                      anchor,
+                                                      runtime_name));
+        context.scene->runtime->SetNodeTextAlignment(
+            runtime_name, anchor, Vector3f(obj.origin.data()));
+    } else {
+        LoadAlignment(*node, anchor, size);
+    }
+
+    if (allow_script_update) {
+        QueueSceneScriptIfNeeded(context, runtime_name, obj.visible_setting);
+    }
+
+    context.layer_nodes[obj.id] = node;
+    if (context.attached_layer_nodes.contains(obj.id)) return;
+    if (context.layer_parent_ids.contains(obj.parent_id)) {
+        AttachLayerNode(context, obj.parent_id);
+    }
+    if (auto parent_iterator = context.layer_nodes.find(obj.parent_id);
+        parent_iterator != context.layer_nodes.end() && parent_iterator->second != nullptr) {
+        parent_iterator->second->AppendChild(node);
+    } else {
+        context.scene->sceneGraph->AppendChild(node);
+    }
+    context.attached_layer_nodes.insert(obj.id);
 }
 
 void SetNodeTransformFromMatrix(SceneNode& node, const Matrix4d& transform) {
@@ -1843,6 +2001,8 @@ bool HasDynamicVisible(const wpscene::WPImageObject& object) { return object.dyn
 
 bool HasDynamicVisible(const wpscene::WPParticleObject& object) { return object.dynamic_visible; }
 
+bool HasDynamicVisible(const wpscene::WPTextObject&) { return true; }
+
 template<typename T>
 void AddWPObject(std::vector<WPObjectVar>& objs, const nlohmann::json& json_obj, fs::VFS& vfs) {
     T wpobj;
@@ -1976,7 +2136,8 @@ std::shared_ptr<Scene> WPSceneParser::Parse(const SceneParseRequest& request,
                        [&context](wpscene::WPLightObject& obj) {
                            ParseLightObj(context, obj);
                        },
-                       [](wpscene::WPTextObject&) {
+                       [&context](wpscene::WPTextObject& obj) {
+                           ParseTextObj(context, obj);
                        },
                        [](wpscene::WPModelObject&) {
                        },

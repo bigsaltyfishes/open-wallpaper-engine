@@ -66,6 +66,7 @@ add_library(
   Runtime/SceneRuntimeContext.cpp
   Runtime/SceneSettingResolver.cpp
   Runtime/ScriptedDynamicValue.cpp
+  Text/TextLayer.cpp
   Scripting/ScriptEngine.cpp
   wpscene/WPImageObject.cpp
   wpscene/WPParticleObject.cpp

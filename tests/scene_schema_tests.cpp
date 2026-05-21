@@ -293,7 +293,7 @@ TEST(SceneSchema, AbsorbsTextModelAndCameraObjectKinds) {
     EXPECT_TRUE(camera.disablepropagation);
 }
 
-TEST(SceneSchema, ParserSkipsSchemaOnlyObjectKindsWithoutBreakingLayerParents) {
+TEST(SceneSchema, ParserCreatesTextChildWithoutBreakingLayerParents) {
     fs::VFS vfs;
     MountSceneFiles(vfs);
     audio::SoundManager sound_manager;
@@ -323,7 +323,9 @@ TEST(SceneSchema, ParserSkipsSchemaOnlyObjectKindsWithoutBreakingLayerParents) {
     });
     ASSERT_NE(group, root_children.end());
     EXPECT_EQ((*group)->Parent(), parsed->sceneGraph.get());
-    EXPECT_TRUE((*group)->GetChildren().empty());
+    ASSERT_EQ((*group)->GetChildren().size(), 1u);
+    EXPECT_EQ((*group)->GetChildren().front()->Name(), "__we_text_101");
+    EXPECT_NE((*group)->GetChildren().front()->Mesh(), nullptr);
 }
 
 TEST(SceneSchema, SchemaOnlyObjectPreservesRenderableChildParentTransform) {

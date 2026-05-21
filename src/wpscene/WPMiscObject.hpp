@@ -31,8 +31,10 @@ struct WPMiscObjectBase {
     bool                 locktransforms { false };
     bool                 muteineditor { false };
     bool                 nointerpolation { false };
+    bool                 dynamic_visible { false };
     std::vector<int32_t> dependencies;
     nlohmann::json       instance;
+    nlohmann::json       visible_setting;
     nlohmann::json       field_bindings;
 
     void FromCommonJson(const nlohmann::json& json) {
@@ -43,6 +45,12 @@ struct WPMiscObjectBase {
         GET_JSON_NAME_VALUE_NOWARN(json, "angles", angles);
         GET_JSON_NAME_VALUE_NOWARN(json, "parallaxDepth", parallaxDepth);
         GET_JSON_NAME_VALUE_NOWARN(json, "visible", visible);
+        if (json.contains("visible")) {
+            visible_setting  = json.at("visible");
+            dynamic_visible = visible_setting.is_object() &&
+                              (visible_setting.contains("script") ||
+                               visible_setting.contains("user"));
+        }
         GET_JSON_NAME_VALUE_NOWARN(json, "locktransforms", locktransforms);
         GET_JSON_NAME_VALUE_NOWARN(json, "muteineditor", muteineditor);
         GET_JSON_NAME_VALUE_NOWARN(json, "nointerpolation", nointerpolation);

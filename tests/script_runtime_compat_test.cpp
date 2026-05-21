@@ -101,6 +101,41 @@ export function update(value) {
     EXPECT_EQ(runtime->scriptErrorCount(), 0u);
 }
 
+TEST(ScriptRuntimeCompat, ThisLayerTextSetterMutatesRuntimeTextState) {
+    auto runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {});
+    ASSERT_NE(runtime, nullptr);
+
+    auto node = std::make_shared<SceneNode>();
+    runtime->RegisterNode("caption", node.get());
+    runtime->RegisterTextLayer("caption", TextLayerState {
+                                              .text       = "before",
+                                              .font_key   = "Arial",
+                                              .point_size = 12.0f,
+                                          });
+
+    auto program = runtime->scriptEngine().CreatePropertyScriptProgram(
+        runtime.get(),
+        R"JS(
+export function update(value) {
+  thisLayer.text = "after";
+  var indirect = thisScene.getLayer('caption');
+  indirect.text = indirect.text + " indirect";
+  return thisLayer.text === "after indirect" ? 1 : -1;
+}
+)JS",
+        "caption",
+        {},
+        DynamicValue(0.0f),
+        runtime->hostContext());
+    ASSERT_NE(program, nullptr);
+
+    const auto result = program->Evaluate(runtime->hostContext(), DynamicValue(0.0f));
+    ASSERT_NE(result, nullptr);
+    EXPECT_FLOAT_EQ(result->getFloat(), 1.0f);
+    EXPECT_EQ(runtime->NodeText("caption"), "after indirect");
+    EXPECT_EQ(runtime->scriptErrorCount(), 0u);
+}
+
 TEST(ScriptRuntimeCompat, SetTimeoutGlobalAndEngineAliasesFireOnceAndCancel) {
     ScriptEngine      engine;
     ScriptHostContext host {};

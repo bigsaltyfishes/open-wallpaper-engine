@@ -3,11 +3,13 @@
 #include "Project/ProjectProperties.hpp"
 #include "Audio/include/Audio/AudioResponseService.h"
 #include "Runtime/ScalarAnimation.hpp"
+#include "Text/TextLayer.hpp"
 #include "Video/VideoTextureSource.hpp"
 
 #include <Eigen/Dense>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -56,6 +58,7 @@ public:
     DynamicValue* FindPropertyValue(std::string_view name) const;
     void          RegisterScriptedValue(ScriptedDynamicValue* value);
     void          RegisterNode(std::string name, SceneNode* node);
+    void          UnregisterNode(std::string_view name);
     void          RegisterNodeSize(std::string name, Eigen::Vector2f value);
     void          RegisterLayerTemplate(std::string template_path, std::shared_ptr<SceneNode> node,
                                         Eigen::Vector2f size);
@@ -66,6 +69,7 @@ public:
     void RegisterNodeScale(std::string name, SceneNode* node, std::unique_ptr<DynamicValue> value);
     void RegisterNodeRotation(std::string name, SceneNode* node,
                               std::unique_ptr<DynamicValue> value);
+    void RegisterTextLayer(std::string name, TextLayerState state);
     void RegisterMaterialConstant(SceneMaterial* material, std::string name,
                                   std::unique_ptr<DynamicValue> value);
     void RegisterNodeEffectFinal(std::string name, SceneNode* node, SceneImageEffectLayer* layer);
@@ -93,11 +97,20 @@ public:
     bool            SetNodeTranslate(std::string_view name, const Eigen::Vector3f& value);
     bool            SetNodeScale(std::string_view name, const Eigen::Vector3f& value);
     bool            SetNodeAlignment(std::string_view name, std::string alignment);
+    bool            SetNodeTextAlignment(std::string_view name,
+                                         std::string      alignment,
+                                         const Eigen::Vector3f& origin);
     bool            SetNodeRotation(std::string_view name, const Eigen::Vector3f& value);
     Eigen::Vector3f NodeTranslate(std::string_view name) const;
     Eigen::Vector3f NodeScale(std::string_view name) const;
     Eigen::Vector3f NodeRotation(std::string_view name) const;
     Eigen::Vector2f NodeSize(std::string_view name) const;
+    std::string     NodeText(std::string_view name) const;
+    bool            NodeTextDirty(std::string_view name) const;
+    std::optional<TextLayerState> NodeTextState(std::string_view name) const;
+    bool            SetNodeText(std::string_view name, std::string text);
+    bool            ClearNodeTextDirty(std::string_view name);
+    void            PumpTextLayerCache();
     bool            NodeHasVideoTexture(std::string_view name) const;
     bool            PlayNodeVideoTexture(std::string_view name);
     bool            PauseNodeVideoTexture(std::string_view name);
@@ -159,6 +172,7 @@ private:
         std::string     alignment;
         Eigen::Vector3f origin { Eigen::Vector3f::Zero() };
         Eigen::Vector3f scale { Eigen::Vector3f::Ones() };
+        bool            size_anchor { false };
     };
     struct VideoTexturePlaybackBinding {
         double duration_seconds { 0.0 };
@@ -192,6 +206,7 @@ private:
     std::vector<MaterialAlphaBinding>                              m_material_alpha;
     std::vector<MaterialConstantBinding>                           m_material_constants;
     std::unordered_map<std::string, Eigen::Vector2f>               m_node_size;
+    std::unordered_map<std::string, TextLayer>                     m_text_layers;
     std::unordered_map<std::string, NodeAlignmentBinding>          m_node_alignment;
     std::unordered_map<std::string, std::string>                   m_node_template_paths;
     std::unordered_map<std::string, LayerTemplateBinding>          m_layer_templates;

@@ -1138,6 +1138,8 @@ void AppendCommonHostBootstrap(std::ostringstream& wrapper) {
         << "      get angles() { return __layerGetAngles(name); },\n"
         << "      set angles(v) { __layerSetAngles(name, v); },\n"
         << "      get size() { return __layerGetSize(name); },\n"
+        << "      get text() { return __layerGetText(name); },\n"
+        << "      set text(v) { __layerSetText(name, v); },\n"
         << "      get alpha() { return state.alpha; },\n"
         << "      set alpha(v) { state.alpha = Number(v) || 0; },\n"
         << "      play: function() {\n"
@@ -1754,6 +1756,33 @@ JSValue JsLayerGetSize(JSContext* context, JSValueConst, int argc, JSValueConst*
     return CreateJsVec2(context, value.x(), value.y());
 }
 
+JSValue JsLayerGetText(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
+    if (argc < 1) return JS_NewString(context, "");
+    auto* bridge = GetBridgeState(context);
+    if (bridge == nullptr || bridge->runtime == nullptr) return JS_NewString(context, "");
+
+    const char* layer_name = JS_ToCString(context, argv[0]);
+    const auto  value =
+        layer_name != nullptr ? bridge->runtime->NodeText(layer_name) : std::string();
+    if (layer_name != nullptr) JS_FreeCString(context, layer_name);
+    return JS_NewStringLen(context, value.data(), value.size());
+}
+
+JSValue JsLayerSetText(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
+    if (argc < 2) return JS_UNDEFINED;
+    auto* bridge = GetBridgeState(context);
+    if (bridge == nullptr || bridge->runtime == nullptr) return JS_UNDEFINED;
+
+    const char* layer_name = JS_ToCString(context, argv[0]);
+    const char* text       = JS_ToCString(context, argv[1]);
+    if (layer_name != nullptr && text != nullptr) {
+        bridge->runtime->SetNodeText(layer_name, std::string(text));
+    }
+    if (text != nullptr) JS_FreeCString(context, text);
+    if (layer_name != nullptr) JS_FreeCString(context, layer_name);
+    return JS_UNDEFINED;
+}
+
 JSValue JsLayerCreate(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
     if (argc < 2) return JS_NewString(context, "");
     auto* bridge = GetBridgeState(context);
@@ -2246,6 +2275,14 @@ bool EnsureSharedHostBindings(JSContext* context, SceneRuntimeContext* runtime,
                           global_object,
                           "__layerGetSize",
                           JS_NewCFunction(context, JsLayerGetSize, "__layerGetSize", 1));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__layerGetText",
+                          JS_NewCFunction(context, JsLayerGetText, "__layerGetText", 1));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__layerSetText",
+                          JS_NewCFunction(context, JsLayerSetText, "__layerSetText", 2));
         JS_SetPropertyStr(context,
                           global_object,
                           "__layerCreate",

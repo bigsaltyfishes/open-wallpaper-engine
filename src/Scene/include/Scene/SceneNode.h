@@ -43,6 +43,7 @@ public:
     const auto& Scale() const { return m_scale; }
     const auto& Rotation() const { return m_rotation; }
     const auto& Name() const { return m_name; }
+    void        SetName(std::string name) { m_name = std::move(name); }
     bool        Visible() const { return m_visible; }
     bool        SkipRenderPass() const { return m_skipRenderPass; }
     bool        EffectiveVisible() const {

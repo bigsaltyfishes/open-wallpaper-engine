@@ -168,6 +168,15 @@ gtest_discover_tests(
     PROPERTIES TIMEOUT 30
     DISCOVERY_TIMEOUT 60
 )
+add_executable(text_object_runtime_test text_object_runtime_test.cpp)
+target_link_libraries(text_object_runtime_test PRIVATE ${PROJECT_NAME} wpAudio wpScene wpFs GTest::gtest_main)
+target_include_directories(text_object_runtime_test PRIVATE .)
+target_compile_features(text_object_runtime_test PRIVATE cxx_std_20)
+gtest_discover_tests(
+    text_object_runtime_test
+    PROPERTIES TIMEOUT 30
+    DISCOVERY_TIMEOUT 60
+)
 add_executable(mouse_input_test mouse_input_test.cpp)
 target_link_libraries(mouse_input_test PRIVATE ${PROJECT_NAME} wpScene GTest::gtest_main)
 target_include_directories(mouse_input_test PRIVATE .)

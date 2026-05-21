@@ -407,6 +407,22 @@ void SceneRuntimeContext::RegisterNode(std::string name, SceneNode* node) {
     alignment.scale  = node->Scale();
 }
 
+void SceneRuntimeContext::UnregisterNode(std::string_view name) {
+    const std::string key(name);
+    m_nodes.erase(key);
+    m_node_visibility.erase(key);
+    m_node_translate.erase(key);
+    m_node_scale.erase(key);
+    m_node_rotation.erase(key);
+    m_node_effect_final.erase(key);
+    m_node_size.erase(key);
+    m_text_layers.erase(key);
+    m_node_alignment.erase(key);
+    m_node_template_paths.erase(key);
+    m_node_video_textures.erase(key);
+    m_sound_layers.erase(key);
+}
+
 void SceneRuntimeContext::RegisterNodeSize(std::string name, Eigen::Vector2f value) {
     if (name.empty()) return;
     m_node_size[std::move(name)] = value;
@@ -490,6 +506,14 @@ void SceneRuntimeContext::RegisterNodeRotation(std::string name, SceneNode* node
         .node  = node,
         .value = raw,
     };
+}
+
+void SceneRuntimeContext::RegisterTextLayer(std::string name, TextLayerState state) {
+    if (name.empty()) return;
+    if (state.layer_key.empty()) state.layer_key = name;
+    auto layer = TextLayer(std::move(state));
+    m_node_size[name] = layer.size();
+    m_text_layers.insert_or_assign(std::move(name), std::move(layer));
 }
 
 void SceneRuntimeContext::RegisterMaterialConstant(SceneMaterial* material, std::string name,
@@ -793,6 +817,22 @@ bool SceneRuntimeContext::SetNodeAlignment(std::string_view name, std::string al
         binding.scale  = iterator->second->Scale();
     }
     binding.alignment = std::move(alignment);
+    binding.size_anchor = false;
+    ApplyNodeTransform(name);
+    return true;
+}
+
+bool SceneRuntimeContext::SetNodeTextAlignment(std::string_view name,
+                                               std::string      alignment,
+                                               const Eigen::Vector3f& origin) {
+    const auto iterator = m_nodes.find(std::string(name));
+    if (iterator == m_nodes.end() || iterator->second == nullptr) return false;
+
+    auto& binding = m_node_alignment[std::string(name)];
+    binding.alignment   = std::move(alignment);
+    binding.origin      = origin;
+    binding.scale       = iterator->second->Scale();
+    binding.size_anchor = true;
     ApplyNodeTransform(name);
     return true;
 }
@@ -833,6 +873,46 @@ Eigen::Vector2f SceneRuntimeContext::NodeSize(std::string_view name) const {
     const auto iterator = m_node_size.find(std::string(name));
     if (iterator == m_node_size.end()) return Eigen::Vector2f::Zero();
     return iterator->second;
+}
+
+std::string SceneRuntimeContext::NodeText(std::string_view name) const {
+    const auto iterator = m_text_layers.find(std::string(name));
+    if (iterator == m_text_layers.end()) return {};
+    return iterator->second.text();
+}
+
+bool SceneRuntimeContext::NodeTextDirty(std::string_view name) const {
+    const auto iterator = m_text_layers.find(std::string(name));
+    return iterator != m_text_layers.end() && iterator->second.dirty();
+}
+
+std::optional<TextLayerState> SceneRuntimeContext::NodeTextState(std::string_view name) const {
+    const auto iterator = m_text_layers.find(std::string(name));
+    if (iterator == m_text_layers.end()) return std::nullopt;
+    return iterator->second.state();
+}
+
+bool SceneRuntimeContext::SetNodeText(std::string_view name, std::string text) {
+    const auto iterator = m_text_layers.find(std::string(name));
+    if (iterator == m_text_layers.end()) return false;
+    iterator->second.SetText(std::move(text));
+    m_node_size[std::string(name)] = iterator->second.size();
+    ApplyNodeTransform(name);
+    return true;
+}
+
+bool SceneRuntimeContext::ClearNodeTextDirty(std::string_view name) {
+    const auto iterator = m_text_layers.find(std::string(name));
+    if (iterator == m_text_layers.end()) return false;
+    iterator->second.ClearDirty();
+    return true;
+}
+
+void SceneRuntimeContext::PumpTextLayerCache() {
+    for (auto& [name, layer] : m_text_layers) {
+        (void)name;
+        layer.ClearDirty();
+    }
 }
 
 bool SceneRuntimeContext::NodeHasVideoTexture(std::string_view name) const {
@@ -938,16 +1018,30 @@ void SceneRuntimeContext::ApplyNodeTransform(std::string_view name) {
     Eigen::Vector3f translate = binding.origin;
     const auto      size      = NodeSize(name);
 
-    if (AlignmentContains(binding.alignment, "bottom")) {
-        translate.y() += size.y() * (binding.scale.y() - 1.0f) * 0.5f;
-    } else if (AlignmentContains(binding.alignment, "top")) {
-        translate.y() -= size.y() * (binding.scale.y() - 1.0f) * 0.5f;
-    }
+    if (binding.size_anchor) {
+        if (AlignmentContains(binding.alignment, "bottom")) {
+            translate.y() += size.y() * binding.scale.y() * 0.5f;
+        } else if (AlignmentContains(binding.alignment, "top")) {
+            translate.y() -= size.y() * binding.scale.y() * 0.5f;
+        }
 
-    if (AlignmentContains(binding.alignment, "left")) {
-        translate.x() += size.x() * (binding.scale.x() - 1.0f) * 0.5f;
-    } else if (AlignmentContains(binding.alignment, "right")) {
-        translate.x() -= size.x() * (binding.scale.x() - 1.0f) * 0.5f;
+        if (AlignmentContains(binding.alignment, "left")) {
+            translate.x() += size.x() * binding.scale.x() * 0.5f;
+        } else if (AlignmentContains(binding.alignment, "right")) {
+            translate.x() -= size.x() * binding.scale.x() * 0.5f;
+        }
+    } else {
+        if (AlignmentContains(binding.alignment, "bottom")) {
+            translate.y() += size.y() * (binding.scale.y() - 1.0f) * 0.5f;
+        } else if (AlignmentContains(binding.alignment, "top")) {
+            translate.y() -= size.y() * (binding.scale.y() - 1.0f) * 0.5f;
+        }
+
+        if (AlignmentContains(binding.alignment, "left")) {
+            translate.x() += size.x() * (binding.scale.x() - 1.0f) * 0.5f;
+        } else if (AlignmentContains(binding.alignment, "right")) {
+            translate.x() -= size.x() * (binding.scale.x() - 1.0f) * 0.5f;
+        }
     }
 
     node_iterator->second->SetScale(binding.scale);
