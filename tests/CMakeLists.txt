@@ -22,6 +22,7 @@ FetchContent_Declare(
 set(BUILD_GMOCK OFF CACHE INTERNAL "")
 set(INSTALL_GTEST OFF CACHE INTERNAL "")
 FetchContent_MakeAvailable(googletest)
+include(GoogleTest)
 
 # Shared library for the dumper + corpus index. Used by the gtest binary
 # and any future ad-hoc tools.
@@ -44,6 +45,16 @@ target_compile_definitions(
 add_executable(version_tests version_tests.cpp)
 target_link_libraries(version_tests PRIVATE wpdump_lib GTest::gtest_main)
 
+add_executable(tex_schema_tests tex_schema_tests.cpp)
+target_link_libraries(tex_schema_tests PRIVATE ${PROJECT_NAME} wpFs wpScene GTest::gtest_main)
+target_include_directories(tex_schema_tests PRIVATE .)
+target_compile_features(tex_schema_tests PRIVATE cxx_std_20)
+gtest_discover_tests(
+    tex_schema_tests
+    PROPERTIES TIMEOUT 30
+    DISCOVERY_TIMEOUT 60
+)
+
 # CLI for fixture authoring: dumps a single workshop to a JSON file.
 add_executable(wpdump wpdump_main.cpp)
 target_link_libraries(wpdump PRIVATE wpdump_lib)
@@ -60,7 +71,6 @@ endif()
 
 # Use gtest_discover_tests so each TEST_P instance becomes its own ctest
 # entry, runnable individually with `ctest -R ScenePkgVersionTest`.
-include(GoogleTest)
 add_executable(
     audio_tests
     audio/audio_response_mono_test.cpp

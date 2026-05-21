@@ -43,6 +43,12 @@ using WPTexFlags = BitFlags<WPTexFlagEnum>;
 
 namespace
 {
+struct EmbeddedImageType
+{
+    ImageType type { ImageType::UNKNOWN };
+    bool      isVideo { false };
+};
+
 struct LooseAssetCandidate
 {
     std::string path;
@@ -59,6 +65,67 @@ char* Lz4Decompress(const char* src, int size, int decompressed_size) {
         return nullptr;
     }
     return dst;
+}
+
+EmbeddedImageType DetectEmbeddedImageType(const unsigned char* data, usize size)
+{
+    if (size >= 8 && std::memcmp(data, "\x89PNG\r\n\x1a\n", 8) == 0) {
+        return { ImageType::PNG, false };
+    }
+    if (size >= 3 && data[0] == 0xff && data[1] == 0xd8 && data[2] == 0xff) {
+        return { ImageType::JPEG, false };
+    }
+    if (size >= 6 &&
+        (std::memcmp(data, "GIF87a", 6) == 0 || std::memcmp(data, "GIF89a", 6) == 0)) {
+        return { ImageType::GIF, false };
+    }
+    if (size >= 2 && data[0] == 'B' && data[1] == 'M') return { ImageType::BMP, false };
+    if (size >= 4 &&
+        ((data[0] == 'I' && data[1] == 'I' && data[2] == 0x2a && data[3] == 0x00) ||
+         (data[0] == 'M' && data[1] == 'M' && data[2] == 0x00 && data[3] == 0x2a))) {
+        return { ImageType::TIFF, false };
+    }
+    if (size >= 12 && std::memcmp(data + 4, "ftyp", 4) == 0) {
+        return { ImageType::UNKNOWN, true };
+    }
+    if (size >= 4 && data[0] == 0x1a && data[1] == 0x45 &&
+        data[2] == 0xdf && data[3] == 0xa3) {
+        return { ImageType::UNKNOWN, true };
+    }
+    return {};
+}
+
+std::optional<std::vector<char>> ReadTexMipPayloadPrefix(
+    fs::IBinaryStream& file,
+    i32               src_size,
+    usize             max_bytes)
+{
+    if (src_size <= 0) return std::nullopt;
+    const idx payload_start = file.Tell();
+    const idx remaining = file.Size() - payload_start;
+    if (remaining < src_size) return std::nullopt;
+
+    std::vector<char> payload(std::min<usize>(static_cast<usize>(src_size), max_bytes));
+    if (!payload.empty()) {
+        file.Read(payload.data(), payload.size());
+    }
+    file.SeekSet(payload_start + src_size);
+    return payload;
+}
+
+std::optional<std::vector<char>> ReadTexMipPayload(
+    fs::IBinaryStream& file,
+    i32               src_size,
+    usize             max_bytes)
+{
+    if (src_size <= 0 || static_cast<usize>(src_size) > max_bytes) return std::nullopt;
+    const idx payload_start = file.Tell();
+    const idx remaining = file.Size() - payload_start;
+    if (remaining < src_size) return std::nullopt;
+
+    std::vector<char> payload(static_cast<usize>(src_size));
+    file.Read(payload.data(), payload.size());
+    return payload;
 }
 
 TextureFormat ToTexFormate(int type) {
@@ -127,16 +194,11 @@ void LoadHeader(fs::IBinaryStream& file, ImageHeader& header) {
 
     header.count = file.ReadInt32();
 
-    if (header.extraHeader["texb"].val == 3) {
+    if (header.extraHeader["texb"].val >= 3) {
         header.type = static_cast<ImageType>(file.ReadInt32());
-    } else if (header.extraHeader["texb"].val == 4) {
-        const i32 image_format_hint = file.ReadInt32();
-        header.type = image_format_hint >= 0 ? static_cast<ImageType>(image_format_hint)
-                                             : ImageType::UNKNOWN;
-        header.extraHeader["video_mp4"].val = file.ReadInt32();
-        if (header.extraHeader["video_mp4"].val != 0) {
-            header.isVideo = true;
-        }
+    }
+    if (header.extraHeader["texb"].val >= 4) {
+        header.extraHeader["texb_reserved"].val = file.ReadInt32();
     }
 }
 
@@ -312,6 +374,29 @@ std::optional<video::VideoMetadata> ProbeVideoMetadataFromPayload(
     return metadata;
 }
 
+std::optional<std::vector<char>> LoadHeaderVideoPayload(
+    fs::IBinaryStream& file,
+    i32               src_size,
+    bool              lz4_compressed,
+    int32_t           decompressed_size)
+{
+    constexpr usize kMaxHeaderVideoProbeBytes = 64 * 1024 * 1024;
+    auto payload = ReadTexMipPayload(file, src_size, kMaxHeaderVideoProbeBytes);
+    if (!payload.has_value()) return std::nullopt;
+    if (!lz4_compressed) return payload;
+    if (decompressed_size <= 0 ||
+        static_cast<usize>(decompressed_size) > kMaxHeaderVideoProbeBytes) {
+        return std::nullopt;
+    }
+    char* decompressed = Lz4Decompress(payload->data(), src_size, decompressed_size);
+    if (decompressed == nullptr) return std::nullopt;
+    std::vector<char> out(
+        decompressed,
+        decompressed + static_cast<usize>(decompressed_size));
+    delete[] decompressed;
+    return out;
+}
+
 ImageHeader BuildLooseAssetHeader(
     int32_t width,
     int32_t height,
@@ -407,9 +492,19 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
                     return nullptr;
                 }
             }
+            EmbeddedImageType embedded { img.header.type, img.header.isVideo };
+            if (img.header.extraHeader["texb"].val >= 3 &&
+                img.header.type == ImageType::UNKNOWN) {
+                embedded = DetectEmbeddedImageType(
+                    reinterpret_cast<const unsigned char*>(result),
+                    static_cast<usize>(src_size));
+                img.header.type = embedded.type;
+                if (embedded.isVideo) img.header.isVideo = true;
+            }
+
             // is image container
             if (img.header.extraHeader["texb"].val >= 3 && !img.header.isVideo &&
-                img.header.type != ImageType::UNKNOWN) {
+                embedded.type != ImageType::UNKNOWN) {
                 int32_t w, h, n;
                 auto*   data =
                     stbi_load_from_memory((const unsigned char*)result, src_size, &w, &h, &n, 4);
@@ -503,11 +598,21 @@ ImageHeader WPTexImageParser::ParseHeader(const std::string& name) {
         for (int32_t i = 0; i < framecount; i++) {
             SpriteFrame sf;
             sf.imageId = file.ReadInt32();
-            if (sf.imageId < 0) {
-                LOG_ERROR("get neg imageid");
+            const auto bad_image_id =
+                sf.imageId < 0 ||
+                static_cast<usize>(sf.imageId) >= imageDatas.size() ||
+                imageDatas[static_cast<usize>(sf.imageId)].size() < 2;
+            if (bad_image_id) {
+                LOG_ERROR("invalid sprite image id: %d", sf.imageId);
+                file.ReadFloat();
+                for (int j = 0; j < 6; ++j) {
+                    if (texs == 1) file.ReadInt32();
+                    else file.ReadFloat();
+                }
+                continue;
             }
-            float spriteWidth  = imageDatas.at((usize)sf.imageId)[0];
-            float spriteHeight = imageDatas.at((usize)sf.imageId)[1];
+            float spriteWidth  = imageDatas[static_cast<usize>(sf.imageId)][0];
+            float spriteHeight = imageDatas[static_cast<usize>(sf.imageId)][1];
 
             sf.frametime = file.ReadFloat();
             if (texs == 1) {
@@ -536,10 +641,52 @@ ImageHeader WPTexImageParser::ParseHeader(const std::string& name) {
         }
     } else {
         i32 mipmap_count = file.ReadInt32();
-        (void)mipmap_count;
+        if (mipmap_count <= 0) return header;
         i32 width  = file.ReadInt32();
         i32 height = file.ReadInt32();
         SetHeaderPow2(header, width, height);
+        if (header.extraHeader["texb"].val >= 3 && header.type == ImageType::UNKNOWN &&
+            !header.isVideo) {
+            bool    lz4_compressed = false;
+            int32_t decompressed_size = 0;
+            if (header.extraHeader["texb"].val > 1) {
+                lz4_compressed = file.ReadInt32() == 1;
+                decompressed_size = file.ReadInt32();
+            }
+            i32 src_size = file.ReadInt32();
+            std::optional<std::vector<char>> sniff_payload;
+            if (!lz4_compressed) {
+                sniff_payload = ReadTexMipPayloadPrefix(file, src_size, 64);
+            } else {
+                file.SeekCur(src_size);
+            }
+            if (sniff_payload.has_value()) {
+                const auto embedded = DetectEmbeddedImageType(
+                    reinterpret_cast<const unsigned char*>(sniff_payload->data()),
+                    sniff_payload->size());
+                if (embedded.type != ImageType::UNKNOWN) header.type = embedded.type;
+                if (embedded.isVideo) header.isVideo = true;
+                if (embedded.isVideo) {
+                    const idx payload_start = file.Tell() - src_size;
+                    file.SeekSet(payload_start);
+                    auto video_payload = LoadHeaderVideoPayload(
+                        file,
+                        src_size,
+                        lz4_compressed,
+                        decompressed_size);
+                    if (video_payload.has_value()) {
+                        const auto metadata = ProbeVideoMetadataFromPayload(
+                            name,
+                            ".mp4",
+                            std::span(video_payload->data(), video_payload->size()));
+                        if (metadata.has_value()) {
+                            header.durationSeconds = metadata->duration_seconds;
+                        }
+                    }
+                }
+            }
+            return header;
+        }
         if (header.isVideo && mipmap_count > 0) {
             bool    lz4_compressed = false;
             int32_t decompressed_size = 0;

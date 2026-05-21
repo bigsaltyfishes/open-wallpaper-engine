@@ -2,6 +2,7 @@
 #include "Utils/Logging.h"
 #include "Fs/LimitedBinaryStream.h"
 #include "Fs/CBinaryStream.h"
+#include <cctype>
 #include <vector>
 
 using namespace wallpaper;
@@ -18,6 +19,14 @@ std::string ReadSizedString(IBinaryStream& f) {
     result.resize(len);
     f.Read(result.data(), len);
     return result;
+}
+
+std::string LowerPath(std::string_view path) {
+    std::string lowered(path);
+    for (auto& ch : lowered) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    return lowered;
 }
 } // namespace
 
@@ -42,18 +51,29 @@ std::unique_ptr<WPPkgFs> WPPkgFs::CreatePkgFs(std::string_view pkgpath) {
     idx headerSize   = pkg.Tell();
     for (auto& el : pkgfiles) {
         el.offset += headerSize;
-        pkgfs->m_files.insert({ el.path, el });
+        const auto path = el.path;
+        pkgfs->m_files.insert({ path, el });
+        pkgfs->m_caseFoldedFiles.insert({ LowerPath(path), path });
     }
     return pkgfs;
 }
 
-bool WPPkgFs::Contains(std::string_view path) const { return m_files.count(std::string(path)) > 0; }
+bool WPPkgFs::Contains(std::string_view path) const {
+    const std::string exact_path(path);
+    return m_files.count(exact_path) > 0 || m_caseFoldedFiles.count(LowerPath(path)) > 0;
+}
 
 std::shared_ptr<IBinaryStream> WPPkgFs::Open(std::string_view path) {
     auto pkg = fs::CreateCBinaryStream(m_pkgPath);
     if (! pkg) return nullptr;
-    if (Contains(path)) {
-        const auto& file = m_files.at(std::string(path));
+    auto exact = m_files.find(std::string(path));
+    if (exact != m_files.end()) {
+        const auto& file = exact->second;
+        return std::make_shared<LimitedBinaryStream>(pkg, file.offset, file.length);
+    }
+    auto canonical = m_caseFoldedFiles.find(LowerPath(path));
+    if (canonical != m_caseFoldedFiles.end()) {
+        const auto& file = m_files.at(canonical->second);
         return std::make_shared<LimitedBinaryStream>(pkg, file.offset, file.length);
     }
     return nullptr;

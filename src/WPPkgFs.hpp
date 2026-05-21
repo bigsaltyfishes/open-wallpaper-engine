@@ -29,6 +29,7 @@ private:
     };
     std::string                              m_pkgPath;
     std::unordered_map<std::string, PkgFile> m_files;
+    std::unordered_map<std::string, std::string> m_caseFoldedFiles;
 };
 } // namespace fs
 } // namespace wallpaper
