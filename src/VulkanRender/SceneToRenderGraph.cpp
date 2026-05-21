@@ -418,10 +418,13 @@ std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
 
         auto& desc = custom_pass->desc();
         desc.write_alpha = desc.output != SpecTex_Default;
+        const auto render_target = scene.FindRenderTarget(desc.output);
+        const bool force_clear =
+            desc.output != SpecTex_Default && render_target != nullptr && render_target->forceClear;
 
         const bool first_writer =
             !desc.output.empty() && written_targets.insert(desc.output).second;
-        if (!first_writer) {
+        if (!first_writer && !force_clear) {
             desc.clear_on_first_use = false;
             desc.preserve_target_contents = true;
             continue;
@@ -433,8 +436,7 @@ std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
             continue;
         }
 
-        const auto render_target = scene.FindRenderTarget(desc.output);
-        desc.clear_on_first_use = render_target != nullptr && render_target->allowReuse;
+        desc.clear_on_first_use = render_target != nullptr && (render_target->allowReuse || force_clear);
     }
 
     return rgraph;

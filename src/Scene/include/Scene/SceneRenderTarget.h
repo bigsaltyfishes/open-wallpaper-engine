@@ -16,6 +16,7 @@ struct SceneRenderTarget {
     i32           width;
     i32           height;
     bool          allowReuse { false };
+    bool          forceClear { false };
     bool          withDepth { false };
     bool          has_mipmap { false };
     uint          mipmap_level { 1 };
