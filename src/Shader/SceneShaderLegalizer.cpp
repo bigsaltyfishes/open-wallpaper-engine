@@ -492,6 +492,156 @@ void recordMacro(const std::string& trimmed, std::map<std::string, int64_t>& mac
     return source;
 }
 
+[[nodiscard]] std::string RewriteUserDefinedModFunction(std::string source)
+{
+    static const std::regex user_mod_re(
+        R"((^|\n)\s*float\s+mod\s*\(\s*float\s+[A-Za-z_]\w*\s*,\s*float\s+[A-Za-z_]\w*\s*\))",
+        std::regex::ECMAScript);
+    if (!std::regex_search(source, user_mod_re)) {
+        return source;
+    }
+
+    auto is_scalar_mod_call = [](std::string_view args_source) {
+        const auto args = SplitTopLevelArgs(args_source);
+        if (args.size() != 2) {
+            return false;
+        }
+        static const std::regex scalar_literal_re(
+            R"(^[-+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][-+]?[0-9]+)?$)",
+            std::regex::ECMAScript);
+        static const std::regex scalar_constructor_re(
+            R"(^(?:float|float1)\s*\(\s*[-+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][-+]?[0-9]+)?\s*\)$)",
+            std::regex::ECMAScript);
+        for (const auto& arg : args) {
+            const auto trimmed = trimCopy(arg);
+            if (!std::regex_match(trimmed, scalar_literal_re) &&
+                !std::regex_match(trimmed, scalar_constructor_re)) {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    auto rewrite_code_segment = [&](std::string segment) {
+        wallpaper::usize search_pos = 0;
+        while (search_pos < segment.size()) {
+            const wallpaper::usize mod_pos = segment.find("mod", search_pos);
+            if (mod_pos == std::string::npos) {
+                break;
+            }
+
+            const bool left_ok =
+                mod_pos == 0 || !isIdentifierChar(segment[mod_pos - 1]);
+            wallpaper::usize paren_pos = mod_pos + 3;
+            while (paren_pos < segment.size() &&
+                   std::isspace(static_cast<unsigned char>(segment[paren_pos]))) {
+                paren_pos++;
+            }
+            const bool right_ok = paren_pos < segment.size() && segment[paren_pos] == '(';
+            if (!left_ok || !right_ok) {
+                search_pos = mod_pos + 3;
+                continue;
+            }
+
+            const wallpaper::usize close_paren = FindMatchingParen(segment, paren_pos);
+            if (close_paren == std::string::npos) {
+                break;
+            }
+            const std::string prefix = trimCopy(segment.substr(0, mod_pos));
+            const bool is_scalar_mod_declaration =
+                prefix.size() >= 5 &&
+                prefix.compare(prefix.size() - 5, 5, "float") == 0 &&
+                (prefix.size() == 5 || !isIdentifierChar(prefix[prefix.size() - 6]));
+            if (is_scalar_mod_declaration ||
+                is_scalar_mod_call(segment.substr(paren_pos + 1, close_paren - paren_pos - 1))) {
+                segment.replace(mod_pos, 3, "_ww_user_mod");
+                search_pos = close_paren + std::string_view("_ww_user_").size() + 1;
+            } else {
+                search_pos = close_paren + 1;
+            }
+        }
+        return segment;
+    };
+
+    std::ostringstream output;
+    wallpaper::usize line_start = 0;
+    bool in_block_comment = false;
+    bool in_preprocessor_continuation = false;
+    while (line_start < source.size()) {
+        const wallpaper::usize line_end = source.find('\n', line_start);
+        const wallpaper::usize slice_end = line_end == std::string::npos ? source.size() : line_end;
+        std::string line = source.substr(line_start, slice_end - line_start);
+        const std::string trimmed = trimCopy(line);
+
+        const bool is_preprocessor_line = in_preprocessor_continuation || startsWith(trimmed, "#");
+        if (is_preprocessor_line) {
+            output << line;
+            wallpaper::usize tail = line.size();
+            while (tail > 0 && std::isspace(static_cast<unsigned char>(line[tail - 1]))) {
+                tail--;
+            }
+            in_preprocessor_continuation = tail > 0 && line[tail - 1] == '\\';
+        } else {
+            std::string rewritten;
+            wallpaper::usize pos = 0;
+            while (pos < line.size()) {
+                if (in_block_comment) {
+                    const wallpaper::usize comment_end = line.find("*/", pos);
+                    if (comment_end == std::string::npos) {
+                        rewritten.append(line.substr(pos));
+                        pos = line.size();
+                    } else {
+                        rewritten.append(line.substr(pos, comment_end - pos + 2));
+                        pos = comment_end + 2;
+                        in_block_comment = false;
+                    }
+                    continue;
+                }
+
+                const wallpaper::usize line_comment = line.find("//", pos);
+                const wallpaper::usize block_comment = line.find("/*", pos);
+                const wallpaper::usize comment_pos =
+                    line_comment == std::string::npos
+                        ? block_comment
+                        : block_comment == std::string::npos
+                            ? line_comment
+                            : std::min(line_comment, block_comment);
+
+                if (comment_pos == std::string::npos) {
+                    rewritten.append(rewrite_code_segment(line.substr(pos)));
+                    pos = line.size();
+                    continue;
+                }
+
+                rewritten.append(rewrite_code_segment(line.substr(pos, comment_pos - pos)));
+                if (comment_pos == line_comment) {
+                    rewritten.append(line.substr(comment_pos));
+                    pos = line.size();
+                } else {
+                    const wallpaper::usize comment_end = line.find("*/", comment_pos + 2);
+                    if (comment_end == std::string::npos) {
+                        rewritten.append(line.substr(comment_pos));
+                        pos = line.size();
+                        in_block_comment = true;
+                    } else {
+                        rewritten.append(line.substr(comment_pos, comment_end - comment_pos + 2));
+                        pos = comment_end + 2;
+                    }
+                }
+            }
+            output << rewritten;
+        }
+
+        if (line_end == std::string::npos) {
+            break;
+        }
+        output << '\n';
+        line_start = line_end + 1;
+    }
+
+    return output.str();
+}
+
 [[nodiscard]] std::unordered_set<std::string> CollectVec3Identifiers(const std::string& source)
 {
     std::unordered_set<std::string> identifiers;
@@ -988,7 +1138,7 @@ void recordMacro(const std::string& trimmed, std::map<std::string, int64_t>& mac
 
 [[nodiscard]] std::string RewriteBuiltinIntegerLiteralArguments(std::string source)
 {
-    const std::regex builtin_call_re(R"(\b(mix|smoothstep|step)\s*\()", std::regex::ECMAScript);
+    const std::regex builtin_call_re(R"(\b(mix|smoothstep|step|pow|clamp)\s*\()", std::regex::ECMAScript);
     wallpaper::usize search_pos = 0;
 
     while (search_pos < source.size()) {
@@ -1050,7 +1200,7 @@ void recordMacro(const std::string& trimmed, std::map<std::string, int64_t>& mac
     const auto vec2_functions = CollectTypedFunctionIdentifiers(source, "vec2");
     const auto vec3_functions = CollectTypedFunctionIdentifiers(source, "vec3");
     const auto vec4_functions = CollectTypedFunctionIdentifiers(source, "vec4");
-    const std::regex builtin_call_re(R"(\b(mix|smoothstep|step)\s*\()", std::regex::ECMAScript);
+    const std::regex builtin_call_re(R"(\b(mix|smoothstep|step|pow|clamp)\s*\()", std::regex::ECMAScript);
     wallpaper::usize search_pos = 0;
 
     while (search_pos < source.size()) {
@@ -1111,6 +1261,26 @@ void recordMacro(const std::string& trimmed, std::map<std::string, int64_t>& mac
                 if (dims[2] != 1 && dims[2] != value_dim) {
                     args[2] = vector_ctor + "(" + trimCopy(args[2]) + ")";
                     changed = true;
+                }
+            }
+        } else if (function_name == "pow" && args.size() == 2) {
+            const std::string vector_ctor = VectorConstructorForDimension(max_dim);
+            if (!vector_ctor.empty()) {
+                for (wallpaper::usize index : { 0u, 1u }) {
+                    if (dims[index] == 1) {
+                        args[index] = vector_ctor + "(" + trimCopy(args[index]) + ")";
+                        changed = true;
+                    }
+                }
+            }
+        } else if (function_name == "clamp" && args.size() == 3) {
+            const std::string vector_ctor = VectorConstructorForDimension(max_dim);
+            if (!vector_ctor.empty()) {
+                for (wallpaper::usize index : { 0u, 1u, 2u }) {
+                    if (dims[index] == 1) {
+                        args[index] = vector_ctor + "(" + trimCopy(args[index]) + ")";
+                        changed = true;
+                    }
                 }
             }
         } else {
@@ -1962,9 +2132,15 @@ void ExtractStageInterface(
             qualifier == "in" || qualifier == "attribute" ||
             (qualifier == "varying" && type == wallpaper::ShaderType::FRAGMENT);
         if (is_input) {
-            info.input[match[4]] = declaration;
+            const std::string name = match[4].str();
+            if (name != "gl_Position" && name != "_ww_sv_position") {
+                info.input[name] = declaration;
+            }
         } else {
-            info.output[match[4]] = declaration;
+            const std::string name = match[4].str();
+            if (name != "gl_Position" && name != "_ww_sv_position") {
+                info.output[name] = declaration;
+            }
         }
     }
 }
@@ -2020,6 +2196,10 @@ StructuredStageSource LegalizeStageSource(
         "RewriteMultiVectorScalarDeclarations",
         std::move(result.source),
         [](std::string source) { return RewriteMultiVectorScalarDeclarations(std::move(source)); });
+    result.source = ApplyLegalizerPass(
+        "RewriteUserDefinedModFunction",
+        std::move(result.source),
+        [](std::string source) { return RewriteUserDefinedModFunction(std::move(source)); });
     result.source = ApplyLegalizerPass(
         "RewriteVec3Vec2BinaryOps",
         std::move(result.source),

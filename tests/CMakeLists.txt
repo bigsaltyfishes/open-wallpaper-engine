@@ -123,6 +123,15 @@ gtest_discover_tests(
     PROPERTIES TIMEOUT 30
     DISCOVERY_TIMEOUT 60
 )
+add_executable(shader_preprocessor_compat_test shader_preprocessor_compat_test.cpp)
+target_link_libraries(shader_preprocessor_compat_test PRIVATE ${PROJECT_NAME} wpFs wpScene wpVulkan GTest::gtest_main)
+target_include_directories(shader_preprocessor_compat_test PRIVATE .)
+target_compile_features(shader_preprocessor_compat_test PRIVATE cxx_std_20)
+gtest_discover_tests(
+    shader_preprocessor_compat_test
+    PROPERTIES TIMEOUT 30
+    DISCOVERY_TIMEOUT 60
+)
 add_executable(scenescript_sound_layer_smoke scenescript_sound_layer_smoke.cpp)
 target_link_libraries(scenescript_sound_layer_smoke PRIVATE ${PROJECT_NAME} wpAudio wpScene GTest::gtest_main)
 target_include_directories(scenescript_sound_layer_smoke PRIVATE .)

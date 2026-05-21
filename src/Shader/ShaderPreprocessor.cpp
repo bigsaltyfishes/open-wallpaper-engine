@@ -49,6 +49,16 @@ static constexpr const char* pre_shader_code = R"(#version 330
 #define float4 vec4
 #define lerp mix
 
+vec3 PerformLighting_V1(vec3 worldPos, vec3 albedo, vec3 normal, vec3 viewVector,
+                        vec3 specularTint, vec3 f0, float roughness, float metallic) {
+    return albedo * max(dot(normalize(normal), normalize(viewVector)), 0.0);
+}
+vec3 PerformLighting_V1(vec3 worldPos, vec3 albedo, vec3 normal, vec3 viewVector,
+                        vec3 specularTint, vec3 f0, float roughness, float metallic,
+                        float ao) {
+    return albedo * ao * max(dot(normalize(normal), normalize(viewVector)), 0.0);
+}
+
 __SHADER_PLACEHOLD__
 
 )";
@@ -63,6 +73,10 @@ static constexpr const char* pre_shader_code_frag = R"(
 #define varying in
 #define gl_FragColor glOutColor
 out vec4 glOutColor;
+void clip(float value) { if (value < 0.0) discard; }
+void clip(vec2 value) { if (any(lessThan(value, vec2(0.0)))) discard; }
+void clip(vec3 value) { if (any(lessThan(value, vec3(0.0)))) discard; }
+void clip(vec4 value) { if (any(lessThan(value, vec4(0.0)))) discard; }
 
 )";
 
