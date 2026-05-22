@@ -93,9 +93,10 @@ public:
 
     std::optional<ExImageParameters> CreateExTex(uint32_t witdh, uint32_t height, VkFormat,
                                                  VkImageTiling);
-    ImageSlotsRef                    CreateTex(Image&);
-    void                             SetVideoPlaybackPaused(bool paused);
-    void                             SetVideoPlaybackRate(float rate);
+    ImageSlotsRef CreateTex(Image&);
+    ImageSlotsRef ReplaceTex(Image&, std::string_view previous_key);
+    void          SetVideoPlaybackPaused(bool paused);
+    void          SetVideoPlaybackRate(float rate);
     [[nodiscard]] VideoTextureSubmissionStats VideoSubmissionStats() const;
     void                                      ResetVideoSubmissionStats();
     double                           GetVideoDuration(std::string_view key) const;

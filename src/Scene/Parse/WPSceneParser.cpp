@@ -67,6 +67,7 @@ struct ParseContext {
     std::unordered_set<int32_t>                             attached_layer_nodes;
     std::vector<int32_t>                                    layer_node_order;
     std::vector<std::pair<std::string, std::string>>        pending_scene_scripts;
+    std::unordered_map<std::string, uint32_t>               text_name_counts;
 
     ShaderValueMap             global_base_uniforms;
     std::shared_ptr<SceneNode> effect_camera_node;
@@ -99,6 +100,18 @@ struct RawLayerObject {
 
 namespace
 {
+std::vector<uint8_t> ReadVfsBytes(fs::VFS& vfs, std::string_view path) {
+    auto stream = vfs.Open(path);
+    if (stream == nullptr) return {};
+
+    std::vector<uint8_t> data(stream->Usize());
+    if (data.empty()) return data;
+
+    const auto bytes_read = stream->Read(data.data(), data.size());
+    data.resize(bytes_read);
+    return data;
+}
+
 bool MaterialUsesAudioResponse(const wpscene::WPMaterial& material) {
     const auto combo = material.combos.find("AUDIOPROCESSING");
     return combo != material.combos.end() && combo->second != 0;
@@ -133,7 +146,8 @@ bool HasUpdateScript(const nlohmann::json& value) {
         return false;
     }
 
-    return value.at("script").get<std::string>().find("export function update") != std::string::npos;
+    return value.at("script").get<std::string>().find("export function update") !=
+           std::string::npos;
 }
 
 bool HasRuntimeTextValueBinding(const nlohmann::json& value) {
@@ -880,9 +894,90 @@ std::string TextAnchorForObject(const wpscene::WPTextObject& obj) {
     return obj.alignment;
 }
 
-std::string TextRuntimeName(const wpscene::WPTextObject& obj) {
-    if (! obj.name.empty()) return obj.name;
+std::string TextRuntimeName(const ParseContext& context, const wpscene::WPTextObject& obj) {
+    if (! obj.name.empty()) {
+        const auto count = context.text_name_counts.find(obj.name);
+        if (count == context.text_name_counts.end() || count->second <= 1u) return obj.name;
+    }
     return "__we_text_" + std::to_string(obj.id);
+}
+
+std::shared_ptr<SceneShader> BuildTextSceneShader(fs::VFS& vfs, std::string_view scene_id) {
+    static std::weak_ptr<SceneShader> cached_shader;
+    if (auto shader = cached_shader.lock(); shader != nullptr) return shader;
+
+    std::string vertex_src =
+        "uniform mat4 g_ModelViewProjectionMatrix;\n"
+        "in vec3 a_Position;\n"
+        "in vec2 a_TexCoord;\n"
+        "out vec2 v_TexCoord;\n"
+        "void main() {\n"
+        "  gl_Position = g_ModelViewProjectionMatrix * vec4(a_Position, 1.0);\n"
+        "  v_TexCoord = a_TexCoord;\n"
+        "}\n";
+    std::string fragment_src = "uniform sampler2D g_Texture0;\n"
+                               "in vec2 v_TexCoord;\n"
+                               "void main() {\n"
+                               "  gl_FragColor = texture(g_Texture0, v_TexCoord);\n"
+                               "}\n";
+
+    WPShaderInfo                 shader_info;
+    std::vector<WPShaderTexInfo> tex_infos(1);
+    tex_infos[0].enabled = true;
+
+    std::array units {
+        WPShaderUnit {
+            .stage           = ShaderType::VERTEX,
+            .src             = std::move(vertex_src),
+            .preprocess_info = {},
+        },
+        WPShaderUnit {
+            .stage           = ShaderType::FRAGMENT,
+            .src             = std::move(fragment_src),
+            .preprocess_info = {},
+        },
+    };
+
+    for (auto& unit : units) {
+        unit.src = WPShaderParser::PreShaderSrc(vfs, unit.src, &shader_info, tex_infos);
+    }
+
+    auto shader              = std::make_shared<SceneShader>();
+    shader->name             = "text";
+    shader->default_uniforms = shader_info.svs;
+    if (! WPShaderParser::CompileToSpv(
+            scene_id, units, shader->codes, vfs, &shader_info, tex_infos)) {
+        return nullptr;
+    }
+
+    cached_shader = shader;
+    return shader;
+}
+
+void RegisterTextTexture(Scene& scene, const std::string& texture_name,
+                         const TextLayerState& state) {
+    if (scene.textures.contains(texture_name)) return;
+
+    auto* runtime_images = dynamic_cast<RuntimeImageSource*>(scene.imageParser.get());
+    if (runtime_images == nullptr) return;
+
+    const auto     size = TextLayerRasterSize(state);
+    const uint32_t width =
+        std::clamp(static_cast<uint32_t>(std::ceil(std::max(1.0f, size.x()))), 1u, 4096u);
+    const uint32_t height =
+        std::clamp(static_cast<uint32_t>(std::ceil(std::max(1.0f, size.y()))), 1u, 4096u);
+    std::vector<uint8_t> rgba(static_cast<std::size_t>(width) * height * 4u, 0u);
+    RasterizeTextLayer(state, width, height, rgba);
+
+    runtime_images->SetRgbaImage(texture_name, width, height, rgba.data(), rgba.size());
+
+    SceneTexture texture;
+    texture.url                  = texture_name;
+    texture.sample.wrapS         = TextureWrap::CLAMP_TO_EDGE;
+    texture.sample.wrapT         = TextureWrap::CLAMP_TO_EDGE;
+    texture.sample.minFilter     = TextureFilter::LINEAR;
+    texture.sample.magFilter     = TextureFilter::LINEAR;
+    scene.textures[texture_name] = std::move(texture);
 }
 
 TextLayerState ResolveTextLayerState(const wpscene::WPTextObject& obj, fs::VFS& vfs,
@@ -896,6 +991,9 @@ TextLayerState ResolveTextLayerState(const wpscene::WPTextObject& obj, fs::VFS& 
         .point_size       = obj.pointsize,
         .padding          = static_cast<float>(obj.padding),
         .explicit_size    = explicit_size,
+        .color            = Eigen::Vector3f(obj.color.data()),
+        .alpha            = obj.alpha,
+        .brightness       = obj.brightness,
         .horizontal_align = obj.horizontalalign.empty() ? obj.alignment : obj.horizontalalign,
         .vertical_align   = obj.verticalalign,
         .anchor           = std::move(anchor),
@@ -918,35 +1016,42 @@ TextLayerState ResolveTextLayerState(const wpscene::WPTextObject& obj, fs::VFS& 
             state.resolved_font_kind     = "asset";
             state.resolved_font_identity = font_key;
             state.resolved_font_path     = candidate;
+            state.resolved_font_data     = ReadVfsBytes(vfs, candidate);
             return state;
         }
         if (font_key.starts_with('/') && vfs.Contains(font_key)) {
             state.resolved_font_kind     = "asset";
             state.resolved_font_identity = font_key;
             state.resolved_font_path     = font_key;
+            state.resolved_font_data     = ReadVfsBytes(vfs, font_key);
             return state;
         }
     }
 
     state.resolved_font_kind     = "family";
     state.resolved_font_identity = font_key.empty() ? "default" : font_key;
+    state.resolved_font_path     = ResolveSystemFontPath(state.resolved_font_identity);
     return state;
 }
 
 void ParseTextObj(ParseContext& context, wpscene::WPTextObject& obj) {
-    const auto runtime_name = TextRuntimeName(obj);
-    const auto text     = JsonStringOrObjectValue(obj.text, "text");
-    const auto font_key = JsonStringOrObjectValue(obj.font, {});
-    const auto padding  = static_cast<float>(obj.padding);
-    auto       size     = Eigen::Vector2f(obj.size[0], obj.size[1]);
-    if (size.x() <= 0.0f || size.y() <= 0.0f) {
-        size = EstimateTextLayerSize(text, obj.pointsize, padding);
-    }
+    const auto runtime_name = TextRuntimeName(context, obj);
+    const auto text         = JsonStringOrObjectValue(obj.text, "text");
+    const auto font_key     = JsonStringOrObjectValue(obj.font, {});
+    const auto anchor       = TextAnchorForObject(obj);
+    auto       text_state   = ResolveTextLayerState(obj,
+                                            *context.vfs,
+                                            text,
+                                            font_key,
+                                            Eigen::Vector2f(obj.size[0], obj.size[1]),
+                                            anchor,
+                                            runtime_name);
+    auto       size         = TextLayerRasterSize(text_state);
 
-    auto node_iterator = context.layer_nodes.find(obj.id);
-    auto node = node_iterator != context.layer_nodes.end() && node_iterator->second != nullptr
-                    ? node_iterator->second
-                    : std::make_shared<SceneNode>();
+    auto       node_iterator = context.layer_nodes.find(obj.id);
+    auto       node = node_iterator != context.layer_nodes.end() && node_iterator->second != nullptr
+                          ? node_iterator->second
+                          : std::make_shared<SceneNode>();
     const auto previous_runtime_name = node->Name();
     node->SetName(runtime_name);
     node->SetTranslate(Vector3f(obj.origin.data()));
@@ -961,11 +1066,22 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& obj) {
                   static_cast<uint16_t>(std::clamp(size.y(), 1.0f, 65535.0f)) });
     node->AddMesh(mesh);
 
-    const auto anchor = TextAnchorForObject(obj);
     const bool allow_script_update =
         AllowSceneScriptsForVisibilitySetting(obj.dynamic_visible, obj.visible_setting);
 
     if (context.scene->runtime != nullptr) {
+        const auto texture_name = TextTextureName(runtime_name);
+        RegisterTextTexture(*context.scene, texture_name, text_state);
+        SceneMaterial material;
+        material.name                = "text";
+        material.textures            = { texture_name };
+        material.defines             = { "g_Texture0" };
+        material.blenmode            = BlendMode::Translucent;
+        material.customShader.shader = BuildTextSceneShader(*context.vfs, context.scene->scene_id);
+        if (material.customShader.shader != nullptr) {
+            mesh->AddMaterial(std::move(material));
+        }
+
         if (! previous_runtime_name.empty() && previous_runtime_name != runtime_name) {
             context.scene->runtime->UnregisterNode(previous_runtime_name);
         }
@@ -978,15 +1094,7 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& obj) {
                                                    : nlohmann::json(obj.visible),
                                runtime_name,
                                allow_script_update));
-        context.scene->runtime->RegisterTextLayer(runtime_name,
-                                                  ResolveTextLayerState(
-                                                      obj,
-                                                      *context.vfs,
-                                                      text,
-                                                      font_key,
-                                                      Eigen::Vector2f(obj.size[0], obj.size[1]),
-                                                      anchor,
-                                                      runtime_name));
+        context.scene->runtime->RegisterTextLayer(runtime_name, std::move(text_state));
         if (HasRuntimeTextValueBinding(obj.text)) {
             context.scene->runtime->RegisterTextValue(
                 runtime_name,
@@ -994,12 +1102,45 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& obj) {
         }
         context.scene->runtime->SetNodeTextAlignment(
             runtime_name, anchor, Vector3f(obj.origin.data()));
+        if (obj.dynamic_origin) {
+            context.scene->runtime->RegisterNodeTranslate(
+                runtime_name,
+                node.get(),
+                ResolveVec3Setting(*context.scene->runtime,
+                                   obj.origin_setting,
+                                   runtime_name,
+                                   Vec3SettingSemantic::Generic,
+                                   allow_script_update));
+        }
+        if (obj.dynamic_scale) {
+            context.scene->runtime->RegisterNodeScale(
+                runtime_name,
+                node.get(),
+                ResolveVec3Setting(*context.scene->runtime,
+                                   obj.scale_setting,
+                                   runtime_name,
+                                   Vec3SettingSemantic::Generic,
+                                   allow_script_update));
+        }
+        if (obj.dynamic_angles) {
+            context.scene->runtime->RegisterNodeRotation(
+                runtime_name,
+                node.get(),
+                ResolveVec3Setting(*context.scene->runtime,
+                                   obj.angles_setting,
+                                   runtime_name,
+                                   Vec3SettingSemantic::AnglesDegrees,
+                                   allow_script_update));
+        }
     } else {
         LoadAlignment(*node, anchor, size);
     }
 
     if (allow_script_update) {
         QueueSceneScriptIfNeeded(context, runtime_name, obj.visible_setting);
+        QueueSceneScriptIfNeeded(context, runtime_name, obj.origin_setting);
+        QueueSceneScriptIfNeeded(context, runtime_name, obj.scale_setting);
+        QueueSceneScriptIfNeeded(context, runtime_name, obj.angles_setting);
         QueueSceneScriptIfNeeded(context, runtime_name, obj.text);
     }
 
@@ -1158,17 +1299,29 @@ bool LoadWPMaterialFromPath(fs::VFS& vfs, const std::string& material_path,
 }
 
 struct LoadedMaterialSlot {
-    SceneMaterial        material;
-    wpscene::WPMaterial  source;
-    WPShaderInfo         shader_info;
-    WPShaderValueData    shader_value_data;
+    SceneMaterial       material;
+    wpscene::WPMaterial source;
+    WPShaderInfo        shader_info;
+    WPShaderValueData   shader_value_data;
 };
+
+bool PuppetHasBones(const WPMdl& puppet) {
+    return puppet.puppet != nullptr && ! puppet.puppet->bones.empty();
+}
+
+bool PuppetHasMeshData(const WPMdl& puppet) {
+    for (const auto& mesh : puppet.meshes) {
+        if (! mesh.positions.empty()) return true;
+    }
+    return ! puppet.vertexs.empty();
+}
 
 std::optional<std::vector<LoadedMaterialSlot>>
 TryLoadPuppetMaterialSlots(ParseContext& context, SceneNode* node, wpscene::WPImageObject& wpimgobj,
                            const WPMdl& puppet, const ShaderValueMap& base_const_svs,
                            const WPShaderValueData& image_shader_value_data) {
     if (puppet.meshes.empty()) return std::nullopt;
+    const bool has_bones = PuppetHasBones(puppet);
 
     std::vector<LoadedMaterialSlot> slots;
     slots.reserve(puppet.meshes.size());
@@ -1185,13 +1338,17 @@ TryLoadPuppetMaterialSlots(ParseContext& context, SceneNode* node, wpscene::WPIm
             LOG_ERROR("load puppet mesh material '%s' failed", mesh.mat_json_file.c_str());
             return std::nullopt;
         }
-        WPMdlParser::AddPuppetMatInfo(slot.source, puppet);
-        WPMdlParser::AddPuppetShaderInfo(slot.shader_info, puppet);
-        slot.shader_info.baseConstSvs       = base_const_svs;
-        slot.shader_value_data              = image_shader_value_data;
+        if (has_bones) {
+            WPMdlParser::AddPuppetMatInfo(slot.source, puppet);
+            WPMdlParser::AddPuppetShaderInfo(slot.shader_info, puppet);
+        }
+        slot.shader_info.baseConstSvs = base_const_svs;
+        slot.shader_value_data        = image_shader_value_data;
         slot.shader_value_data.renderTargets.clear();
-        slot.shader_value_data.puppet_layer = WPPuppetLayer(puppet.puppet);
-        slot.shader_value_data.puppet_layer.prepared(wpimgobj.puppet_layers);
+        if (has_bones) {
+            slot.shader_value_data.puppet_layer = WPPuppetLayer(puppet.puppet);
+            slot.shader_value_data.puppet_layer.prepared(wpimgobj.puppet_layers);
+        }
 
         if (! LoadMaterial(*context.vfs,
                            slot.source,
@@ -1297,16 +1454,15 @@ private:
         "_rt_bloom_combine",
     };
 
-    Scene& m_scene;
-    bool   m_committed { false };
+    Scene&                                                                m_scene;
+    bool                                                                  m_committed { false };
     std::vector<std::pair<std::string, std::optional<SceneRenderTarget>>> m_previous;
 };
 
-std::optional<StagedPostProcessNode>
-BuildPostProcessNode(ParseContext&                   context,
-                     const std::string&              material_path,
-                     const std::vector<std::string>& textures,
-                     const wpscene::WPSceneGeneral&  general) {
+std::optional<StagedPostProcessNode> BuildPostProcessNode(ParseContext&      context,
+                                                          const std::string& material_path,
+                                                          const std::vector<std::string>& textures,
+                                                          const wpscene::WPSceneGeneral&  general) {
     nlohmann::json json;
     if (! PARSE_JSON(fs::GetFileContent(*context.vfs, "/assets/" + material_path), json)) {
         LOG_ERROR("load bloom material '%s' failed", material_path.c_str());
@@ -1531,14 +1687,20 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     (void)hasPuppet;
 
     std::unique_ptr<WPMdl> puppet;
+    bool                   has_puppet_bones = false;
+    bool                   has_puppet_mesh  = false;
     if (! wpimgobj.puppet.empty()) {
         puppet = std::make_unique<WPMdl>();
         if (! WPMdlParser::Parse(wpimgobj.puppet, vfs, *puppet)) {
             LOG_INFO("parse puppet failed: %s", wpimgobj.puppet.c_str());
             puppet = nullptr;
-        } else if (puppet->puppet->bones.size() == 0) {
-            LOG_INFO("puppet has no bones: %s", wpimgobj.puppet.c_str());
-            puppet = nullptr;
+        } else {
+            has_puppet_bones = PuppetHasBones(*puppet);
+            has_puppet_mesh  = PuppetHasMeshData(*puppet);
+            if (! has_puppet_bones && ! has_puppet_mesh) {
+                LOG_INFO("puppet has no mesh data: %s", wpimgobj.puppet.c_str());
+                puppet = nullptr;
+            }
         }
     }
 
@@ -1648,7 +1810,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     {
         if (! hasEffect) {
             svData.parallaxDepth = { wpimgobj.parallaxDepth[0], wpimgobj.parallaxDepth[1] };
-            if (puppet) {
+            if (puppet && has_puppet_bones) {
                 WPMdlParser::AddPuppetShaderInfo(shaderInfo, *puppet);
             }
         }
@@ -1678,9 +1840,9 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     }
 
     // mesh
-    SceneMesh effct_final_mesh {};
-    auto      spMesh = std::make_shared<SceneMesh>();
-    auto&     mesh   = *spMesh;
+    SceneMesh                                      effct_final_mesh {};
+    auto                                           spMesh = std::make_shared<SceneMesh>();
+    auto&                                          mesh   = *spMesh;
     std::optional<std::vector<LoadedMaterialSlot>> puppet_material_slots;
 
     {
@@ -1698,16 +1860,20 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                     mesh, { (uint16_t)wpimgobj.size[0], (uint16_t)wpimgobj.size[1] }, mapRate);
                 WPMdlParser::GenPuppetMesh(effct_final_mesh, *puppet);
 
-                wpscene::WPImageEffect puppet_effect;
-                wpscene::WPMaterial    puppet_mat;
-                puppet_mat             = wpimgobj.material;
-                puppet_mat.textures[0] = "";
-                WPMdlParser::AddPuppetMatInfo(puppet_mat, *puppet);
-                puppet_effect.materials.push_back(puppet_mat);
-                wpimgobj.effects.push_back(puppet_effect);
+                if (has_puppet_bones) {
+                    wpscene::WPImageEffect puppet_effect;
+                    wpscene::WPMaterial    puppet_mat;
+                    puppet_mat             = wpimgobj.material;
+                    puppet_mat.textures[0] = "";
+                    WPMdlParser::AddPuppetMatInfo(puppet_mat, *puppet);
+                    puppet_effect.materials.push_back(puppet_mat);
+                    wpimgobj.effects.push_back(puppet_effect);
+                }
             } else {
-                svData.puppet_layer = WPPuppetLayer(puppet->puppet);
-                svData.puppet_layer.prepared(wpimgobj.puppet_layers);
+                if (has_puppet_bones) {
+                    svData.puppet_layer = WPPuppetLayer(puppet->puppet);
+                    svData.puppet_layer.prepared(wpimgobj.puppet_layers);
+                }
                 WPMdlParser::GenPuppetMesh(mesh, *puppet);
                 puppet_material_slots = TryLoadPuppetMaterialSlots(
                     context, spImgNode.get(), wpimgobj, *puppet, baseConstSvs, svData);
@@ -1747,9 +1913,8 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     if (puppet_material_slots.has_value()) {
         for (auto& slot : *puppet_material_slots) {
             mesh.AddMaterial(std::move(slot.material));
-            const auto material_slot_index =
-                static_cast<uint32_t>(mesh.MaterialSlots().size() - 1);
-            auto* material_slot = mesh.MaterialForSlot(material_slot_index);
+            const auto material_slot_index = static_cast<uint32_t>(mesh.MaterialSlots().size() - 1);
+            auto*      material_slot       = mesh.MaterialForSlot(material_slot_index);
             context.shader_updater->SetNodeData(
                 spImgNode.get(), material_slot_index, slot.shader_value_data);
             RegisterMaterialConstants(context, material_slot, slot.source, slot.shader_info);
@@ -1984,7 +2149,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                 auto spMesh = std::make_shared<SceneMesh>();
                 {
                     svData.parallaxDepth = { wpimgobj.parallaxDepth[0], wpimgobj.parallaxDepth[1] };
-                    if (puppet && wpmat.use_puppet) {
+                    if (puppet && has_puppet_bones && wpmat.use_puppet) {
                         svData.puppet_layer = WPPuppetLayer(puppet->puppet);
                         svData.puppet_layer.prepared(wpimgobj.puppet_layers);
                     }
@@ -2366,6 +2531,13 @@ std::shared_ptr<Scene> WPSceneParser::Parse(const SceneParseRequest& request,
             AddWPObject<wpscene::WPModelObject>(wp_objs, obj, vfs);
         } else if (obj.contains("camera") && ! obj.at("camera").is_null()) {
             AddWPObject<wpscene::WPCameraObject>(wp_objs, obj, vfs);
+        }
+    }
+    context.text_name_counts.clear();
+    for (const auto& obj : wp_objs) {
+        const auto* text = std::get_if<wpscene::WPTextObject>(&obj);
+        if (text != nullptr && ! text->name.empty()) {
+            ++context.text_name_counts[text->name];
         }
     }
 

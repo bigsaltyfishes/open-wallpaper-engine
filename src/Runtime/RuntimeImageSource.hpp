@@ -46,6 +46,11 @@ public:
         return m_fallback != nullptr ? m_fallback->ParseHeader(name) : ImageHeader {};
     }
 
+    bool IsRuntimeImage(const std::string& name) const {
+        std::lock_guard lock(m_mutex);
+        return m_runtime_images.find(name) != m_runtime_images.end();
+    }
+
     void SetRgbaImage(std::string name, uint32_t width, uint32_t height, const uint8_t* rgba,
                       std::size_t rgba_len) {
         if (name.empty() || width == 0 || height == 0 || rgba == nullptr) return;
@@ -97,7 +102,7 @@ public:
     }
 
 private:
-    std::mutex                                              m_mutex;
+    mutable std::mutex                                      m_mutex;
     std::unique_ptr<IImageParser>                           m_fallback;
     std::unordered_map<std::string, std::shared_ptr<Image>> m_runtime_images;
     std::atomic<uint64_t>                                   m_next_version { 0 };

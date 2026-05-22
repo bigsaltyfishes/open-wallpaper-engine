@@ -216,7 +216,7 @@ gtest_discover_tests(
     DISCOVERY_TIMEOUT 60
 )
 add_executable(text_object_runtime_test text_object_runtime_test.cpp)
-target_link_libraries(text_object_runtime_test PRIVATE ${PROJECT_NAME} wpAudio wpScene wpFs GTest::gtest_main)
+target_link_libraries(text_object_runtime_test PRIVATE ${PROJECT_NAME} wpAudio wpScene wpFs wpVulkan GTest::gtest_main)
 target_include_directories(text_object_runtime_test PRIVATE .)
 target_compile_features(text_object_runtime_test PRIVATE cxx_std_20)
 gtest_discover_tests(

@@ -41,6 +41,7 @@ public:
         // -----prepared
         // vulkan texs
         std::vector<ImageSlotsRef> vk_textures;
+        std::vector<std::string>   vk_texture_image_keys;
         std::vector<i32>           vk_tex_binding;
         std::vector<bool>          video_textures;
         ImageParameters            vk_output;

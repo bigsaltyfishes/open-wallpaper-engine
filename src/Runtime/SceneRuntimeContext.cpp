@@ -1,6 +1,7 @@
 #include "Runtime/SceneRuntimeContext.hpp"
 
 #include "Runtime/DynamicValue.hpp"
+#include "Runtime/RuntimeImageSource.hpp"
 #include "Runtime/ScriptedDynamicValue.hpp"
 #include "Scene/include/Scene/Scene.h"
 #include "Scene/include/Scene/SceneImageEffectLayer.h"
@@ -15,6 +16,7 @@
 #include <cmath>
 #include <filesystem>
 #include <sstream>
+#include <vector>
 
 namespace wallpaper
 {
@@ -36,6 +38,28 @@ std::string MakeWorkshopLocalAlias(std::string_view canonical_path) {
     if (slash == std::string::npos || slash + 1 >= normalized.size()) return {};
 
     return std::string("models/") + normalized.substr(slash + 1);
+}
+
+bool UpdateRuntimeTextTexture(Scene& scene, const TextLayerState& state) {
+    if (state.layer_key.empty() || scene.imageParser == nullptr) return false;
+
+    auto* runtime_images = dynamic_cast<RuntimeImageSource*>(scene.imageParser.get());
+    if (runtime_images == nullptr) return false;
+
+    const auto size = TextLayerRasterSize(state);
+    const uint32_t width =
+        std::clamp(static_cast<uint32_t>(std::ceil(std::max(1.0f, size.x()))), 1u, 4096u);
+    const uint32_t height =
+        std::clamp(static_cast<uint32_t>(std::ceil(std::max(1.0f, size.y()))), 1u, 4096u);
+    std::vector<uint8_t> rgba(static_cast<std::size_t>(width) * height * 4u, 0u);
+    RasterizeTextLayer(state, width, height, rgba);
+
+    runtime_images->SetRgbaImage(TextTextureName(state.layer_key),
+                                 width,
+                                 height,
+                                 rgba.data(),
+                                 rgba.size());
+    return true;
 }
 
 struct ClonedMaterialBinding {
@@ -358,7 +382,9 @@ void SceneRuntimeContext::SetCursorInput(float x, float y) {
     y                                          = std::clamp(y, 0.0f, 1.0f);
     m_host_context->cursor_normalized_position = Eigen::Vector2f(x, y);
     m_host_context->cursor_world_position      = Eigen::Vector3f(
-        x * m_host_context->canvas_size.x(), y * m_host_context->canvas_size.y(), 0.0f);
+        x * m_host_context->canvas_size.x(),
+        (1.0f - y) * m_host_context->canvas_size.y(),
+        0.0f);
 }
 
 void SceneRuntimeContext::SetCursorEnter(bool entered) {
@@ -935,6 +961,8 @@ bool SceneRuntimeContext::ClearNodeTextDirty(std::string_view name) {
 void SceneRuntimeContext::PumpTextLayerCache() {
     for (auto& [name, layer] : m_text_layers) {
         (void)name;
+        const auto state = layer.state();
+        if (state.cache_dirty && m_scene != nullptr) UpdateRuntimeTextTexture(*m_scene, state);
         layer.ClearDirty();
     }
 }
@@ -1154,6 +1182,30 @@ void SceneRuntimeContext::DispatchCursorUp(int button) {
         m_scripted_values, m_scene_scripts, *m_host_context, [](auto& target, const auto& host) {
             target.DispatchCursorUp(host);
         });
+}
+
+bool SceneRuntimeContext::DispatchCursorFrameEvents(bool cursor_was_in_window) {
+    const bool cursor_in_window = m_host_context->cursor_in_window;
+    if (cursor_in_window && ! cursor_was_in_window) {
+        DispatchCursorEnter();
+    } else if (! cursor_in_window && cursor_was_in_window) {
+        DispatchCursorLeave();
+    }
+
+    if (cursor_in_window) DispatchCursorMove();
+
+    for (int button = 0; button < 32; ++button) {
+        const uint32_t mask = 1u << static_cast<uint32_t>(button);
+        if (cursor_in_window && (m_host_context->mouse_buttons_pressed & mask) != 0) {
+            DispatchCursorDown(button);
+            DispatchCursorClick(button);
+        }
+        if ((m_host_context->mouse_buttons_released & mask) != 0) {
+            DispatchCursorUp(button);
+        }
+    }
+
+    return cursor_in_window;
 }
 
 void SceneRuntimeContext::DispatchMediaThumbnailChanged(const Eigen::Vector3f& primary_color,

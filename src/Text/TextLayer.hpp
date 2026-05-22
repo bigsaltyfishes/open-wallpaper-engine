@@ -5,30 +5,35 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace wallpaper
 {
 
 struct TextLayerState {
-    std::string     text;
-    std::string     layer_key;
-    std::string     font_key;
-    std::string     resolved_font_kind { "family" };
-    std::string     resolved_font_identity;
-    std::string     resolved_font_path;
-    float           point_size { 12.0f };
-    float           padding { 0.0f };
-    Eigen::Vector2f explicit_size { Eigen::Vector2f::Zero() };
-    std::string     horizontal_align;
-    std::string     vertical_align;
-    std::string     anchor;
-    bool            dirty { false };
-    bool            cache_dirty { false };
-    bool            full_dirty { false };
-    uint64_t        cache_revision { 0 };
-    std::string     texture_cache_key;
-    std::string     render_backend { "cpu-layout-only-gpu-rendering-deferred" };
-    Eigen::Vector2f layout_size { Eigen::Vector2f::Zero() };
+    std::string          text;
+    std::string          layer_key;
+    std::string          font_key;
+    std::string          resolved_font_kind { "family" };
+    std::string          resolved_font_identity;
+    std::string          resolved_font_path;
+    std::vector<uint8_t> resolved_font_data;
+    float                point_size { 12.0f };
+    float                padding { 0.0f };
+    Eigen::Vector2f      explicit_size { Eigen::Vector2f::Zero() };
+    Eigen::Vector3f      color { Eigen::Vector3f::Ones() };
+    float                alpha { 1.0f };
+    float                brightness { 1.0f };
+    std::string          horizontal_align;
+    std::string          vertical_align;
+    std::string          anchor;
+    bool                 dirty { false };
+    bool                 cache_dirty { false };
+    bool                 full_dirty { false };
+    uint64_t             cache_revision { 0 };
+    std::string          texture_cache_key;
+    std::string          render_backend { "runtime-rgba-texture" };
+    Eigen::Vector2f      layout_size { Eigen::Vector2f::Zero() };
 };
 
 class TextLayer {
@@ -52,5 +57,10 @@ private:
 };
 
 Eigen::Vector2f EstimateTextLayerSize(std::string_view text, float point_size, float padding);
+Eigen::Vector2f MeasureTextLayerSize(const TextLayerState& state);
+Eigen::Vector2f TextLayerRasterSize(const TextLayerState& state);
+std::string     TextTextureName(std::string_view layer_key);
+void            RasterizeTextLayer(const TextLayerState& state, uint32_t width, uint32_t height,
+                                   std::vector<uint8_t>& rgba);
 
 } // namespace wallpaper

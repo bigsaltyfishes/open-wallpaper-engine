@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdint>
 #include <nlohmann/json.hpp>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -19,6 +20,44 @@ class VFS;
 namespace wpscene
 {
 
+inline const nlohmann::json& UnwrapMiscSettingValue(const nlohmann::json& value) {
+    if (value.is_object() && value.contains("value")) return value.at("value");
+    return value;
+}
+
+inline bool HasDynamicMiscSetting(const nlohmann::json& value) {
+    return value.is_object() && (value.contains("script") || value.contains("user"));
+}
+
+inline void ReadMiscVec3Setting(const nlohmann::json& json, const char* key,
+                                std::array<float, 3>* destination,
+                                nlohmann::json* setting, bool* dynamic) {
+    if (! json.contains(key) || destination == nullptr || setting == nullptr ||
+        dynamic == nullptr) {
+        return;
+    }
+
+    *setting = json.at(key);
+    *dynamic = HasDynamicMiscSetting(*setting);
+
+    const auto& source = UnwrapMiscSettingValue(*setting);
+    if (source.is_array() && source.size() >= 3) {
+        (*destination)[0] = source.at(0).get<float>();
+        (*destination)[1] = source.at(1).get<float>();
+        (*destination)[2] = source.at(2).get<float>();
+        return;
+    }
+    if (source.is_number()) {
+        const float scalar = source.get<float>();
+        *destination       = { scalar, scalar, scalar };
+        return;
+    }
+    if (source.is_string()) {
+        std::istringstream stream(source.get<std::string>());
+        stream >> (*destination)[0] >> (*destination)[1] >> (*destination)[2];
+    }
+}
+
 struct WPMiscObjectBase {
     int32_t              id { 0 };
     int32_t              parent_id { -1 };
@@ -31,18 +70,24 @@ struct WPMiscObjectBase {
     bool                 locktransforms { false };
     bool                 muteineditor { false };
     bool                 nointerpolation { false };
+    bool                 dynamic_origin { false };
+    bool                 dynamic_scale { false };
+    bool                 dynamic_angles { false };
     bool                 dynamic_visible { false };
     std::vector<int32_t> dependencies;
     nlohmann::json       instance;
+    nlohmann::json       origin_setting;
+    nlohmann::json       scale_setting;
+    nlohmann::json       angles_setting;
     nlohmann::json       visible_setting;
     nlohmann::json       field_bindings;
 
     void FromCommonJson(const nlohmann::json& json) {
         GET_JSON_NAME_VALUE_NOWARN(json, "id", id);
         GET_JSON_NAME_VALUE_NOWARN(json, "name", name);
-        GET_JSON_NAME_VALUE_NOWARN(json, "origin", origin);
-        GET_JSON_NAME_VALUE_NOWARN(json, "scale", scale);
-        GET_JSON_NAME_VALUE_NOWARN(json, "angles", angles);
+        ReadMiscVec3Setting(json, "origin", &origin, &origin_setting, &dynamic_origin);
+        ReadMiscVec3Setting(json, "scale", &scale, &scale_setting, &dynamic_scale);
+        ReadMiscVec3Setting(json, "angles", &angles, &angles_setting, &dynamic_angles);
         GET_JSON_NAME_VALUE_NOWARN(json, "parallaxDepth", parallaxDepth);
         GET_JSON_NAME_VALUE_NOWARN(json, "visible", visible);
         if (json.contains("visible")) {

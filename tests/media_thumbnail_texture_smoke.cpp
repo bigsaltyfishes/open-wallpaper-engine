@@ -28,6 +28,26 @@ public:
     ImageHeader            ParseHeader(const std::string&) override { return {}; }
 };
 
+class CountingImageParser final : public IImageParser {
+public:
+    int parse_calls { 0 };
+    int header_calls { 0 };
+
+    std::shared_ptr<Image> Parse(const std::string& name) override {
+        ++parse_calls;
+        auto image           = std::make_shared<Image>();
+        image->key           = name;
+        image->header.width  = 1;
+        image->header.height = 1;
+        return image;
+    }
+
+    ImageHeader ParseHeader(const std::string&) override {
+        ++header_calls;
+        return {};
+    }
+};
+
 std::unique_ptr<DynamicValue> BoundValue(SceneRuntimeContext& runtime,
                                          std::string_view     property_name,
                                          std::unique_ptr<DynamicValue> value) {
@@ -269,6 +289,23 @@ TEST(MediaThumbnailTextureSmoke, RuntimeImageSourceStoresExactRgbaPayload) {
     ASSERT_EQ(mip.size, static_cast<isize>(rgba.size()));
     ASSERT_NE(mip.data, nullptr);
     EXPECT_EQ(std::memcmp(mip.data.get(), rgba.data(), rgba.size()), 0);
+}
+
+TEST(MediaThumbnailTextureSmoke, RuntimeImageSourceClassifiesRuntimeImagesWithoutFallbackParse) {
+    auto* fallback = new CountingImageParser();
+    RuntimeImageSource source { std::unique_ptr<IImageParser>(fallback) };
+
+    EXPECT_TRUE(source.IsRuntimeImage("$mediaThumbnail"));
+    EXPECT_FALSE(source.IsRuntimeImage("materials/static.tex"));
+    EXPECT_EQ(fallback->parse_calls, 0);
+    EXPECT_EQ(fallback->header_calls, 0);
+
+    const std::vector<uint8_t> rgba { 0xFF, 0x00, 0x00, 0xFF };
+    source.SetRgbaImage("__we_text_texture_layer", 1, 1, rgba.data(), rgba.size());
+
+    EXPECT_TRUE(source.IsRuntimeImage("__we_text_texture_layer"));
+    EXPECT_EQ(fallback->parse_calls, 0);
+    EXPECT_EQ(fallback->header_calls, 0);
 }
 
 } // namespace

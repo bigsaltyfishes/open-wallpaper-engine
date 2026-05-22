@@ -131,6 +131,35 @@ void renderTargetAliasesResolveForOutputAndSampledSpecTextures() {
     assert(sampled_pass->desc().textures[0] == "_rt_resolved");
 }
 
+void runtimeTextTextureNamesStayImported() {
+    Scene scene;
+    installDefaultTargets(scene);
+    scene.textures["runtime/text/Clock"].url = "runtime/text/Clock";
+
+    auto text = makeNode("text", { "runtime/text/Clock" });
+    scene.sceneGraph->AppendChild(text);
+
+    const auto graph  = wallpaper::sceneToRenderGraph(scene);
+    const auto passes = graphPasses(*graph);
+
+    const auto* text_pass = findCustomPass(passes, "text");
+    assert(text_pass->desc().textures.size() == 1);
+    assert(text_pass->desc().textures[0] == "runtime/text/Clock");
+
+    const auto order = graph->topologicalOrder();
+    const auto reads = graph->getLastReadTexs({ order });
+    bool found_imported_text_texture = false;
+    for (const auto& pass_reads : reads) {
+        for (const auto* texture : pass_reads) {
+            if (texture != nullptr && texture->key() == "runtime/text/Clock") {
+                found_imported_text_texture =
+                    texture->type() == wallpaper::rg::TexNode::TexType::Imported;
+            }
+        }
+    }
+    assert(found_imported_text_texture);
+}
+
 void submeshMaterialSlotsEmitDistinctCustomPasses() {
     Scene scene;
     installDefaultTargets(scene);
@@ -779,6 +808,7 @@ void postProcessCopyStepsResolveRenderTargetAliases() {
 
 int main() {
     renderTargetAliasesResolveForOutputAndSampledSpecTextures();
+    runtimeTextTextureNamesStayImported();
     submeshMaterialSlotsEmitDistinctCustomPasses();
     submeshMaterialRoutingDoesNotRequireSlotZero();
     skippedBasePassStillEmitsEffectPasses();

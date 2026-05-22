@@ -130,6 +130,7 @@ public:
     void                         DispatchCursorLeave();
     void                         DispatchCursorMove();
     void                         DispatchCursorUp(int button = 0);
+    bool                         DispatchCursorFrameEvents(bool cursor_was_in_window);
     void                         DispatchMediaThumbnailChanged(const Eigen::Vector3f& primary_color,
                                                                const Eigen::Vector3f& text_color);
     void                         SetMediaIntegrationEnabled(bool enabled);

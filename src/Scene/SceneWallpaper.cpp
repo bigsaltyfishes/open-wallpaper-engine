@@ -623,32 +623,14 @@ private:
                     const MouseButtonSnapshot buttons = consumeMouseButtonSnapshot();
                     m_scene->runtime->SetCursorButtons(
                         buttons.down, buttons.pressed, buttons.released);
-                    const bool cursor_in_window = m_cursor_in_window.load();
-                    if (cursor_in_window && ! m_cursor_was_in_window) {
-                        m_scene->runtime->DispatchCursorEnter();
-                    } else if (! cursor_in_window && m_cursor_was_in_window) {
-                        m_scene->runtime->DispatchCursorLeave();
-                    }
-                    m_cursor_was_in_window = cursor_in_window;
-
-                    if (cursor_in_window) {
-                        m_scene->runtime->DispatchCursorMove();
-                        for (int button = 0; button < 32; ++button) {
-                            const uint32_t mask = 1u << static_cast<uint32_t>(button);
-                            if ((buttons.pressed & mask) != 0) {
-                                m_scene->runtime->DispatchCursorDown(button);
-                                m_scene->runtime->DispatchCursorClick(button);
-                            }
-                            if ((buttons.released & mask) != 0) {
-                                m_scene->runtime->DispatchCursorUp(button);
-                            }
-                        }
-                    }
+                    m_cursor_was_in_window =
+                        m_scene->runtime->DispatchCursorFrameEvents(m_cursor_was_in_window);
                 }
             }
             m_scene->paritileSys->Emitt();
             if (m_scene->runtime != nullptr) {
                 m_scene->runtime->Tick(frame_time);
+                m_scene->runtime->PumpTextLayerCache();
                 if (m_scene->runtime->ConsumeSceneGraphMutationFlag()) {
                     rebuildRenderGraph();
                 }

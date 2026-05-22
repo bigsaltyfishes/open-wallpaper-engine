@@ -2,6 +2,7 @@
 #include "Scene/Scene.h"
 #include "Scene/SceneShader.h"
 #include "Runtime/SceneRuntimeContext.hpp"
+#include "Runtime/RuntimeImageSource.hpp"
 
 #include "SpecTexs.hpp"
 #include "Vulkan/Shader.hpp"
@@ -17,6 +18,7 @@
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <string>
 
 using namespace wallpaper::vulkan;
 
@@ -157,6 +159,7 @@ static void UpdateUniform(StagingBuffer* buf, const StagingBufferRef& bufref,
 
 void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingResources& rr) {
     m_desc.vk_textures.resize(m_desc.textures.size());
+    m_desc.vk_texture_image_keys.resize(m_desc.textures.size());
     m_desc.video_textures.resize(m_desc.textures.size(), false);
     for (usize i = 0; i < m_desc.textures.size(); i++) {
         auto& tex_name = m_desc.textures[i];
@@ -174,6 +177,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             auto image = scene.imageParser->Parse(tex_name);
             if (image) {
                 m_desc.video_textures[i] = image->header.isVideo;
+                m_desc.vk_texture_image_keys[i] = image->key;
                 img_slots                = device.tex_cache().CreateTex(*image);
             } else {
                 LOG_ERROR("parse tex \"%s\" failed", tex_name.c_str());
@@ -440,10 +444,12 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
     auto* scene_ptr       = &scene;
     auto* device_ptr      = &device;
     auto* shader_updater  = scene.shaderValueUpdater.get();
+    auto* runtime_images  = dynamic_cast<wallpaper::RuntimeImageSource*>(scene.imageParser.get());
     auto& sprites         = m_desc.sprites_map;
     auto& textures        = m_desc.textures;
     auto& video_textures  = m_desc.video_textures;
     auto& vk_textures     = m_desc.vk_textures;
+    auto& vk_texture_image_keys = m_desc.vk_texture_image_keys;
     auto  camera_override = m_desc.camera_override;
     auto  material_slot   = m_desc.material_slot;
 
@@ -456,8 +462,10 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                         device_ptr,
                         &textures,
                         &video_textures,
+                        runtime_images,
                         &sprites,
                         &vk_textures,
+                        &vk_texture_image_keys,
                         camera_override,
                         material_slot,
                         update_dyn_buf_op]() {
@@ -515,6 +523,26 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                         textures[i], device_ptr->tex_cache().GetVideoDuration(textures[i]));
                 }
             }
+        }
+        for (usize i = 0; i < textures.size(); ++i) {
+            if (i >= video_textures.size() || i >= vk_textures.size()) continue;
+            if (video_textures[i] || textures[i].empty() || IsSpecTex(textures[i])) continue;
+            if (runtime_images == nullptr || ! runtime_images->IsRuntimeImage(textures[i])) {
+                continue;
+            }
+
+            auto image = runtime_images->Parse(textures[i]);
+            if (image == nullptr || image->header.isVideo) continue;
+            if (i < vk_texture_image_keys.size() && vk_texture_image_keys[i] == image->key) {
+                continue;
+            }
+
+            const auto previous_key = i < vk_texture_image_keys.size()
+                                          ? std::string_view(vk_texture_image_keys[i])
+                                          : std::string_view();
+            vk_textures[i] = device_ptr->tex_cache().ReplaceTex(*image, previous_key);
+            if (i >= vk_texture_image_keys.size()) vk_texture_image_keys.resize(i + 1);
+            vk_texture_image_keys[i] = image->key;
         }
         if (update_dyn_buf_op) update_dyn_buf_op();
     };

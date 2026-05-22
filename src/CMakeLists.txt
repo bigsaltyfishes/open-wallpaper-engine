@@ -1,5 +1,6 @@
 find_package(OpenGL REQUIRED)
 find_package(Threads REQUIRED)
+find_package(Freetype REQUIRED)
 pkg_check_modules(LZ4 REQUIRED IMPORTED_TARGET liblz4)
 pkg_check_modules(AVFORMAT REQUIRED IMPORTED_TARGET libavformat)
 pkg_check_modules(AVCODEC REQUIRED IMPORTED_TARGET libavcodec)
@@ -112,6 +113,7 @@ target_link_libraries(
   ${PROJECT_NAME}
   PUBLIC wpUtils
   PRIVATE ${InteralLib} nlohmann_json::nlohmann_json quickjs::quickjs PkgConfig::LZ4
+          Freetype::Freetype
           PkgConfig::AVFORMAT
           PkgConfig::AVCODEC
           PkgConfig::AVUTIL
@@ -122,7 +124,6 @@ if(APPLE)
   target_link_libraries(
     ${PROJECT_NAME}
     PUBLIC
-      ${CORE_GRAPHICS_FRAMEWORK}
       ${CORE_AUDIO_FRAMEWORK}
       ${AUDIO_TOOLBOX_FRAMEWORK}
       ${AUDIO_UNIT_FRAMEWORK}

@@ -188,6 +188,16 @@ std::vector<uint8_t> BuildMdlv21TwoMeshFixture() {
     return b.Take();
 }
 
+std::vector<uint8_t> BuildMdlv21MeshOnlyFixture() {
+    Bytes b;
+    b.Stamp("MDL", 21);
+    b.U32(kSkinUvFlag);
+    b.U32(1);
+    b.U32(1);
+    WriteMesh(b, "mat/head.json", 10);
+    return b.Take();
+}
+
 std::vector<uint8_t> BuildMdlv21TranslatedBonesFixture() {
     Bytes b;
     b.Stamp("MDL", 21);
@@ -356,6 +366,24 @@ TEST(MdlSchema, ParsesMdlv21PartsBeforeMdlsAndMultipleMeshes) {
     EXPECT_EQ(mdl.meshes[1].parts[0].id, 20u);
     EXPECT_EQ(mdl.mat_json_file, "mat/head.json");
     EXPECT_EQ(mdl.vertexs.size(), 3u);
+}
+
+TEST(MdlSchema, ParsesMdlv21MeshDataWithoutOptionalMdlsBlock) {
+    fs::VFS vfs;
+    MountMdlFixture(vfs, BuildMdlv21MeshOnlyFixture());
+    WPMdl mdl;
+
+    ASSERT_TRUE(WPMdlParser::Parse("sample.mdl", vfs, mdl));
+    EXPECT_EQ(mdl.mdlv, 21);
+    EXPECT_EQ(mdl.mdl_header.mesh_count, 1u);
+    ASSERT_EQ(mdl.meshes.size(), 1u);
+    EXPECT_EQ(mdl.meshes[0].mat_json_file, "mat/head.json");
+    ASSERT_EQ(mdl.meshes[0].positions.size(), 3u);
+    ASSERT_EQ(mdl.meshes[0].parts.size(), 1u);
+    EXPECT_EQ(mdl.meshes[0].parts[0].id, 10u);
+    EXPECT_EQ(mdl.mat_json_file, "mat/head.json");
+    EXPECT_EQ(mdl.vertexs.size(), 3u);
+    EXPECT_EQ(mdl.puppet, nullptr);
 }
 
 TEST(MdlSchema, GeneratesOneSubmeshPerMdlv21Mesh) {

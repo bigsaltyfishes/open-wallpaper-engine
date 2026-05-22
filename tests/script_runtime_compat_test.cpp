@@ -460,7 +460,7 @@ function cursorDown(event) {
   if (event.button === 1 &&
       event.normalizedPosition.x === 0.25 &&
       event.position.x === 480 &&
-      event.worldPosition.y === 810) ok++;
+      event.worldPosition.y === 270) ok++;
 }
 function update() {
   if (ok === 1) scene.getObject('probe').visible = true;

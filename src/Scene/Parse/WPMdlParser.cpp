@@ -349,8 +349,10 @@ bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
         }
         MirrorFirstMeshToLegacyFields(mdl);
         if (! PeekBlockMagic(f, "MDLS")) {
-            LOG_INFO("mdl missing MDLS section: %s", str_path.c_str());
-            return false;
+            LOG_INFO("read puppet mesh: mdlv: %d, meshes: %zu, no MDLS section",
+                     mdl.mdlv,
+                     mdl.meshes.size());
+            return true;
         }
         mdl.mdls = ReadMDLVesion(f);
     } else {

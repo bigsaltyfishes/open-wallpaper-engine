@@ -172,6 +172,17 @@ std::string BuildTwoMeshPuppetMdlFixture() {
     return b.TakeString();
 }
 
+std::string BuildMeshOnlyPuppetMdlFixture() {
+    Bytes b;
+    b.Stamp("MDL", 21);
+    b.U32(kSceneTestSkinUvFlag);
+    b.U32(1);
+    b.U32(2);
+    WritePuppetMesh(b, "mat/head.json", 10);
+    WritePuppetMesh(b, "mat/eyes.json", 20);
+    return b.TakeString();
+}
+
 std::string BuildLegacySingleMeshPuppetMdlFixture() {
     Bytes b;
     b.Stamp("MDL", 20);
@@ -276,11 +287,13 @@ std::string PuppetMaterialJson(std::string_view                        shader,
 
 void AddPuppetImageSceneFiles(std::map<std::string, std::string>& files,
                               bool                               include_eyes_material = true,
-                              bool                               legacy_puppet = false) {
+                              bool                               legacy_puppet = false,
+                              bool                               mesh_only_puppet = false) {
     files["/puppet_image.json"] =
         R"({"width":64,"height":32,"material":"mat/base.json","puppet":"puppet.mdl"})";
-    files["/puppet.mdl"] =
-        legacy_puppet ? BuildLegacySingleMeshPuppetMdlFixture() : BuildTwoMeshPuppetMdlFixture();
+    files["/puppet.mdl"] = legacy_puppet       ? BuildLegacySingleMeshPuppetMdlFixture()
+                            : mesh_only_puppet ? BuildMeshOnlyPuppetMdlFixture()
+                                               : BuildTwoMeshPuppetMdlFixture();
     files["/mat/base.json"] = PuppetMaterialJson("baseimage", "base.tex");
     files["/mat/head.json"] = PuppetMaterialJson("headimage", "head.tex");
     if (include_eyes_material) {
@@ -305,10 +318,10 @@ void main() {
 )";
     files["/shaders/headimage.vert"] = R"(
 attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
 #if SKINNING
 attribute uvec4 a_BlendIndices;
 attribute vec4 a_BlendWeights;
-attribute vec2 a_TexCoord;
 uniform mat4x3 g_Bones[BONECOUNT];
 #endif
 varying vec2 v_TexCoord;
@@ -1028,6 +1041,35 @@ TEST(SceneSchema, ParserLoadsPuppetMeshMaterialSlotsFromPerMeshMaterialFiles) {
     WPSceneParser       parser;
 
     auto parsed = parser.Parse("puppet-slots", BasicPuppetSceneJson(), vfs, sound_manager);
+
+    ASSERT_NE(parsed, nullptr);
+    auto node = FindRootChildByName(*parsed, "puppet image");
+    ASSERT_NE(node, nullptr);
+    ASSERT_NE(node->Mesh(), nullptr);
+    const auto& mesh = *node->Mesh();
+    ASSERT_EQ(mesh.Submeshes().size(), 2u);
+    EXPECT_EQ(mesh.Submeshes()[0].material_slot, 0u);
+    EXPECT_EQ(mesh.Submeshes()[1].material_slot, 1u);
+    ASSERT_EQ(mesh.MaterialSlots().size(), 2u);
+    ASSERT_NE(mesh.MaterialForSlot(0), nullptr);
+    ASSERT_NE(mesh.MaterialForSlot(1), nullptr);
+    EXPECT_EQ(mesh.MaterialForSlot(0)->name, "headimage");
+    EXPECT_EQ(mesh.MaterialForSlot(1)->name, "eyesimage");
+    ASSERT_EQ(mesh.MaterialForSlot(0)->textures.size(), 1u);
+    ASSERT_EQ(mesh.MaterialForSlot(1)->textures.size(), 1u);
+    EXPECT_EQ(mesh.MaterialForSlot(0)->textures[0], "head.tex");
+    EXPECT_EQ(mesh.MaterialForSlot(1)->textures[0], "eyes.tex");
+}
+
+TEST(SceneSchema, ParserKeepsMeshOnlyPuppetMaterialSlotsWithoutMdlsBlock) {
+    auto files = std::map<std::string, std::string> {};
+    AddPuppetImageSceneFiles(files, true, false, true);
+    fs::VFS vfs;
+    EXPECT_TRUE(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::move(files))));
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+
+    auto parsed = parser.Parse("mesh-only-puppet-slots", BasicPuppetSceneJson(), vfs, sound_manager);
 
     ASSERT_NE(parsed, nullptr);
     auto node = FindRootChildByName(*parsed, "puppet image");

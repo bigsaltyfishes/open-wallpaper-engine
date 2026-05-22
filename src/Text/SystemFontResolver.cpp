@@ -1,12 +1,14 @@
 #include "Text/SystemFontResolver.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <string>
 #include <string_view>
 
 #ifdef __APPLE__
-#include <CoreFoundation/CoreFoundation.h>
-#include <CoreText/CoreText.h>
+#    include <CoreFoundation/CoreFoundation.h>
+#    include <CoreText/CoreText.h>
 #endif
 
 namespace wallpaper
@@ -18,8 +20,22 @@ constexpr std::string_view kSystemFontPrefix = "systemfont_";
 
 std::string SystemFontFamily(std::string_view system_font_key) {
     const auto filename = std::filesystem::path(system_font_key).filename().string();
-    if (! std::string_view(filename).starts_with(kSystemFontPrefix)) return {};
-    return filename.substr(kSystemFontPrefix.size());
+    std::string family;
+    if (std::string_view(filename).starts_with(kSystemFontPrefix)) {
+        family = filename.substr(kSystemFontPrefix.size());
+    } else {
+        family = filename;
+    }
+
+    std::string normalized = family;
+    std::ranges::transform(normalized, normalized.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    if (normalized == "sansserif" || normalized == "sans-serif") return "Helvetica";
+    if (normalized == "serif") return "Times New Roman";
+    if (normalized == "monospace" || normalized == "monospaced") return "Menlo";
+
+    return family;
 }
 
 #ifdef __APPLE__
@@ -43,9 +59,8 @@ private:
 std::string CfStringToUtf8(CFStringRef value) {
     if (value == nullptr) return {};
 
-    const CFIndex length = CFStringGetLength(value);
-    const CFIndex max_size =
-        CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8) + 1;
+    const CFIndex length   = CFStringGetLength(value);
+    const CFIndex max_size = CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8) + 1;
     if (max_size <= 1) return {};
 
     std::string output(static_cast<std::size_t>(max_size), '\0');
@@ -73,11 +88,8 @@ std::string ResolveAppleSystemFontPath(std::string_view family) {
                                 false));
     if (family_name.get() == nullptr) return {};
 
-    ScopedCf<CFMutableDictionaryRef> attributes(
-        CFDictionaryCreateMutable(kCFAllocatorDefault,
-                                  1,
-                                  &kCFTypeDictionaryKeyCallBacks,
-                                  &kCFTypeDictionaryValueCallBacks));
+    ScopedCf<CFMutableDictionaryRef> attributes(CFDictionaryCreateMutable(
+        kCFAllocatorDefault, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks));
     if (attributes.get() == nullptr) return {};
     CFDictionarySetValue(attributes.get(), kCTFontFamilyNameAttribute, family_name.get());
 
