@@ -73,6 +73,9 @@ std::string parse_string(const nlohmann::json& value)
 {
     const auto& source = unwrap_value(value);
     if (source.is_string()) return source.get<std::string>();
+    if (source.is_object() && source.contains("text") && source.at("text").is_string()) {
+        return source.at("text").get<std::string>();
+    }
     return source.dump();
 }
 
@@ -272,6 +275,24 @@ std::unique_ptr<DynamicValue> ResolveVec3Setting(
         scripted_semantic,
         allow_script_update);
     bind_vec3_user_property(context, setting, *value);
+    return value;
+}
+
+std::unique_ptr<DynamicValue> ResolveStringSetting(
+    SceneRuntimeContext& context,
+    const nlohmann::json& setting,
+    std::string_view current_layer_name,
+    bool allow_script_update)
+{
+    auto value = std::make_unique<DynamicValue>(parse_string(setting));
+    value      = wrap_script_if_needed(
+        context,
+        setting,
+        current_layer_name,
+        std::move(value),
+        ScriptedValueSemantic::Generic,
+        allow_script_update);
+    bind_user_property(context, setting, *value);
     return value;
 }
 

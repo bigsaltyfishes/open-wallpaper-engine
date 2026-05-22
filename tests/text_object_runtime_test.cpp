@@ -206,6 +206,39 @@ TEST(TextObjectRuntime, ParserResolvesFontFamiliesAssetsAndSystemFontAliases) {
     EXPECT_EQ(prefixed->resolved_font_path, "/assets/fonts/prefixed.ttf");
 }
 
+TEST(TextObjectRuntime, ParserMapsSystemFontAliasesToPlatformFontPath) {
+    fs::VFS vfs;
+    MountAssets(vfs);
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    ProjectProperties   properties;
+    SceneParseRequest   request {
+          .scene_id           = "text-system-font-path",
+          .project_properties = &properties,
+    };
+
+    auto scene = parser.Parse(
+        request,
+        MinimalSceneObjects(R"([
+          {"id": 1, "name": "system", "text": "a", "font": "systemfont_Helvetica", "visible": true}
+        ])"),
+        vfs,
+        sound_manager);
+
+    ASSERT_NE(scene, nullptr);
+    ASSERT_NE(scene->runtime, nullptr);
+
+    auto system = scene->runtime->NodeTextState("system");
+    ASSERT_TRUE(system.has_value());
+    EXPECT_EQ(system->resolved_font_kind, "system");
+    EXPECT_EQ(system->resolved_font_identity, "Helvetica");
+#ifdef __APPLE__
+    EXPECT_FALSE(system->resolved_font_path.empty());
+#else
+    EXPECT_TRUE(system->resolved_font_path.empty());
+#endif
+}
+
 TEST(TextObjectRuntime, HiddenTextStillCreatesNodeAndRuntimeState) {
     fs::VFS vfs;
     MountAssets(vfs);
@@ -310,6 +343,119 @@ TEST(TextObjectRuntime, TextVisibleUserBindingFollowsProjectOverride) {
     });
     scene->runtime->Tick(1.0 / 60.0);
     EXPECT_FALSE(node->Visible());
+}
+
+TEST(TextObjectRuntime, TextFieldScriptUpdatesRuntimeTextOnTick) {
+    fs::VFS vfs;
+    MountAssets(vfs);
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    ProjectProperties   properties;
+    SceneParseRequest   request {
+          .scene_id           = "text-field-script",
+          .project_properties = &properties,
+    };
+
+    auto scene = parser.Parse(
+        request,
+        MinimalSceneObjects(R"([
+          {
+            "id": 1,
+            "name": "caption",
+            "text": {
+              "value": "before",
+              "script": "export function update(value) { return value + ' after'; }"
+            },
+            "font": "Arial",
+            "visible": true
+          }
+        ])"),
+        vfs,
+        sound_manager);
+
+    ASSERT_NE(scene, nullptr);
+    ASSERT_NE(scene->runtime, nullptr);
+    EXPECT_EQ(scene->runtime->NodeText("caption"), "before");
+
+    scene->runtime->Tick(1.0 / 60.0);
+
+    EXPECT_EQ(scene->runtime->NodeText("caption"), "before after");
+    EXPECT_EQ(scene->runtime->scriptErrorCount(), 0u);
+}
+
+TEST(TextObjectRuntime, StaticObjectTextDoesNotOverwriteRuntimeMutationOnTick) {
+    fs::VFS vfs;
+    MountAssets(vfs);
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    ProjectProperties   properties;
+    SceneParseRequest   request {
+          .scene_id           = "text-static-object-field",
+          .project_properties = &properties,
+    };
+
+    auto scene = parser.Parse(
+        request,
+        MinimalSceneObjects(R"([
+          {
+            "id": 1,
+            "name": "caption",
+            "text": {"text": "before"},
+            "font": "Arial",
+            "visible": true
+          }
+        ])"),
+        vfs,
+        sound_manager);
+
+    ASSERT_NE(scene, nullptr);
+    ASSERT_NE(scene->runtime, nullptr);
+    EXPECT_EQ(scene->runtime->NodeText("caption"), "before");
+
+    scene->runtime->SetNodeText("caption", "after");
+    scene->runtime->Tick(1.0 / 60.0);
+
+    EXPECT_EQ(scene->runtime->NodeText("caption"), "after");
+    EXPECT_EQ(scene->runtime->scriptErrorCount(), 0u);
+}
+
+TEST(TextObjectRuntime, EventOnlyTextScriptDoesNotOverwriteRuntimeMutationOnTick) {
+    fs::VFS vfs;
+    MountAssets(vfs);
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    ProjectProperties   properties;
+    SceneParseRequest   request {
+          .scene_id           = "text-event-script-object-field",
+          .project_properties = &properties,
+    };
+
+    auto scene = parser.Parse(
+        request,
+        MinimalSceneObjects(R"JSON([
+          {
+            "id": 1,
+            "name": "caption",
+            "text": {
+              "value": "before",
+              "script": "engine.on('custom', function() {})"
+            },
+            "font": "Arial",
+            "visible": true
+          }
+        ])JSON"),
+        vfs,
+        sound_manager);
+
+    ASSERT_NE(scene, nullptr);
+    ASSERT_NE(scene->runtime, nullptr);
+    EXPECT_EQ(scene->runtime->NodeText("caption"), "before");
+
+    scene->runtime->SetNodeText("caption", "after");
+    scene->runtime->Tick(1.0 / 60.0);
+
+    EXPECT_EQ(scene->runtime->NodeText("caption"), "after");
+    EXPECT_EQ(scene->runtime->scriptErrorCount(), 0u);
 }
 
 TEST(TextObjectRuntime, TextParentReusesPlaceholderWhenChildAppearsFirst) {

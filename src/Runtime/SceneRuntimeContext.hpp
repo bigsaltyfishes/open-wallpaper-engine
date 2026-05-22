@@ -70,6 +70,7 @@ public:
     void RegisterNodeRotation(std::string name, SceneNode* node,
                               std::unique_ptr<DynamicValue> value);
     void RegisterTextLayer(std::string name, TextLayerState state);
+    void RegisterTextValue(std::string name, std::unique_ptr<DynamicValue> value);
     void RegisterMaterialConstant(SceneMaterial* material, std::string name,
                                   std::unique_ptr<DynamicValue> value);
     void RegisterNodeEffectFinal(std::string name, SceneNode* node, SceneImageEffectLayer* layer);
@@ -168,6 +169,10 @@ private:
         std::string    name;
         DynamicValue*  value { nullptr };
     };
+    struct TextValueBinding {
+        std::string   name;
+        DynamicValue* value { nullptr };
+    };
     struct NodeAlignmentBinding {
         std::string     alignment;
         Eigen::Vector3f origin { Eigen::Vector3f::Zero() };
@@ -205,6 +210,7 @@ private:
     std::unordered_map<std::string, NodeEffectFinalBinding>        m_node_effect_final;
     std::vector<MaterialAlphaBinding>                              m_material_alpha;
     std::vector<MaterialConstantBinding>                           m_material_constants;
+    std::vector<TextValueBinding>                                  m_text_values;
     std::unordered_map<std::string, Eigen::Vector2f>               m_node_size;
     std::unordered_map<std::string, TextLayer>                     m_text_layers;
     std::unordered_map<std::string, NodeAlignmentBinding>          m_node_alignment;

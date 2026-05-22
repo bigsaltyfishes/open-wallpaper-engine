@@ -284,6 +284,9 @@ void SceneRuntimeContext::Tick(double frame_time) {
             binding.node->SetRotation(binding.value->getVec3());
         }
     }
+    for (auto& binding : m_text_values) {
+        if (binding.value != nullptr) SetNodeText(binding.name, binding.value->toString());
+    }
     for (auto& [name, binding] : m_node_effect_final) {
         (void)name;
         if (binding.node == nullptr || binding.layer == nullptr) continue;
@@ -417,6 +420,12 @@ void SceneRuntimeContext::UnregisterNode(std::string_view name) {
     m_node_effect_final.erase(key);
     m_node_size.erase(key);
     m_text_layers.erase(key);
+    m_text_values.erase(std::remove_if(m_text_values.begin(),
+                                       m_text_values.end(),
+                                       [&key](const auto& binding) {
+                                           return binding.name == key;
+                                       }),
+                        m_text_values.end());
     m_node_alignment.erase(key);
     m_node_template_paths.erase(key);
     m_node_video_textures.erase(key);
@@ -514,6 +523,17 @@ void SceneRuntimeContext::RegisterTextLayer(std::string name, TextLayerState sta
     auto layer = TextLayer(std::move(state));
     m_node_size[name] = layer.size();
     m_text_layers.insert_or_assign(std::move(name), std::move(layer));
+}
+
+void SceneRuntimeContext::RegisterTextValue(std::string name, std::unique_ptr<DynamicValue> value) {
+    if (name.empty() || value == nullptr) return;
+    SetNodeText(name, value->toString());
+    auto* raw = value.get();
+    m_owned_values.push_back(std::move(value));
+    m_text_values.push_back(TextValueBinding {
+        .name  = std::move(name),
+        .value = raw,
+    });
 }
 
 void SceneRuntimeContext::RegisterMaterialConstant(SceneMaterial* material, std::string name,

@@ -31,6 +31,11 @@ std::unique_ptr<DynamicValue> ResolveVec3Setting(
     std::string_view current_layer_name = {},
     Vec3SettingSemantic semantic = Vec3SettingSemantic::Generic,
     bool allow_script_update = true);
+std::unique_ptr<DynamicValue> ResolveStringSetting(
+    SceneRuntimeContext& context,
+    const nlohmann::json& value,
+    std::string_view current_layer_name = {},
+    bool allow_script_update = true);
 std::optional<ScalarAnimation> ResolveScalarAnimation(const nlohmann::json& value);
 
 } // namespace wallpaper

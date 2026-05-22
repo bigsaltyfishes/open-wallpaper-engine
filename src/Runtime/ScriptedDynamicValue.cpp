@@ -14,6 +14,8 @@ ScriptedDynamicValue::ScriptedDynamicValue(
       m_script_properties(std::move(script_properties)),
       m_base_value(std::move(base_value)),
       m_semantic(semantic) {
+    DynamicValue::update(m_base_value);
+
     std::map<std::string, DynamicValue*> raw_properties;
     for (auto& [name, property] : m_script_properties) {
         if (property == nullptr) continue;

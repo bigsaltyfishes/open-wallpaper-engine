@@ -23,6 +23,7 @@
 #include "Runtime/RuntimeImageSource.hpp"
 #include "Runtime/SceneRuntimeContext.hpp"
 #include "Runtime/SceneSettingResolver.hpp"
+#include "Text/SystemFontResolver.hpp"
 #include "Text/TextLayer.hpp"
 #include "wpscene/WPImageObject.h"
 #include "wpscene/WPParticleObject.h"
@@ -127,6 +128,18 @@ bool HasDynamicSetting(const nlohmann::json& value) {
     return value.is_object() && (value.contains("script") || value.contains("user"));
 }
 
+bool HasUpdateScript(const nlohmann::json& value) {
+    if (! value.is_object() || ! value.contains("script") || ! value.at("script").is_string()) {
+        return false;
+    }
+
+    return value.at("script").get<std::string>().find("export function update") != std::string::npos;
+}
+
+bool HasRuntimeTextValueBinding(const nlohmann::json& value) {
+    return value.is_object() && (value.contains("user") || HasUpdateScript(value));
+}
+
 bool DefaultSettingVisible(const nlohmann::json& value) {
     const auto& source = UnwrapSettingValue(value);
     if (source.is_boolean()) return source.get<bool>();
@@ -177,11 +190,11 @@ bool IsSceneScriptSetting(const nlohmann::json& setting) {
         return false;
     }
 
-    const auto script = setting.at("script").get<std::string>();
-    if (script.find("export function update") != std::string::npos) {
+    if (HasUpdateScript(setting)) {
         return false;
     }
 
+    const auto script = setting.at("script").get<std::string>();
     return script.find("engine.on(") != std::string::npos ||
            script.find("scene.on(") != std::string::npos ||
            script.find("thisScene.on(") != std::string::npos;
@@ -893,6 +906,7 @@ TextLayerState ResolveTextLayerState(const wpscene::WPTextObject& obj, fs::VFS& 
     if (filename.starts_with(system_prefix)) {
         state.resolved_font_kind     = "system";
         state.resolved_font_identity = filename.substr(system_prefix.size());
+        state.resolved_font_path     = ResolveSystemFontPath(font_key);
         return state;
     }
 
@@ -973,6 +987,11 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& obj) {
                                                       Eigen::Vector2f(obj.size[0], obj.size[1]),
                                                       anchor,
                                                       runtime_name));
+        if (HasRuntimeTextValueBinding(obj.text)) {
+            context.scene->runtime->RegisterTextValue(
+                runtime_name,
+                ResolveStringSetting(*context.scene->runtime, obj.text, runtime_name));
+        }
         context.scene->runtime->SetNodeTextAlignment(
             runtime_name, anchor, Vector3f(obj.origin.data()));
     } else {

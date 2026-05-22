@@ -23,6 +23,7 @@ if(APPLE)
   find_library(AUDIO_TOOLBOX_FRAMEWORK AudioToolbox REQUIRED)
   find_library(AUDIO_UNIT_FRAMEWORK AudioUnit REQUIRED)
   find_library(CORE_AUDIO_FRAMEWORK CoreAudio REQUIRED)
+  find_library(CORE_TEXT_FRAMEWORK CoreText REQUIRED)
   find_library(CORE_GRAPHICS_FRAMEWORK CoreGraphics REQUIRED)
   find_library(CORE_MEDIA_FRAMEWORK CoreMedia REQUIRED)
   find_library(CORE_VIDEO_FRAMEWORK CoreVideo REQUIRED)
@@ -66,6 +67,7 @@ add_library(
   Runtime/SceneRuntimeContext.cpp
   Runtime/SceneSettingResolver.cpp
   Runtime/ScriptedDynamicValue.cpp
+  Text/SystemFontResolver.cpp
   Text/TextLayer.cpp
   Scripting/ScriptEngine.cpp
   Scene/Parse/wpscene/WPImageObject.cpp
@@ -125,6 +127,7 @@ if(APPLE)
       ${AUDIO_TOOLBOX_FRAMEWORK}
       ${AUDIO_UNIT_FRAMEWORK}
       ${CORE_MEDIA_FRAMEWORK}
+      ${CORE_TEXT_FRAMEWORK}
       ${CORE_VIDEO_FRAMEWORK}
       ${ACCELERATE_FRAMEWORK}
       ${FOUNDATION_FRAMEWORK}
