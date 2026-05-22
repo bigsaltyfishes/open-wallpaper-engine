@@ -474,7 +474,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             node->SetCamera(camera_override);
             restore_camera = true;
         }
-        shader_updater->UpdateUniforms(node, sprites, update_unf_op);
+        shader_updater->UpdateUniforms(node, material_slot, sprites, update_unf_op);
         if (restore_camera) {
             node->SetCamera(original_camera);
         }
@@ -522,7 +522,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
     auto exists_unf_op = [uniform_block](std::string_view name) {
         return uniform_block != nullptr && exists(uniform_block->member_map, name);
     };
-    shader_updater->InitUniforms(node, exists_unf_op);
+    shader_updater->InitUniforms(node, material_slot, exists_unf_op);
 
     if (uniform_block != nullptr) {
         buf->fillBuf(*bufref, 0, bufref->size, 0);

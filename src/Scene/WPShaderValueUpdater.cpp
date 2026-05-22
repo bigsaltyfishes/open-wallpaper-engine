@@ -65,8 +65,13 @@ void WPShaderValueUpdater::MouseInput(double x, double y) {
 }
 
 void WPShaderValueUpdater::InitUniforms(SceneNode* pNode, const ExistsUniformOp& existsOp) {
-    m_nodeUniformInfoMap[pNode] = WPUniformInfo();
-    auto& info                  = m_nodeUniformInfoMap[pNode];
+    InitUniforms(pNode, 0, existsOp);
+}
+
+void WPShaderValueUpdater::InitUniforms(SceneNode* pNode, uint32_t material_slot,
+                                        const ExistsUniformOp& existsOp) {
+    m_nodeUniformInfoMap[pNode][material_slot] = WPUniformInfo();
+    auto& info                                = m_nodeUniformInfoMap[pNode][material_slot];
     info.has_MI                 = existsOp(G_MI);
     info.has_M                  = existsOp(G_M);
     info.has_AM                 = existsOp(G_AM);
@@ -109,6 +114,12 @@ void WPShaderValueUpdater::InitUniforms(SceneNode* pNode, const ExistsUniformOp&
 
 void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprites,
                                           const UpdateUniformOp& updateOp) {
+    UpdateUniforms(pNode, 0, sprites, updateOp);
+}
+
+void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, uint32_t material_slot,
+                                          sprite_map_t& sprites,
+                                          const UpdateUniformOp& updateOp) {
     if (! pNode->Mesh()) return;
 
     pNode->UpdateTrans();
@@ -129,7 +140,9 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
     // const auto& valueSet = material->customShader.valueSet;
 
     assert(exists(m_nodeUniformInfoMap, pNode));
-    const auto& info = m_nodeUniformInfoMap[pNode];
+    const auto& slot_infos = m_nodeUniformInfoMap.at(pNode);
+    assert(exists(slot_infos, material_slot));
+    const auto& info = slot_infos.at(material_slot);
 
     bool hasNodeData = exists(m_nodeDataMap, pNode);
     if (hasNodeData) {

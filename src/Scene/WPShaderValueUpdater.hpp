@@ -76,6 +76,9 @@ public:
 
     void InitUniforms(SceneNode*, const ExistsUniformOp&) override;
     void UpdateUniforms(SceneNode*, sprite_map_t&, const UpdateUniformOp&) override;
+    void InitUniforms(SceneNode*, uint32_t material_slot, const ExistsUniformOp&) override;
+    void UpdateUniforms(SceneNode*, uint32_t material_slot, sprite_map_t&,
+                        const UpdateUniformOp&) override;
     void FrameEnd() override;
     void MouseInput(double, double) override;
     void SetTexelSize(float x, float y) override;
@@ -100,7 +103,7 @@ private:
 
     std::array<float, 2> m_screen_size { 1920, 1080 };
 
-    Map<void*, WPShaderValueData> m_nodeDataMap;
-    Map<void*, WPUniformInfo>     m_nodeUniformInfoMap;
+    Map<void*, WPShaderValueData>            m_nodeDataMap;
+    Map<void*, Map<uint32_t, WPUniformInfo>> m_nodeUniformInfoMap;
 };
 } // namespace wallpaper

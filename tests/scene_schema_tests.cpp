@@ -1,8 +1,10 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdio>
 #include <map>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -48,6 +50,154 @@ private:
     std::map<std::string, std::string> m_files;
 };
 
+class Bytes {
+public:
+    void Stamp(std::string_view prefix, int version) {
+        char stamp[9] {};
+        std::snprintf(stamp, sizeof(stamp), "%.4s%.4d", prefix.data(), version);
+        Raw(std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(stamp), sizeof(stamp)));
+    }
+    void Str(std::string_view value) {
+        Raw(std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(value.data()), value.size()));
+        U8(0);
+    }
+    void U8(uint8_t value) { RawValue(value); }
+    void U16(uint16_t value) { RawValue(value); }
+    void U32(uint32_t value) { RawValue(value); }
+    void I32(int32_t value) { RawValue(value); }
+    void F32(float value) { RawValue(value); }
+
+    std::string TakeString() {
+        return std::string(reinterpret_cast<const char*>(m_bytes.data()), m_bytes.size());
+    }
+
+private:
+    template<typename T>
+    void RawValue(const T& value) {
+        Raw(std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&value), sizeof(value)));
+    }
+    void Raw(std::span<const uint8_t> bytes) {
+        m_bytes.insert(m_bytes.end(), bytes.begin(), bytes.end());
+    }
+
+    std::vector<uint8_t> m_bytes;
+};
+
+constexpr uint32_t kSceneTestSkinUvFlag = 0x00800000u | 0x01000000u | 0x00000008u;
+
+void WritePuppetVertex(Bytes& b, float x, float y, float u, uint32_t bone = 0) {
+    b.F32(x);
+    b.F32(y);
+    b.F32(0.0f);
+    b.U32(bone);
+    b.U32(0);
+    b.U32(0);
+    b.U32(0);
+    b.F32(1.0f);
+    b.F32(0.0f);
+    b.F32(0.0f);
+    b.F32(0.0f);
+    b.F32(u);
+    b.F32(0.5f);
+}
+
+void WritePuppetMesh(Bytes& b, std::string_view material, uint32_t part_id) {
+    b.Str(material);
+    b.U32(0);
+    b.F32(-1.0f);
+    b.F32(-1.0f);
+    b.F32(0.0f);
+    b.F32(1.0f);
+    b.F32(1.0f);
+    b.F32(0.0f);
+    b.U32(kSceneTestSkinUvFlag);
+    b.U32(3u * 52u);
+    WritePuppetVertex(b, 0.0f, 0.0f, 0.0f);
+    WritePuppetVertex(b, 1.0f, 0.0f, 0.5f);
+    WritePuppetVertex(b, 0.0f, 1.0f, 1.0f);
+    b.U32(6);
+    b.U16(0);
+    b.U16(1);
+    b.U16(2);
+    b.U8(1);
+    b.U8(1);
+    b.U16(0);
+    b.U8(0);
+    b.U32(36);
+    for (uint32_t i = 0; i < 3; ++i) {
+        b.F32(0.25f * static_cast<float>(i));
+        b.F32(0.5f);
+        b.U32(0);
+    }
+    b.U8(1);
+    b.U32(16);
+    b.U32(part_id);
+    b.U32(0);
+    b.U32(0);
+    b.U32(3);
+}
+
+void WriteIdentity3x4(Bytes& b) {
+    for (int col = 0; col < 4; ++col) {
+        for (int row = 0; row < 4; ++row) {
+            b.F32(row == col ? 1.0f : 0.0f);
+        }
+    }
+}
+
+std::string BuildTwoMeshPuppetMdlFixture() {
+    Bytes b;
+    b.Stamp("MDL", 21);
+    b.U32(kSceneTestSkinUvFlag);
+    b.U32(1);
+    b.U32(2);
+    WritePuppetMesh(b, "mat/head.json", 10);
+    WritePuppetMesh(b, "mat/eyes.json", 20);
+
+    b.Stamp("MDLS", 1);
+    b.U32(0);
+    b.U16(1);
+    b.U16(0);
+    b.Str("root");
+    b.I32(0);
+    b.U32(0xFFFFFFFFu);
+    b.U32(64);
+    WriteIdentity3x4(b);
+    b.Str("{}");
+
+    b.Stamp("MDLA", 0);
+    b.U8(0);
+    return b.TakeString();
+}
+
+std::string BuildLegacySingleMeshPuppetMdlFixture() {
+    Bytes b;
+    b.Stamp("MDL", 20);
+    b.U32(kSceneTestSkinUvFlag);
+    b.U32(1);
+    b.U32(1);
+    b.Str("legacy.json");
+    b.U32(0);
+    b.U32(52);
+    WritePuppetVertex(b, 0.0f, 0.0f, 0.0f);
+    b.U32(0);
+
+    b.Stamp("MDLS", 1);
+    b.U32(0);
+    b.U16(1);
+    b.U16(0);
+    b.Str("root");
+    b.I32(0);
+    b.U32(0xFFFFFFFFu);
+    b.U32(64);
+    WriteIdentity3x4(b);
+    b.Str("{}");
+
+    b.Stamp("MDLA", 0);
+    b.U8(0);
+    return b.TakeString();
+}
+
 void MountSceneFiles(fs::VFS& vfs) {
     auto files = std::map<std::string, std::string> {
         { "/image.json", R"({"width":64,"height":32,"material":"mat.json"})" },
@@ -78,6 +228,110 @@ void main() {
           R"({"emitter":[{"name":"child_emit","id":2}],"material":"mat.json","maxcount":2,"starttime":1})" },
     };
     EXPECT_TRUE(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::move(files))));
+}
+
+std::string PuppetMaterialJson(std::string_view shader,
+                               std::string_view texture) {
+    return std::string(R"({"passes":[{"blending":"translucent","cullmode":"nocull",)"
+                       R"("depthtest":"disabled","depthwrite":"disabled","shader":")") +
+           std::string(shader) + R"(","textures":[")" + std::string(texture) + R"("]}]})";
+}
+
+void AddPuppetImageSceneFiles(std::map<std::string, std::string>& files,
+                              bool                               include_eyes_material = true,
+                              bool                               legacy_puppet = false) {
+    files["/puppet_image.json"] =
+        R"({"width":64,"height":32,"material":"mat/base.json","puppet":"puppet.mdl"})";
+    files["/puppet.mdl"] =
+        legacy_puppet ? BuildLegacySingleMeshPuppetMdlFixture() : BuildTwoMeshPuppetMdlFixture();
+    files["/mat/base.json"] = PuppetMaterialJson("baseimage", "base.tex");
+    files["/mat/head.json"] = PuppetMaterialJson("headimage", "head.tex");
+    if (include_eyes_material) {
+        files["/mat/eyes.json"] = PuppetMaterialJson("eyesimage", "eyes.tex");
+    }
+    files["/shaders/baseimage.vert"] = R"(
+attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+varying vec2 v_TexCoord;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+  v_TexCoord = a_TexCoord;
+}
+)";
+    files["/shaders/baseimage.frag"] = R"(
+uniform sampler2D g_Texture0;
+uniform float g_Tint; // {"material":"tint","default":0.0}
+varying vec2 v_TexCoord;
+void main() {
+  gl_FragColor = texture(g_Texture0, v_TexCoord) * g_Tint;
+}
+)";
+    files["/shaders/headimage.vert"] = R"(
+attribute vec3 a_Position;
+#if SKINNING
+attribute uvec4 a_BlendIndices;
+attribute vec4 a_BlendWeights;
+attribute vec2 a_TexCoord;
+uniform mat4x3 g_Bones[BONECOUNT];
+#endif
+varying vec2 v_TexCoord;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+  v_TexCoord = a_TexCoord;
+}
+)";
+    files["/shaders/headimage.frag"] = R"(
+uniform sampler2D g_Texture0;
+uniform float g_Tint; // {"material":"tint","default":0.0}
+varying vec2 v_TexCoord;
+void main() {
+  gl_FragColor = texture(g_Texture0, v_TexCoord) * g_Tint;
+}
+)";
+    files["/shaders/eyesimage.vert"] = files["/shaders/headimage.vert"];
+    files["/shaders/eyesimage.frag"] = R"(
+uniform sampler2D g_Texture0;
+uniform float g_Tint; // {"material":"tint","default":0.0}
+varying vec2 v_TexCoord;
+void main() {
+  gl_FragColor = texture(g_Texture0, v_TexCoord) * g_Tint;
+}
+)";
+    files["/materials/base.tex.tex"] = "";
+    files["/materials/head.tex.tex"] = "";
+    files["/materials/eyes.tex.tex"] = "";
+}
+
+std::string BasicPuppetSceneJson(bool dynamic_alpha = false) {
+    return std::string(R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0.2,0.2,0.2], "skylightcolor":[0.3,0.3,0.3],
+        "clearcolor":[0,0,0], "cameraparallax":false,
+        "cameraparallaxamount":0, "cameraparallaxdelay":0,
+        "cameraparallaxmouseinfluence":0,
+        "orthogonalprojection":{"width":640,"height":360}
+      },
+      "objects": [
+        {"id":300,"name":"puppet image","image":"puppet_image.json",
+         "origin":[0,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":true, "alpha":)") +
+           (dynamic_alpha
+                ? R"({"value":0.6,"animation":{"c0":[{"frame":0,"value":0.6},{"frame":1,"value":0.3}],"options":{"fps":30}}})"
+                : "0.6") +
+           R"(}
+      ]
+    })";
+}
+
+std::shared_ptr<SceneNode> FindRootChildByName(const Scene& scene, std::string_view name) {
+    if (scene.sceneGraph == nullptr) return nullptr;
+    const auto& root_children = scene.sceneGraph->GetChildren();
+    auto        it            = std::find_if(
+        root_children.begin(), root_children.end(), [name](const auto& node) {
+            return node != nullptr && node->Name() == name;
+        });
+    if (it == root_children.end()) return nullptr;
+    return *it;
 }
 
 void MountBloomSceneFiles(fs::VFS& vfs) {
@@ -659,6 +913,102 @@ TEST(SceneSchema, ParserDoesNotCommitPartialBloomStateWhenMaterialLoadFails) {
     EXPECT_EQ(parsed->FindRenderTarget("_rt_bloom_mip1"), nullptr);
     EXPECT_EQ(parsed->FindRenderTarget("_rt_bloom_mip2"), nullptr);
     EXPECT_EQ(parsed->FindRenderTarget("_rt_bloom_combine"), nullptr);
+}
+
+TEST(SceneSchema, ParserLoadsPuppetMeshMaterialSlotsFromPerMeshMaterialFiles) {
+    auto files = std::map<std::string, std::string> {};
+    AddPuppetImageSceneFiles(files);
+    fs::VFS vfs;
+    EXPECT_TRUE(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::move(files))));
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+
+    auto parsed = parser.Parse("puppet-slots", BasicPuppetSceneJson(), vfs, sound_manager);
+
+    ASSERT_NE(parsed, nullptr);
+    auto node = FindRootChildByName(*parsed, "puppet image");
+    ASSERT_NE(node, nullptr);
+    ASSERT_NE(node->Mesh(), nullptr);
+    const auto& mesh = *node->Mesh();
+    ASSERT_EQ(mesh.Submeshes().size(), 2u);
+    EXPECT_EQ(mesh.Submeshes()[0].material_slot, 0u);
+    EXPECT_EQ(mesh.Submeshes()[1].material_slot, 1u);
+    ASSERT_EQ(mesh.MaterialSlots().size(), 2u);
+    ASSERT_NE(mesh.MaterialForSlot(0), nullptr);
+    ASSERT_NE(mesh.MaterialForSlot(1), nullptr);
+    EXPECT_EQ(mesh.MaterialForSlot(0)->name, "headimage");
+    EXPECT_EQ(mesh.MaterialForSlot(1)->name, "eyesimage");
+    ASSERT_EQ(mesh.MaterialForSlot(0)->textures.size(), 1u);
+    ASSERT_EQ(mesh.MaterialForSlot(1)->textures.size(), 1u);
+    EXPECT_EQ(mesh.MaterialForSlot(0)->textures[0], "head.tex");
+    EXPECT_EQ(mesh.MaterialForSlot(1)->textures[0], "eyes.tex");
+}
+
+TEST(SceneSchema, ParserAppliesPuppetMaterialInfoBeforeLoadingSlotMaterials) {
+    auto files = std::map<std::string, std::string> {};
+    AddPuppetImageSceneFiles(files);
+    fs::VFS vfs;
+    EXPECT_TRUE(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::move(files))));
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+
+    auto parsed = parser.Parse("puppet-slot-combos", BasicPuppetSceneJson(true), vfs, sound_manager);
+
+    ASSERT_NE(parsed, nullptr);
+    auto node = FindRootChildByName(*parsed, "puppet image");
+    ASSERT_NE(node, nullptr);
+    ASSERT_NE(node->Mesh(), nullptr);
+    ASSERT_EQ(node->Mesh()->MaterialSlots().size(), 2u);
+    for (uint32_t slot = 0; slot < 2; ++slot) {
+        const auto* material = node->Mesh()->MaterialForSlot(slot);
+        ASSERT_NE(material, nullptr);
+        ASSERT_NE(material->customShader.shader, nullptr);
+        EXPECT_GT(material->customShader.shader->codes[0].size(), 0u);
+    }
+    EXPECT_FLOAT_EQ(node->Mesh()->MaterialForSlot(0)->customShader.constValues.at("g_Alpha")[0],
+                    0.6f);
+    EXPECT_FLOAT_EQ(node->Mesh()->MaterialForSlot(1)->customShader.constValues.at("g_Alpha")[0],
+                    0.6f);
+}
+
+TEST(SceneSchema, ParserKeepsLegacyEmptyPuppetMeshSingleMaterialSlotFallback) {
+    auto files = std::map<std::string, std::string> {};
+    AddPuppetImageSceneFiles(files, true, true);
+    fs::VFS vfs;
+    EXPECT_TRUE(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::move(files))));
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+
+    auto parsed = parser.Parse("legacy-puppet-slot", BasicPuppetSceneJson(), vfs, sound_manager);
+
+    ASSERT_NE(parsed, nullptr);
+    auto node = FindRootChildByName(*parsed, "puppet image");
+    ASSERT_NE(node, nullptr);
+    ASSERT_NE(node->Mesh(), nullptr);
+    EXPECT_EQ(node->Mesh()->Submeshes().size(), 1u);
+    ASSERT_EQ(node->Mesh()->MaterialSlots().size(), 1u);
+    ASSERT_NE(node->Mesh()->Material(), nullptr);
+    EXPECT_EQ(node->Mesh()->Material()->name, "baseimage");
+}
+
+TEST(SceneSchema, ParserFallsBackWhenPuppetMeshSlotMaterialFailsToLoad) {
+    auto files = std::map<std::string, std::string> {};
+    AddPuppetImageSceneFiles(files, false);
+    fs::VFS vfs;
+    EXPECT_TRUE(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::move(files))));
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+
+    auto parsed = parser.Parse("puppet-slot-fallback", BasicPuppetSceneJson(), vfs, sound_manager);
+
+    ASSERT_NE(parsed, nullptr);
+    auto node = FindRootChildByName(*parsed, "puppet image");
+    ASSERT_NE(node, nullptr);
+    ASSERT_NE(node->Mesh(), nullptr);
+    EXPECT_EQ(node->Mesh()->Submeshes().size(), 2u);
+    ASSERT_EQ(node->Mesh()->MaterialSlots().size(), 1u);
+    ASSERT_NE(node->Mesh()->Material(), nullptr);
+    EXPECT_EQ(node->Mesh()->Material()->name, "baseimage");
 }
 
 TEST(SceneSchema, RuntimeProjectPropertyResolutionStillWorks) {

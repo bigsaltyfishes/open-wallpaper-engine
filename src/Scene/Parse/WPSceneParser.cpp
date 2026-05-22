@@ -1124,6 +1124,84 @@ void RegisterMaterialConstants(ParseContext& context, SceneMaterial* material,
     }
 }
 
+void RegisterNodeVideoTextureRuntime(ParseContext& context, const wpscene::WPImageObject& wpimgobj,
+                                     const SceneMaterial* material) {
+    if (context.scene->runtime == nullptr || material == nullptr) return;
+
+    for (const auto& texture_name : material->textures) {
+        if (texture_name.empty()) continue;
+        const auto texture_iterator = context.scene->textures.find(texture_name);
+        if (texture_iterator == context.scene->textures.end()) continue;
+        if (! texture_iterator->second.isVideo) continue;
+        context.scene->runtime->RegisterNodeVideoTexture(wpimgobj.name, texture_name);
+        const ImageHeader header = context.scene->imageParser->ParseHeader(texture_name);
+        if (header.durationSeconds > 0.0) {
+            context.scene->runtime->SetVideoTextureDuration(texture_name, header.durationSeconds);
+        }
+        break;
+    }
+}
+
+bool LoadWPMaterialFromPath(fs::VFS& vfs, const std::string& material_path,
+                            wpscene::WPMaterial& material) {
+    nlohmann::json json;
+    if (! PARSE_JSON(fs::GetFileContent(vfs, "/assets/" + material_path), json)) {
+        LOG_ERROR("load material '%s' failed", material_path.c_str());
+        return false;
+    }
+    return material.FromJson(json);
+}
+
+struct LoadedMaterialSlot {
+    SceneMaterial        material;
+    wpscene::WPMaterial  source;
+    WPShaderInfo         shader_info;
+    WPShaderValueData    shader_value_data;
+};
+
+std::optional<std::vector<LoadedMaterialSlot>>
+TryLoadPuppetMaterialSlots(ParseContext& context, SceneNode* node, wpscene::WPImageObject& wpimgobj,
+                           const WPMdl& puppet, const ShaderValueMap& base_const_svs) {
+    if (puppet.meshes.empty()) return std::nullopt;
+
+    std::vector<LoadedMaterialSlot> slots;
+    slots.reserve(puppet.meshes.size());
+
+    for (std::size_t slot_index = 0; slot_index < puppet.meshes.size(); ++slot_index) {
+        const auto& mesh = puppet.meshes[slot_index];
+        if (mesh.mat_json_file.empty()) {
+            LOG_ERROR("puppet mesh %zu has no material json file", slot_index);
+            return std::nullopt;
+        }
+
+        LoadedMaterialSlot slot;
+        if (! LoadWPMaterialFromPath(*context.vfs, mesh.mat_json_file, slot.source)) {
+            LOG_ERROR("load puppet mesh material '%s' failed", mesh.mat_json_file.c_str());
+            return std::nullopt;
+        }
+        WPMdlParser::AddPuppetMatInfo(slot.source, puppet);
+        WPMdlParser::AddPuppetShaderInfo(slot.shader_info, puppet);
+        slot.shader_info.baseConstSvs        = base_const_svs;
+        slot.shader_value_data.puppet_layer = WPPuppetLayer(puppet.puppet);
+        slot.shader_value_data.puppet_layer.prepared(wpimgobj.puppet_layers);
+
+        if (! LoadMaterial(*context.vfs,
+                           slot.source,
+                           context.scene.get(),
+                           node,
+                           &slot.material,
+                           &slot.shader_value_data,
+                           &slot.shader_info)) {
+            LOG_ERROR("load puppet mesh material '%s' failed", mesh.mat_json_file.c_str());
+            return std::nullopt;
+        }
+        LoadConstvalue(slot.material, slot.source, slot.shader_info);
+        slots.push_back(std::move(slot));
+    }
+
+    return slots;
+}
+
 // parse
 
 void ParseCamera(ParseContext& context, wpscene::WPSceneGeneral& general) {
@@ -1595,6 +1673,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     SceneMesh effct_final_mesh {};
     auto      spMesh = std::make_shared<SceneMesh>();
     auto&     mesh   = *spMesh;
+    std::optional<std::vector<LoadedMaterialSlot>> puppet_material_slots;
 
     {
         // deal with pow of 2
@@ -1622,6 +1701,8 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                 svData.puppet_layer = WPPuppetLayer(puppet->puppet);
                 svData.puppet_layer.prepared(wpimgobj.puppet_layers);
                 WPMdlParser::GenPuppetMesh(mesh, *puppet);
+                puppet_material_slots = TryLoadPuppetMaterialSlots(
+                    context, spImgNode.get(), wpimgobj, *puppet, baseConstSvs);
             }
         }
         if (! puppet) {
@@ -1655,23 +1736,20 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     if (hasEffect) {
         material.blenmode = BlendMode::Normal;
     }
-    mesh.AddMaterial(std::move(material));
-    RegisterMaterialConstants(context, spMesh->Material(), wpimgobj.material, shaderInfo);
-    registerImageAlphaAnimation(spMesh->Material());
-    if (context.scene->runtime != nullptr && spMesh->Material() != nullptr) {
-        for (const auto& texture_name : spMesh->Material()->textures) {
-            if (texture_name.empty()) continue;
-            const auto texture_iterator = context.scene->textures.find(texture_name);
-            if (texture_iterator == context.scene->textures.end()) continue;
-            if (! texture_iterator->second.isVideo) continue;
-            context.scene->runtime->RegisterNodeVideoTexture(wpimgobj.name, texture_name);
-            const ImageHeader header = context.scene->imageParser->ParseHeader(texture_name);
-            if (header.durationSeconds > 0.0) {
-                context.scene->runtime->SetVideoTextureDuration(texture_name,
-                                                                header.durationSeconds);
-            }
-            break;
+    if (puppet_material_slots.has_value()) {
+        for (auto& slot : *puppet_material_slots) {
+            mesh.AddMaterial(std::move(slot.material));
+            auto* material_slot = mesh.MaterialForSlot(
+                static_cast<uint32_t>(mesh.MaterialSlots().size() - 1));
+            RegisterMaterialConstants(context, material_slot, slot.source, slot.shader_info);
+            registerImageAlphaAnimation(material_slot);
+            RegisterNodeVideoTextureRuntime(context, wpimgobj, material_slot);
         }
+    } else {
+        mesh.AddMaterial(std::move(material));
+        RegisterMaterialConstants(context, spMesh->Material(), wpimgobj.material, shaderInfo);
+        registerImageAlphaAnimation(spMesh->Material());
+        RegisterNodeVideoTextureRuntime(context, wpimgobj, spMesh->Material());
     }
     spImgNode->AddMesh(spMesh);
 

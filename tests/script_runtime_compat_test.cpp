@@ -552,5 +552,55 @@ TEST(AudioResponseCompat, ShaderSpectrumUniformsUseVec4ArrayStride) {
     scene.activeCamera = nullptr;
 }
 
+TEST(ShaderValueUpdaterCompat, UniformMetadataIsIsolatedPerMaterialSlot) {
+    Scene scene;
+    scene.runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {});
+    ASSERT_NE(scene.runtime, nullptr);
+    scene.runtime->AttachScene(&scene);
+    scene.activeCamera = new SceneCamera(1920, 1080, 0.01f, 1000.0f);
+
+    auto node = std::make_shared<SceneNode>();
+    auto mesh = std::make_shared<SceneMesh>();
+    mesh->AddMaterial(SceneMaterial {});
+    mesh->AddMaterial(SceneMaterial {});
+    node->AddMesh(mesh);
+
+    WPShaderValueUpdater updater(&scene);
+    updater.InitUniforms(node.get(), 0, [](std::string_view name) {
+        return name == "g_ModelMatrix";
+    });
+    updater.InitUniforms(node.get(), 1, [](std::string_view name) {
+        return name == "g_Time";
+    });
+
+    sprite_map_t slot_zero_sprites;
+    std::unordered_map<std::string, ShaderValue> slot_zero_updates;
+    updater.UpdateUniforms(
+        node.get(),
+        0,
+        slot_zero_sprites,
+        [&](std::string_view name, ShaderValue value) {
+            slot_zero_updates.emplace(std::string(name), std::move(value));
+        });
+
+    sprite_map_t slot_one_sprites;
+    std::unordered_map<std::string, ShaderValue> slot_one_updates;
+    updater.UpdateUniforms(
+        node.get(),
+        1,
+        slot_one_sprites,
+        [&](std::string_view name, ShaderValue value) {
+            slot_one_updates.emplace(std::string(name), std::move(value));
+        });
+
+    EXPECT_TRUE(slot_zero_updates.contains("g_ModelMatrix"));
+    EXPECT_FALSE(slot_zero_updates.contains("g_Time"));
+    EXPECT_FALSE(slot_one_updates.contains("g_ModelMatrix"));
+    EXPECT_TRUE(slot_one_updates.contains("g_Time"));
+
+    delete scene.activeCamera;
+    scene.activeCamera = nullptr;
+}
+
 } // namespace
 } // namespace wallpaper
