@@ -1166,7 +1166,8 @@ struct LoadedMaterialSlot {
 
 std::optional<std::vector<LoadedMaterialSlot>>
 TryLoadPuppetMaterialSlots(ParseContext& context, SceneNode* node, wpscene::WPImageObject& wpimgobj,
-                           const WPMdl& puppet, const ShaderValueMap& base_const_svs) {
+                           const WPMdl& puppet, const ShaderValueMap& base_const_svs,
+                           const WPShaderValueData& image_shader_value_data) {
     if (puppet.meshes.empty()) return std::nullopt;
 
     std::vector<LoadedMaterialSlot> slots;
@@ -1186,7 +1187,9 @@ TryLoadPuppetMaterialSlots(ParseContext& context, SceneNode* node, wpscene::WPIm
         }
         WPMdlParser::AddPuppetMatInfo(slot.source, puppet);
         WPMdlParser::AddPuppetShaderInfo(slot.shader_info, puppet);
-        slot.shader_info.baseConstSvs        = base_const_svs;
+        slot.shader_info.baseConstSvs       = base_const_svs;
+        slot.shader_value_data              = image_shader_value_data;
+        slot.shader_value_data.renderTargets.clear();
         slot.shader_value_data.puppet_layer = WPPuppetLayer(puppet.puppet);
         slot.shader_value_data.puppet_layer.prepared(wpimgobj.puppet_layers);
 
@@ -1707,7 +1710,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                 svData.puppet_layer.prepared(wpimgobj.puppet_layers);
                 WPMdlParser::GenPuppetMesh(mesh, *puppet);
                 puppet_material_slots = TryLoadPuppetMaterialSlots(
-                    context, spImgNode.get(), wpimgobj, *puppet, baseConstSvs);
+                    context, spImgNode.get(), wpimgobj, *puppet, baseConstSvs, svData);
             }
         }
         if (! puppet) {

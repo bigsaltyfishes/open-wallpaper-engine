@@ -409,6 +409,24 @@ std::string BasicPuppetSceneJson(bool dynamic_alpha = false) {
     })";
 }
 
+std::string PuppetParallaxSceneJson() {
+    return R"({
+      "camera": {"center":[10,0,0], "eye":[10,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0.2,0.2,0.2], "skylightcolor":[0.3,0.3,0.3],
+        "clearcolor":[0,0,0], "cameraparallax":true,
+        "cameraparallaxamount":2, "cameraparallaxdelay":0.25,
+        "cameraparallaxmouseinfluence":0,
+        "orthogonalprojection":{"width":640,"height":360}
+      },
+      "objects": [
+        {"id":300,"name":"puppet image","image":"puppet_image.json",
+         "origin":[0,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":true,
+         "alpha":0.6, "parallaxDepth":[0.5,0.25]}
+      ]
+    })";
+}
+
 std::shared_ptr<SceneNode> FindRootChildByName(const Scene& scene, std::string_view name) {
     if (scene.sceneGraph == nullptr) return nullptr;
     const auto& root_children = scene.sceneGraph->GetChildren();
@@ -1086,6 +1104,39 @@ TEST(SceneSchema, ParserRegistersPuppetSlotShaderValueDataByMaterialSlot) {
     ASSERT_TRUE(updates.contains("g_Texture0Resolution"));
     EXPECT_FLOAT_EQ(updates.at("g_Texture0Resolution")[0], 160.0f);
     EXPECT_FLOAT_EQ(updates.at("g_Texture0Resolution")[1], 90.0f);
+}
+
+TEST(SceneSchema, ParserCopiesImageParallaxDepthToPuppetMaterialSlots) {
+    auto files = std::map<std::string, std::string> {};
+    AddPuppetImageSceneFiles(files);
+    fs::VFS vfs;
+    EXPECT_TRUE(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::move(files))));
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+
+    auto parsed = parser.Parse("puppet-slot-parallax", PuppetParallaxSceneJson(), vfs, sound_manager);
+
+    ASSERT_NE(parsed, nullptr);
+    auto node = FindRootChildByName(*parsed, "puppet image");
+    ASSERT_NE(node, nullptr);
+    ASSERT_NE(node->Mesh(), nullptr);
+    ASSERT_EQ(node->Mesh()->MaterialSlots().size(), 2u);
+    ASSERT_NE(parsed->shaderValueUpdater, nullptr);
+    auto* updater = dynamic_cast<WPShaderValueUpdater*>(parsed->shaderValueUpdater.get());
+    ASSERT_NE(updater, nullptr);
+    updater->InitUniforms(node.get(), 1, [](std::string_view name) {
+        return name == "g_ModelMatrix";
+    });
+
+    sprite_map_t sprites;
+    std::unordered_map<std::string, ShaderValue> updates;
+    updater->UpdateUniforms(node.get(), 1, sprites, [&](std::string_view name, ShaderValue value) {
+        updates.emplace(std::string(name), std::move(value));
+    });
+
+    ASSERT_TRUE(updates.contains("g_ModelMatrix"));
+    EXPECT_NE(updates.at("g_ModelMatrix")[12], 0.0f);
+    EXPECT_NE(updates.at("g_ModelMatrix")[13], 0.0f);
 }
 
 TEST(SceneSchema, ParserKeepsLegacyEmptyPuppetMeshSingleMaterialSlotFallback) {
