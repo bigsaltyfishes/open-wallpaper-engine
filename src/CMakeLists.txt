@@ -47,20 +47,20 @@ endif()
 
 add_subdirectory(Fs)
 add_subdirectory(Utils)
-add_subdirectory(Timer)
 add_subdirectory(Audio)
 add_subdirectory(Scene)
 add_subdirectory(Looper)
 add_subdirectory(Vulkan)
-add_subdirectory(Particle)
-add_subdirectory(VulkanRender)
-add_subdirectory(RenderGraph)
+add_subdirectory(Scene/Timer)
+add_subdirectory(Scene/Particle)
+add_subdirectory(Scene/VulkanRender)
+add_subdirectory(Scene/RenderGraph)
 
 add_library(
   ${PROJECT_NAME} STATIC
   Presentation/WallpaperScaling.cpp
-  WPJson.cpp
-  WPPkgFs.cpp
+  Scene/WPJson.cpp
+  Scene/WPPkgFs.cpp
   Type.cpp
   Runtime/DynamicValue.cpp
   Runtime/SceneRuntimeContext.cpp
@@ -68,28 +68,28 @@ add_library(
   Runtime/ScriptedDynamicValue.cpp
   Text/TextLayer.cpp
   Scripting/ScriptEngine.cpp
-  wpscene/WPImageObject.cpp
-  wpscene/WPParticleObject.cpp
-  wpscene/WPMaterial.cpp
-  wpscene/WPScene.cpp
-  wpscene/WPLightObject.cpp
-  WPParticleParser.cpp
-  WPShaderParser.cpp
+  Scene/Parse/wpscene/WPImageObject.cpp
+  Scene/Parse/wpscene/WPParticleObject.cpp
+  Scene/Parse/wpscene/WPMaterial.cpp
+  Scene/Parse/wpscene/WPScene.cpp
+  Scene/Parse/wpscene/WPLightObject.cpp
+  Scene/Parse/WPParticleParser.cpp
+  Scene/Parse/WPShaderParser.cpp
   Shader/ShaderPreprocessor.cpp
   Shader/SceneShaderLegalizer.cpp
-  WPSceneParser.cpp
-  WPShaderValueUpdater.cpp
-  WPTexImageParser.cpp
-  WPSoundParser.cpp
-  WPMdlParser.cpp
-  WPPuppet.cpp
+  Scene/Parse/WPSceneParser.cpp
+  Scene/WPShaderValueUpdater.cpp
+  Scene/Parse/WPTexImageParser.cpp
+  Scene/Parse/WPSoundParser.cpp
+  Scene/Parse/WPMdlParser.cpp
+  Scene/Parse/WPPuppet.cpp
   Project/ProjectManifest.cpp
   Project/ProjectProperties.cpp
   Runtime/VirtualAssetRegistry.cpp
   Video/FfmpegVideoTextureSource.cpp
   ${PLATFORM_APPLE_SOURCES}
   SceneSourceResolver.cpp
-  SceneWallpaper.cpp)
+  Scene/SceneWallpaper.cpp)
 
 add_library(wescene::renderer ALIAS ${PROJECT_NAME})
 
