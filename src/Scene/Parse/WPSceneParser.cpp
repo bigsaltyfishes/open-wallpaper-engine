@@ -1000,6 +1000,7 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& obj) {
 
     if (allow_script_update) {
         QueueSceneScriptIfNeeded(context, runtime_name, obj.visible_setting);
+        QueueSceneScriptIfNeeded(context, runtime_name, obj.text);
     }
 
     context.layer_nodes[obj.id] = node;

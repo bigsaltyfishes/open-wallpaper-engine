@@ -458,6 +458,45 @@ TEST(TextObjectRuntime, EventOnlyTextScriptDoesNotOverwriteRuntimeMutationOnTick
     EXPECT_EQ(scene->runtime->scriptErrorCount(), 0u);
 }
 
+TEST(TextObjectRuntime, EventOnlyTextScriptRegistersAsSceneScript) {
+    fs::VFS vfs;
+    MountAssets(vfs);
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    ProjectProperties   properties;
+    SceneParseRequest   request {
+          .scene_id           = "text-event-script-scene-script",
+          .project_properties = &properties,
+    };
+
+    auto scene = parser.Parse(
+        request,
+        MinimalSceneObjects(R"JSON([
+          {
+            "id": 1,
+            "name": "caption",
+            "text": {
+              "value": "before",
+              "script": "engine.on('cursorDown', function() { thisLayer.text = 'clicked'; })"
+            },
+            "font": "Arial",
+            "visible": true
+          }
+        ])JSON"),
+        vfs,
+        sound_manager);
+
+    ASSERT_NE(scene, nullptr);
+    ASSERT_NE(scene->runtime, nullptr);
+    EXPECT_EQ(scene->runtime->NodeText("caption"), "before");
+    EXPECT_EQ(scene->runtime->sceneScriptCount(), 1u);
+
+    scene->runtime->DispatchCursorDown(0);
+
+    EXPECT_EQ(scene->runtime->NodeText("caption"), "clicked");
+    EXPECT_EQ(scene->runtime->scriptErrorCount(), 0u);
+}
+
 TEST(TextObjectRuntime, TextParentReusesPlaceholderWhenChildAppearsFirst) {
     fs::VFS vfs;
     MountAssets(vfs);
