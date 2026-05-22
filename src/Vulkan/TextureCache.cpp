@@ -881,27 +881,86 @@ void TextureCache::allocateCmd() {
     m_tex_cmd = vvk::CommandBuffer(m_tex_cmds[0], m_device.handle().Dispatch());
 }
 
-void TextureCache::allocateVideoImportCmd() {
-    const auto& pool = m_device.cmd_pool();
-    VVK_CHECK(pool.Allocate(1, VK_COMMAND_BUFFER_LEVEL_PRIMARY, m_video_import_cmds));
-    m_video_import_cmd = vvk::CommandBuffer(m_video_import_cmds[0], m_device.handle().Dispatch());
+TextureCache::VideoImportSubmissionSlot*
+TextureCache::acquireVideoImportSubmissionSlot(std::string* error) {
+    for (auto& slot : m_video_import_slots) {
+        if (slot.pending && slot.fence.GetStatus() == VK_SUCCESS) {
+            if (! waitForVideoImportSlot(slot, error)) return nullptr;
+        }
+        if (! slot.pending) return &slot;
+    }
+
+    VideoImportSubmissionPlan plan {
+        .pending_submissions = m_video_import_slots.size(),
+        .available_slots     = kMaxPendingVideoImportSubmissions,
+        .must_destroy_resource = false,
+    };
+    if (VideoImportSubmissionNeedsFenceWait(plan)) {
+        auto oldest = std::min_element(m_video_import_slots.begin(),
+                                       m_video_import_slots.end(),
+                                       [](const VideoImportSubmissionSlot& lhs,
+                                          const VideoImportSubmissionSlot& rhs) {
+                                           return lhs.submitted_serial < rhs.submitted_serial;
+                                       });
+        if (oldest == m_video_import_slots.end()) {
+            SetError(error, "video import submission slot accounting is invalid");
+            return nullptr;
+        }
+        if (! waitForVideoImportSlot(*oldest, error)) return nullptr;
+        return &*oldest;
+    }
+
+    VideoImportSubmissionSlot slot;
+    const auto&               pool = m_device.cmd_pool();
+    if (const VkResult result = pool.Allocate(1, VK_COMMAND_BUFFER_LEVEL_PRIMARY, slot.commands);
+        result != VK_SUCCESS) {
+        VVK_CHECK(result);
+        SetError(error, "failed to allocate video frame import command buffer");
+        return nullptr;
+    }
+    slot.command = vvk::CommandBuffer(slot.commands[0], m_device.handle().Dispatch());
     ++m_video_submission_stats.command_buffer_allocations;
+
+    VkFenceCreateInfo fence_info {
+        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+    };
+    if (const VkResult result = m_device.handle().CreateFence(fence_info, slot.fence);
+        result != VK_SUCCESS) {
+        VVK_CHECK(result);
+        SetError(error, "failed to create Vulkan fence for video frame import");
+        return nullptr;
+    }
+    ++m_video_submission_stats.fence_allocations;
+
+    m_video_import_slots.emplace_back(std::move(slot));
+    m_video_submission_stats.import_submission_slots = m_video_import_slots.size();
+    return &m_video_import_slots.back();
 }
 
-bool TextureCache::waitForPendingVideoImport(std::string* error) {
-    if (! m_video_import_pending) return true;
+bool TextureCache::waitForVideoImportSlot(VideoImportSubmissionSlot& slot, std::string* error) {
+    if (! slot.pending) return true;
     ++m_video_submission_stats.fence_waits;
 
-    if (const VkResult result = m_video_import_fence.Wait(); result != VK_SUCCESS) {
+    if (const VkResult result = slot.fence.Wait(); result != VK_SUCCESS) {
         VVK_CHECK(result);
         return SetError(error, "failed waiting for pending video frame import");
     }
-    if (const VkResult result = m_video_import_fence.Reset(); result != VK_SUCCESS) {
+    if (const VkResult result = slot.fence.Reset(); result != VK_SUCCESS) {
         VVK_CHECK(result);
         return SetError(error, "failed resetting video frame import fence");
     }
 
-    m_video_import_pending = false;
+    slot.pending          = false;
+    slot.submitted_serial = 0;
+    return true;
+}
+
+bool TextureCache::waitForPendingVideoImports(std::string* error) {
+    for (auto& slot : m_video_import_slots) {
+        if (! waitForVideoImportSlot(slot, error)) return false;
+    }
     return true;
 }
 
@@ -986,7 +1045,9 @@ void TextureCache::SetVideoPlaybackPaused(bool paused) { m_video_playback_state.
 void TextureCache::SetVideoPlaybackRate(float rate) { m_video_playback_state.rate = rate; }
 
 VideoTextureSubmissionStats TextureCache::VideoSubmissionStats() const {
-    return m_video_submission_stats;
+    auto stats                    = m_video_submission_stats;
+    stats.import_submission_slots = m_video_import_slots.size();
+    return stats;
 }
 
 void TextureCache::ResetVideoSubmissionStats() { m_video_submission_stats = {}; }
@@ -1036,7 +1097,7 @@ bool TextureCache::EnsureVideoFrameCacheRoom(VideoTex& video_tex, std::string* e
             }
         }
         if (victim == video_tex.imported_frames.end()) return true;
-        if (! waitForPendingVideoImport(error)) return false;
+        if (! waitForPendingVideoImports(error)) return false;
         ++m_video_submission_stats.evictions;
         video_tex.imported_frames.erase(victim);
     }
@@ -1045,7 +1106,7 @@ bool TextureCache::EnsureVideoFrameCacheRoom(VideoTex& video_tex, std::string* e
 
 void TextureCache::Clear() {
     std::string error;
-    if (! waitForPendingVideoImport(&error) && ! error.empty()) {
+    if (! waitForPendingVideoImports(&error) && ! error.empty()) {
         LOG_ERROR("failed waiting for pending video import before cache clear: %s", error.c_str());
     }
     m_tex_map.clear();
@@ -1125,37 +1186,23 @@ bool TextureCache::UpdateVideoFrame(std::string_view                 key,
             video::ReleaseAppleVideoMetalTexture(metal_texture);
             return false;
         }
-        if (! m_video_import_cmd) allocateVideoImportCmd();
-        if (! m_video_import_fence) {
-            VkFenceCreateInfo fence_info {
-                .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-                .pNext = nullptr,
-                .flags = 0,
-            };
-            if (const VkResult result =
-                    m_device.handle().CreateFence(fence_info, m_video_import_fence);
-                result != VK_SUCCESS) {
-                VVK_CHECK(result);
-                video::ReleaseAppleVideoMetalTexture(metal_texture);
-                return SetError(error, "failed to create Vulkan fence for video frame import");
-            }
-            ++m_video_submission_stats.fence_allocations;
-        }
-        if (! waitForPendingVideoImport(error)) {
+        auto* submission_slot = acquireVideoImportSubmissionSlot(error);
+        if (submission_slot == nullptr) {
             video::ReleaseAppleVideoMetalTexture(metal_texture);
             return false;
         }
         if (const VkResult result = TransImgLayout(m_device.graphics_queue().handle,
-                                                   m_video_import_cmd,
+                                                   submission_slot->command,
                                                    imported_image.value(),
                                                    imported_image->layout,
-                                                   *m_video_import_fence);
+                                                   *submission_slot->fence);
             result != VK_SUCCESS) {
             VVK_CHECK(result);
             video::ReleaseAppleVideoMetalTexture(metal_texture);
             return SetError(error, "failed to transition imported video frame image layout");
         }
-        m_video_import_pending = true;
+        submission_slot->pending          = true;
+        submission_slot->submitted_serial = ++m_video_import_submit_serial;
 
         auto new_imported_frame           = std::make_unique<ImportedVideoFrame>();
         new_imported_frame->image         = std::move(imported_image.value());

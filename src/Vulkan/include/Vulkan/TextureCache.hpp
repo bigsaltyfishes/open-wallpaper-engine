@@ -40,9 +40,22 @@ struct VideoTextureSubmissionStats {
     std::uint64_t new_imports { 0 };
     std::uint64_t fence_waits { 0 };
     std::uint64_t evictions { 0 };
+    std::uint64_t import_submission_slots { 0 };
     std::uint64_t command_buffer_allocations { 0 };
     std::uint64_t fence_allocations { 0 };
 };
+
+struct VideoImportSubmissionPlan {
+    std::size_t pending_submissions { 0 };
+    std::size_t available_slots { 0 };
+    bool        must_destroy_resource { false };
+};
+
+inline bool VideoImportSubmissionNeedsFenceWait(const VideoImportSubmissionPlan& plan) {
+    if (plan.pending_submissions == 0) return false;
+    if (plan.must_destroy_resource) return true;
+    return plan.available_slots == 0 || plan.pending_submissions >= plan.available_slots;
+}
 
 inline video::VideoPlaybackState
 ResolveEffectiveVideoPlaybackState(const video::VideoPlaybackState& global_state,
@@ -104,14 +117,21 @@ private:
     VkSampler                         GetOrCreateSampler(TextureKey, std::string* error);
     void*                             GetMetalDeviceHandle(std::string* error);
     void                              allocateCmd();
-    void                              allocateVideoImportCmd();
-    bool                              waitForPendingVideoImport(std::string* error);
+    struct VideoImportSubmissionSlot {
+        vvk::CommandBuffers commands;
+        vvk::CommandBuffer  command;
+        vvk::Fence          fence;
+        bool                pending { false };
+        uint64_t            submitted_serial { 0 };
+    };
+    VideoImportSubmissionSlot* acquireVideoImportSubmissionSlot(std::string* error);
+    bool                       waitForVideoImportSlot(VideoImportSubmissionSlot& slot,
+                                                      std::string* error);
+    bool                       waitForPendingVideoImports(std::string* error);
     vvk::CommandBuffers               m_tex_cmds;
     vvk::CommandBuffer                m_tex_cmd;
-    vvk::CommandBuffers               m_video_import_cmds;
-    vvk::CommandBuffer                m_video_import_cmd;
-    vvk::Fence                        m_video_import_fence;
-    bool                              m_video_import_pending { false };
+    std::vector<VideoImportSubmissionSlot> m_video_import_slots;
+    uint64_t                              m_video_import_submit_serial { 0 };
 
     const Device&                m_device;
     Map<std::string, ImageSlots> m_tex_map;
@@ -131,6 +151,7 @@ private:
         uint64_t                                         frame_use_serial { 0 };
     };
     static constexpr std::size_t kMaxImportedVideoFramesPerVideoTex { 4 };
+    static constexpr std::size_t kMaxPendingVideoImportSubmissions { 2 };
     bool                CanReuseVideoFrameImport(const video::VideoTextureFrame& frame) const;
     ImportedVideoFrame* FindImportedVideoFrame(VideoTex&                       video_tex,
                                                const video::VideoTextureFrame& frame,
