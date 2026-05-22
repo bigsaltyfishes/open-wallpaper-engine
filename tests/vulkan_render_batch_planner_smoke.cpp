@@ -182,6 +182,61 @@ void invisibleClearOnlyPassFoldsIntoNextVisiblePass() {
     assert(plan.entries[0].visible_draws == 1);
     assert(plan.entries[0].clear_on_begin);
 }
+
+void invisibleClearOnlyMsaaPassPlansSidecarClearImage() {
+    auto clear                 = makeCandidate(0x100, 0x200, 64, false);
+    clear.clear_only           = true;
+    clear.render.load_op       = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    clear.render.sample_count  = VK_SAMPLE_COUNT_4_BIT;
+    clear.render.msaa_image    = reinterpret_cast<VkImage>(0x300);
+    clear.render.msaa_view     = reinterpret_cast<VkImageView>(0x400);
+
+    std::vector<CustomPassBatchCandidate> candidates { clear };
+
+    const CustomPassBatchPlan plan = PlanCustomPassBatches(candidates);
+
+    assert(plan.entries.size() == 1);
+    assert(plan.entries[0].kind == CustomPassBatchKind::ClearImage);
+    assert(plan.entries[0].visible_draws == 0);
+    assert(plan.entries[0].clear_on_begin);
+    assert(plan.entries[0].render.image == clear.render.image);
+    assert(plan.entries[0].render.view == clear.render.view);
+    assert(plan.entries[0].render.msaa_image == clear.render.msaa_image);
+    assert(plan.entries[0].render.msaa_view == clear.render.msaa_view);
+    assert(plan.entries[0].render.sample_count == VK_SAMPLE_COUNT_4_BIT);
+}
+
+void invisibleClearOnlyMsaaPassFoldsIntoNextVisiblePassWithSameSidecar() {
+    auto clear                 = makeCandidate(0x100, 0x200, 64, false);
+    clear.clear_only           = true;
+    clear.render.load_op       = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    clear.render.sample_count  = VK_SAMPLE_COUNT_4_BIT;
+    clear.render.msaa_image    = reinterpret_cast<VkImage>(0x300);
+    clear.render.msaa_view     = reinterpret_cast<VkImageView>(0x400);
+
+    auto visible                = makeCandidate(0x100, 0x200, 64);
+    visible.render.sample_count = VK_SAMPLE_COUNT_4_BIT;
+    visible.render.msaa_image   = clear.render.msaa_image;
+    visible.render.msaa_view    = clear.render.msaa_view;
+
+    std::vector<CustomPassBatchCandidate> candidates {
+        clear,
+        visible,
+    };
+
+    const CustomPassBatchPlan plan = PlanCustomPassBatches(candidates);
+
+    assert(plan.entries.size() == 1);
+    assert(plan.entries[0].kind == CustomPassBatchKind::RenderPass);
+    assert(plan.entries[0].first == 0);
+    assert(plan.entries[0].last == 2);
+    assert(plan.entries[0].visible_draws == 1);
+    assert(plan.entries[0].clear_on_begin);
+    assert(CustomPassBeginRenderPassClearValueCount(plan.entries[0].render) == 2);
+    assert(plan.entries[0].render.msaa_image == clear.render.msaa_image);
+    assert(plan.entries[0].render.msaa_view == clear.render.msaa_view);
+    assert(plan.entries[0].render.sample_count == VK_SAMPLE_COUNT_4_BIT);
+}
 } // namespace
 
 int main() {
@@ -195,5 +250,7 @@ int main() {
     beginRenderPassClearValueCountFollowsAttachmentPlan();
     framebufferAttachmentViewsFollowAttachmentPlan();
     invisibleClearOnlyPassFoldsIntoNextVisiblePass();
+    invisibleClearOnlyMsaaPassPlansSidecarClearImage();
+    invisibleClearOnlyMsaaPassFoldsIntoNextVisiblePassWithSameSidecar();
     return 0;
 }

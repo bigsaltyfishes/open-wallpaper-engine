@@ -494,6 +494,95 @@ void copyWrittenMsaaTargetsPreserveWithSingleSamplePasses() {
     assert(pass->desc().sample_count == VK_SAMPLE_COUNT_1_BIT);
 }
 
+void separateMsaaRenderTargetWritersPreserveWithMsaaSampleCount() {
+    Scene scene;
+    installDefaultTargets(scene);
+    scene.renderTargets["_rt_msaa_multi_writer"] = SceneRenderTarget {
+        .width        = 64,
+        .height       = 64,
+        .allowReuse   = true,
+        .sample_count = 4,
+    };
+
+    auto first = makeNode("first_msaa_multi_writer");
+    scene.sceneGraph->AppendChild(first);
+    auto second = makeNode("second_msaa_multi_writer");
+    scene.sceneGraph->AppendChild(second);
+
+    auto first_camera = std::make_shared<SceneCamera>(64, 64, 0.01f, 100.0f);
+    first_camera->AttatchImgEffect(std::make_shared<SceneImageEffectLayer>(
+        first.get(),
+        64.0f,
+        64.0f,
+        "_rt_msaa_multi_writer",
+        "_rt_unused_a"));
+    first->SetCamera("first_msaa_multi_writer_camera");
+    scene.cameras["first_msaa_multi_writer_camera"] = first_camera;
+
+    auto second_camera = std::make_shared<SceneCamera>(64, 64, 0.01f, 100.0f);
+    second_camera->AttatchImgEffect(std::make_shared<SceneImageEffectLayer>(
+        second.get(),
+        64.0f,
+        64.0f,
+        "_rt_msaa_multi_writer",
+        "_rt_unused_b"));
+    second->SetCamera("second_msaa_multi_writer_camera");
+    scene.cameras["second_msaa_multi_writer_camera"] = second_camera;
+
+    const auto graph  = wallpaper::sceneToRenderGraph(scene);
+    const auto passes = graphPasses(*graph);
+
+    const auto* first_pass  = findCustomPass(passes, "first_msaa_multi_writer");
+    const auto* second_pass = findCustomPass(passes, "second_msaa_multi_writer");
+
+    assert(first_pass->desc().output == "_rt_msaa_multi_writer");
+    assert(first_pass->desc().clear_on_first_use);
+    assert(!first_pass->desc().preserve_target_contents);
+    assert(first_pass->desc().sample_count == VK_SAMPLE_COUNT_4_BIT);
+
+    assert(second_pass->desc().output == "_rt_msaa_multi_writer");
+    assert(!second_pass->desc().clear_on_first_use);
+    assert(second_pass->desc().preserve_target_contents);
+    assert(second_pass->desc().sample_count == VK_SAMPLE_COUNT_4_BIT);
+}
+
+void videoTextureSamplingIsPreservedInMsaaScenePass() {
+    Scene scene;
+    installDefaultTargets(scene);
+    scene.renderTargets["_rt_msaa_video"] = SceneRenderTarget {
+        .width        = 64,
+        .height       = 64,
+        .allowReuse   = true,
+        .sample_count = 4,
+    };
+    scene.textures["video://clip"] = wallpaper::SceneTexture {
+        .url     = "video://clip",
+        .isVideo = true,
+    };
+
+    auto writer = makeNode("msaa_video_sampler", { "video://clip" });
+    scene.sceneGraph->AppendChild(writer);
+
+    auto camera = std::make_shared<SceneCamera>(64, 64, 0.01f, 100.0f);
+    camera->AttatchImgEffect(std::make_shared<SceneImageEffectLayer>(
+        writer.get(),
+        64.0f,
+        64.0f,
+        "_rt_msaa_video",
+        "_rt_unused"));
+    writer->SetCamera("msaa_video_camera");
+    scene.cameras["msaa_video_camera"] = camera;
+
+    const auto graph  = wallpaper::sceneToRenderGraph(scene);
+    const auto passes = graphPasses(*graph);
+
+    const auto* pass = findCustomPass(passes, "msaa_video_sampler");
+    assert(pass->desc().output == "_rt_msaa_video");
+    assert(pass->desc().textures.size() == 1);
+    assert(pass->desc().textures[0] == "video://clip");
+    assert(pass->desc().sample_count == VK_SAMPLE_COUNT_4_BIT);
+}
+
 void defaultOutputUsesSceneClearEnabledWhileNonDefaultWritesAlpha() {
     Scene scene;
     installDefaultTargets(scene);
@@ -699,6 +788,8 @@ int main() {
     forceClearDoesNotChangeDefaultOutputPreservation();
     renderTargetSampleCountPropagatesToCustomPassDesc();
     copyWrittenMsaaTargetsPreserveWithSingleSamplePasses();
+    separateMsaaRenderTargetWritersPreserveWithMsaaSampleCount();
+    videoTextureSamplingIsPreservedInMsaaScenePass();
     defaultOutputUsesSceneClearEnabledWhileNonDefaultWritesAlpha();
     postProcessesAppendPassesAndCopiesAfterSceneGraph();
     nullPostProcessPassNodesAreSkipped();

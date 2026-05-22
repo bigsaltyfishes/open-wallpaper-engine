@@ -94,6 +94,11 @@ void customPassRenderTargetSampleCountFallsBackToSupportedColorSamples() {
     assert(ResolveCustomPassRenderTargetSampleCount(8, supported) == VK_SAMPLE_COUNT_4_BIT);
 }
 
+void customPassRenderTargetSampleCountFallsBackToSingleSampleWhenUnsupported() {
+    assert(ResolveCustomPassRenderTargetSampleCount(4, VK_SAMPLE_COUNT_1_BIT) ==
+           VK_SAMPLE_COUNT_1_BIT);
+}
+
 void customPassRenderTargetSampleCountPreservesGraphFallbackToSingleSample() {
     const auto supported =
         VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT;
@@ -148,6 +153,7 @@ int main() {
     textureKeyHashIncludesSampleCount();
     sceneRenderTargetSampleCountConvertsToTextureKey();
     customPassRenderTargetSampleCountFallsBackToSupportedColorSamples();
+    customPassRenderTargetSampleCountFallsBackToSingleSampleWhenUnsupported();
     customPassRenderTargetSampleCountPreservesGraphFallbackToSingleSample();
     gpuAllocationSampleCountPlansRequestedSamplesForInternalColorTargets();
     gpuAllocationSampleCountUsesRequestedSamplesForMsaaSidecars();
