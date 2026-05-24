@@ -10,6 +10,8 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <limits>
+#include <optional>
 #include <sstream>
 #include <string_view>
 #include <unordered_map>
@@ -32,6 +34,47 @@ Eigen::Vector3f RadiansToDegrees(const Eigen::Vector3f& value) { return value * 
 
 struct SceneScriptBridgeState {
     SceneRuntimeContext* runtime = nullptr;
+    uint32_t create_layer_slot = 0;
+    uint32_t update_scope_id = 0;
+    bool cache_created_layers = false;
+};
+
+SceneScriptBridgeState* GetBridgeState(JSContext* context);
+
+enum class GeneratedLayerUpdateScope : uint32_t
+{
+    ExportUpdate = 1,
+    SceneCallback = 2,
+};
+
+class GeneratedLayerCacheScope {
+public:
+    explicit GeneratedLayerCacheScope(JSContext* context, std::optional<GeneratedLayerUpdateScope> scope)
+        : m_bridge(scope.has_value() ? GetBridgeState(context) : nullptr) {
+        if (m_bridge == nullptr) return;
+        m_old_cache_created_layers = m_bridge->cache_created_layers;
+        m_old_create_layer_slot    = m_bridge->create_layer_slot;
+        m_old_update_scope_id      = m_bridge->update_scope_id;
+        m_bridge->create_layer_slot = 0;
+        m_bridge->update_scope_id = static_cast<uint32_t>(*scope);
+        m_bridge->cache_created_layers = true;
+    }
+
+    ~GeneratedLayerCacheScope() {
+        if (m_bridge == nullptr) return;
+        m_bridge->update_scope_id = m_old_update_scope_id;
+        m_bridge->create_layer_slot = m_old_create_layer_slot;
+        m_bridge->cache_created_layers = m_old_cache_created_layers;
+    }
+
+    GeneratedLayerCacheScope(const GeneratedLayerCacheScope&) = delete;
+    GeneratedLayerCacheScope& operator=(const GeneratedLayerCacheScope&) = delete;
+
+private:
+    SceneScriptBridgeState* m_bridge { nullptr };
+    bool                    m_old_cache_created_layers { false };
+    uint32_t                m_old_create_layer_slot { 0 };
+    uint32_t                m_old_update_scope_id { 0 };
 };
 
 enum class ScriptProgramMode
@@ -1600,6 +1643,11 @@ JSValue CallStoredExport(JSContext* context, const char* exports_object_name,
     JSValue function      = JS_GetPropertyStr(context, exports, export_name);
 
     JSValue result = JS_UNDEFINED;
+    GeneratedLayerCacheScope create_layer_cache_scope(
+        context,
+        strcmp(export_name, "update") == 0
+            ? std::make_optional(GeneratedLayerUpdateScope::ExportUpdate)
+            : std::nullopt);
     if (JS_IsFunction(context, function)) {
         result = JS_Call(context, function, JS_UNDEFINED, argc, argv);
         if (JS_IsException(result)) {
@@ -1788,12 +1836,18 @@ JSValue JsLayerCreate(JSContext* context, JSValueConst, int argc, JSValueConst* 
     auto* bridge = GetBridgeState(context);
     if (bridge == nullptr || bridge->runtime == nullptr) return JS_NewString(context, "");
 
+    uint32_t create_slot = std::numeric_limits<uint32_t>::max();
+    if (bridge->cache_created_layers) {
+        create_slot =
+            (bridge->update_scope_id << 16U) | (bridge->create_layer_slot++ & 0xffffU);
+    }
+
     const char* template_name      = JS_ToCString(context, argv[0]);
     const char* current_layer_name = JS_ToCString(context, argv[1]);
     std::string generated_name;
     if (template_name != nullptr) {
         generated_name = bridge->runtime->CreateLayerFromTemplate(
-            template_name, current_layer_name != nullptr ? current_layer_name : "");
+            template_name, current_layer_name != nullptr ? current_layer_name : "", create_slot);
     }
     if (template_name != nullptr) JS_FreeCString(context, template_name);
     if (current_layer_name != nullptr) JS_FreeCString(context, current_layer_name);
@@ -2070,6 +2124,11 @@ void RunSceneCallbacks(JSContext* context, const char* event_name,
     JSValue global_object = JS_GetGlobalObject(context);
     JSValue runner        = JS_GetPropertyStr(context, global_object, "__runSceneCallbacks");
 
+    GeneratedLayerCacheScope create_layer_cache_scope(
+        context,
+        strcmp(event_name, "update") == 0
+            ? std::make_optional(GeneratedLayerUpdateScope::SceneCallback)
+            : std::nullopt);
     if (JS_IsFunction(context, runner)) {
         JSValue                     event = JS_NewString(context, event_name);
         std::array<JSValueConst, 2> argv { event, payload };

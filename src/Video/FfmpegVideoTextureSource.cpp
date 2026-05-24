@@ -346,6 +346,17 @@ public:
             requestSeekLocked(desired_absolute_seconds);
         }
 
+        while (!m_pending_frames.empty() &&
+               (!m_display_frame_ready ||
+                m_pending_frames.front().absolute_seconds <=
+                    desired_absolute_seconds + presentationSlackSeconds())) {
+            promoteNextFrameLocked();
+        }
+        if (m_display_frame_ready) {
+            m_condition.notify_all();
+            return true;
+        }
+
         const auto deadline = std::chrono::steady_clock::now() + kPrimeTimeout;
         while (true) {
             while (!m_pending_frames.empty() &&
@@ -355,7 +366,8 @@ public:
                 promoteNextFrameLocked();
             }
 
-            if (displayFrameCoversDesiredLocked(desired_absolute_seconds)) {
+            if (m_display_frame_ready ||
+                displayFrameCoversDesiredLocked(desired_absolute_seconds)) {
                 m_condition.notify_all();
                 return true;
             }

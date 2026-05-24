@@ -43,23 +43,44 @@ std::string MakeWorkshopLocalAlias(std::string_view canonical_path) {
     return std::string("models/") + normalized.substr(slash + 1);
 }
 
-bool UpdateRuntimeTextTexture(Scene& scene, const TextLayerState& state) {
+bool SetRuntimeTextTexture(Scene& scene, const TextLayerState& state, uint32_t width,
+                           uint32_t height, const std::vector<uint8_t>& rgba) {
     if (state.layer_key.empty() || scene.imageParser == nullptr) return false;
+    if (width == 0 || height == 0 || rgba.empty()) return false;
 
     auto* runtime_images = dynamic_cast<RuntimeImageSource*>(scene.imageParser.get());
     if (runtime_images == nullptr) return false;
 
-    const auto     size = TextLayerRasterSize(state);
-    const uint32_t width =
-        std::clamp(static_cast<uint32_t>(std::ceil(std::max(1.0f, size.x()))), 1u, 4096u);
-    const uint32_t height =
-        std::clamp(static_cast<uint32_t>(std::ceil(std::max(1.0f, size.y()))), 1u, 4096u);
-    std::vector<uint8_t> rgba(static_cast<std::size_t>(width) * height * 4u, 0u);
-    RasterizeTextLayer(state, width, height, rgba);
-
     runtime_images->SetRgbaImage(
         TextTextureName(state.layer_key), width, height, rgba.data(), rgba.size());
     return true;
+}
+
+RuntimePreparedTextLayerImage PrepareTextLayerImage(std::string name, uint64_t revision,
+                                                    TextLayerState state) {
+    const auto measured_size = MeasureTextLayerSize(state);
+    const bool has_explicit_size =
+        state.explicit_size.x() > 0.0f && state.explicit_size.y() > 0.0f;
+    const Eigen::Vector2f layout_size = has_explicit_size ? state.explicit_size : measured_size;
+    const Eigen::Vector2f raster_size =
+        has_explicit_size ? state.explicit_size.cwiseMax(measured_size) : measured_size;
+    const uint32_t width =
+        std::clamp(static_cast<uint32_t>(std::ceil(std::max(1.0f, raster_size.x()))), 1u, 4096u);
+    const uint32_t height =
+        std::clamp(static_cast<uint32_t>(std::ceil(std::max(1.0f, raster_size.y()))), 1u, 4096u);
+    std::vector<uint8_t> rgba(static_cast<std::size_t>(width) * height * 4u, 0u);
+    RasterizeTextLayer(state, width, height, rgba);
+
+    return RuntimePreparedTextLayerImage {
+        .name        = std::move(name),
+        .revision    = revision,
+        .state       = std::move(state),
+        .layout_size = layout_size,
+        .raster_size = raster_size,
+        .width       = width,
+        .height      = height,
+        .rgba        = std::move(rgba),
+    };
 }
 
 Eigen::Vector2f CardMeshSize(const SceneMesh& mesh) {
@@ -358,9 +379,10 @@ SceneRuntimeContext::SceneRuntimeContext(SceneRuntimeBootstrap bootstrap)
     for (const auto& [name, value] : m_project_properties) {
         m_property_values.emplace(name, MakePropertyValue(value));
     }
+    StartTextWorker();
 }
 
-SceneRuntimeContext::~SceneRuntimeContext() = default;
+SceneRuntimeContext::~SceneRuntimeContext() { StopTextWorker(); }
 
 void SceneRuntimeContext::Tick(double frame_time) {
     m_host_context->frame_time = frame_time;
@@ -510,6 +532,128 @@ void SceneRuntimeContext::SetCursorButtons(uint32_t down, uint32_t pressed, uint
 void SceneRuntimeContext::BeginFrame() {
     m_host_context->mouse_buttons_pressed  = 0;
     m_host_context->mouse_buttons_released = 0;
+}
+
+void SceneRuntimeContext::StartTextWorker() {
+    std::lock_guard lock { m_text_worker_mutex };
+    if (m_text_worker.joinable()) return;
+    m_stop_text_worker = false;
+    m_text_worker      = std::thread([this] {
+        TextWorkerLoop();
+    });
+}
+
+void SceneRuntimeContext::StopTextWorker() {
+    {
+        std::lock_guard lock { m_text_worker_mutex };
+        m_stop_text_worker = true;
+    }
+    m_text_worker_cv.notify_all();
+    if (m_text_worker.joinable()) m_text_worker.join();
+}
+
+void SceneRuntimeContext::EnqueueTextLayerPreparation(std::string name, const TextLayer& layer) {
+    if (! layer.layoutPending()) return;
+
+    const auto& state = layer.state();
+    if (! state.cache_dirty) return;
+    if (state.cache_revision == 0) return;
+
+    {
+        std::lock_guard lock { m_text_worker_mutex };
+        if (m_queued_text_revisions[name] == state.cache_revision) return;
+
+        m_pending_text_jobs.erase(
+            std::remove_if(m_pending_text_jobs.begin(),
+                           m_pending_text_jobs.end(),
+                           [&name](const RuntimePendingTextLayerJob& job) {
+                               return job.name == name;
+                           }),
+            m_pending_text_jobs.end());
+        m_pending_text_jobs.push_back(RuntimePendingTextLayerJob {
+            .name     = name,
+            .revision = state.cache_revision,
+            .state    = state,
+        });
+        m_queued_text_revisions[name] = state.cache_revision;
+    }
+    m_text_worker_cv.notify_one();
+}
+
+void SceneRuntimeContext::TextWorkerLoop() {
+    while (true) {
+        RuntimePendingTextLayerJob job;
+        {
+            std::unique_lock lock { m_text_worker_mutex };
+            m_text_worker_cv.wait(lock, [this] {
+                return m_stop_text_worker || ! m_pending_text_jobs.empty();
+            });
+            if (m_stop_text_worker) return;
+            job = std::move(m_pending_text_jobs.back());
+            m_pending_text_jobs.pop_back();
+        }
+
+        auto prepared =
+            PrepareTextLayerImage(std::move(job.name), job.revision, std::move(job.state));
+
+        {
+            std::lock_guard lock { m_text_worker_mutex };
+            if (m_stop_text_worker) return;
+            m_prepared_text_layers.erase(
+                std::remove_if(m_prepared_text_layers.begin(),
+                               m_prepared_text_layers.end(),
+                               [&prepared](const RuntimePreparedTextLayerImage& existing) {
+                                   return existing.name == prepared.name;
+                               }),
+                m_prepared_text_layers.end());
+            m_prepared_text_layers.push_back(std::move(prepared));
+        }
+    }
+}
+
+void SceneRuntimeContext::CollectPreparedTextLayers() {
+    std::vector<RuntimePreparedTextLayerImage> prepared;
+    {
+        std::lock_guard lock { m_text_worker_mutex };
+        prepared.swap(m_prepared_text_layers);
+    }
+
+    for (const auto& image : prepared) {
+        ApplyPreparedTextLayer(image);
+    }
+}
+
+bool SceneRuntimeContext::ApplyPreparedTextLayer(const RuntimePreparedTextLayerImage& prepared) {
+    const auto iterator = m_text_layers.find(prepared.name);
+    if (iterator == m_text_layers.end()) return false;
+
+    auto& layer = iterator->second;
+    if (layer.state().cache_revision != prepared.revision) return false;
+    if (layer.text() != prepared.state.text) return false;
+    if (! SizeNearlyEqual(layer.rasterSize(), prepared.raster_size, 1.0e-3f)) {
+        const auto node_iterator = m_nodes.find(prepared.name);
+        if (node_iterator != m_nodes.end() && node_iterator->second != nullptr &&
+            node_iterator->second->Mesh() != nullptr) {
+            auto* mesh = node_iterator->second->Mesh();
+            if (! SizeNearlyEqual(CardMeshSize(*mesh), prepared.raster_size, 1.0f)) {
+                ResizeCardMesh(
+                    *mesh,
+                    TextLayerRenderBoundsForRasterSize(prepared.state, prepared.raster_size));
+                if (! mesh->Dynamic()) m_scene_graph_mutated = true;
+            }
+        }
+    }
+
+    layer.ApplyPreparedLayout(prepared.layout_size, prepared.raster_size);
+    m_node_size[prepared.name] = prepared.layout_size;
+    ApplyNodeTransform(prepared.name);
+
+    if (m_scene != nullptr) {
+        SetRuntimeTextTexture(
+            *m_scene, prepared.state, prepared.width, prepared.height, prepared.rgba);
+    }
+    layer.ClearDirty();
+    return true;
 }
 
 DynamicValue* SceneRuntimeContext::FindPropertyValue(std::string_view name) const {
@@ -801,7 +945,8 @@ int SceneRuntimeContext::NodeSiblingIndex(std::string_view name) const {
 }
 
 std::string SceneRuntimeContext::CreateLayerFromTemplate(std::string_view requested_template_path,
-                                                         std::string_view current_layer_name) {
+                                                         std::string_view current_layer_name,
+                                                         uint32_t create_slot) {
     if (m_scene == nullptr || m_scene->sceneGraph == nullptr) return {};
 
     const std::string requested_path = NormalizeTemplatePath(requested_template_path);
@@ -844,6 +989,22 @@ std::string SceneRuntimeContext::CreateLayerFromTemplate(std::string_view reques
             std::string(current_layer_name).c_str(),
             binding.canonical_path.c_str());
         return {};
+    }
+
+    GeneratedLayerKey generated_key {
+        .current_layer_name = std::string(current_layer_name),
+        .template_path      = binding.canonical_path,
+        .update_scope_id    = create_slot >> 16U,
+        .create_slot        = create_slot,
+    };
+    const bool should_cache_generated_layer =
+        create_slot != std::numeric_limits<uint32_t>::max();
+    if (should_cache_generated_layer) {
+        if (const auto existing = m_generated_layers.find(generated_key);
+            existing != m_generated_layers.end()) {
+            if (m_nodes.contains(existing->second)) return existing->second;
+            m_generated_layers.erase(existing);
+        }
     }
 
     const std::string generated_name =
@@ -889,6 +1050,7 @@ std::string SceneRuntimeContext::CreateLayerFromTemplate(std::string_view reques
         }
     }
     m_scene_graph_mutated = true;
+    if (should_cache_generated_layer) m_generated_layers.emplace(std::move(generated_key), generated_name);
     return generated_name;
 }
 
@@ -1043,25 +1205,7 @@ bool SceneRuntimeContext::SetNodeText(std::string_view name, std::string text) {
     if (iterator == m_text_layers.end()) return false;
     if (iterator->second.text() == text) return true;
 
-    const auto old_raster_size = iterator->second.rasterSize();
     iterator->second.SetText(std::move(text));
-    const auto new_size               = iterator->second.size();
-    const auto new_raster_size        = iterator->second.rasterSize();
-    m_node_size[std::string(name)]    = new_size;
-    if (! SizeNearlyEqual(old_raster_size, new_raster_size, 1.0e-3f)) {
-        const auto node_iterator = m_nodes.find(std::string(name));
-        if (node_iterator != m_nodes.end() && node_iterator->second != nullptr &&
-            node_iterator->second->Mesh() != nullptr) {
-            auto* mesh = node_iterator->second->Mesh();
-            if (! SizeNearlyEqual(CardMeshSize(*mesh), new_raster_size, 1.0f)) {
-                ResizeCardMesh(
-                    *mesh,
-                    TextLayerRenderBoundsForRasterSize(iterator->second.state(), new_raster_size));
-                m_scene_graph_mutated = true;
-            }
-        }
-    }
-    ApplyNodeTransform(name);
     return true;
 }
 
@@ -1073,11 +1217,17 @@ bool SceneRuntimeContext::ClearNodeTextDirty(std::string_view name) {
 }
 
 void SceneRuntimeContext::PumpTextLayerCache() {
+    CollectPreparedTextLayers();
     for (auto& [name, layer] : m_text_layers) {
-        (void)name;
-        const auto state = layer.state();
-        if (state.cache_dirty && m_scene != nullptr) UpdateRuntimeTextTexture(*m_scene, state);
-        layer.ClearDirty();
+        if (const auto node_iterator = m_nodes.find(name);
+            node_iterator != m_nodes.end() && node_iterator->second != nullptr &&
+            ! node_iterator->second->EffectiveVisible()) {
+            continue;
+        }
+        if (layer.layoutPending()) {
+            EnqueueTextLayerPreparation(name, layer);
+            continue;
+        }
     }
 }
 

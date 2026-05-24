@@ -8,10 +8,14 @@
 
 #include <Eigen/Dense>
 
+#include <condition_variable>
 #include <memory>
+#include <limits>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -33,6 +37,23 @@ struct SceneRuntimeBootstrap {
     int               canvas_width { 0 };
     int               canvas_height { 0 };
     ProjectProperties project_properties {};
+};
+
+struct RuntimePreparedTextLayerImage {
+    std::string     name;
+    uint64_t        revision { 0 };
+    TextLayerState  state;
+    Eigen::Vector2f layout_size { Eigen::Vector2f::Zero() };
+    Eigen::Vector2f raster_size { Eigen::Vector2f::Zero() };
+    uint32_t        width { 0 };
+    uint32_t        height { 0 };
+    std::vector<uint8_t> rgba;
+};
+
+struct RuntimePendingTextLayerJob {
+    std::string    name;
+    uint64_t       revision { 0 };
+    TextLayerState state;
 };
 
 class SceneRuntimeContext {
@@ -91,7 +112,9 @@ public:
     bool            SoundLayerMuted(std::string_view name) const;
     int             NodeSiblingIndex(std::string_view name) const;
     std::string     CreateLayerFromTemplate(std::string_view requested_template_path,
-                                            std::string_view current_layer_name);
+                                            std::string_view current_layer_name,
+                                            uint32_t create_slot =
+                                                std::numeric_limits<uint32_t>::max());
     bool            SortNode(std::string_view name, int index);
     bool            NodeVisible(std::string_view name) const;
     bool            SetNodeVisible(std::string_view name, bool visible);
@@ -194,12 +217,46 @@ private:
         std::shared_ptr<SceneNode> node;
         Eigen::Vector2f            size { Eigen::Vector2f::Zero() };
     };
+    struct GeneratedLayerKey {
+        std::string current_layer_name;
+        std::string template_path;
+        uint32_t    update_scope_id { 0 };
+        uint32_t    create_slot { 0 };
+
+        bool operator==(const GeneratedLayerKey& other) const {
+            return current_layer_name == other.current_layer_name &&
+                   template_path == other.template_path &&
+                   update_scope_id == other.update_scope_id && create_slot == other.create_slot;
+        }
+    };
+    struct GeneratedLayerKeyHash {
+        std::size_t operator()(const GeneratedLayerKey& key) const {
+            const std::size_t current_hash = std::hash<std::string> {}(key.current_layer_name);
+            const std::size_t template_hash = std::hash<std::string> {}(key.template_path);
+            const std::size_t scope_hash = std::hash<uint32_t> {}(key.update_scope_id);
+            const std::size_t slot_hash = std::hash<uint32_t> {}(key.create_slot);
+            const std::size_t combined =
+                current_hash ^ (template_hash + 0x9e3779b97f4a7c15ULL +
+                                (current_hash << 6U) + (current_hash >> 2U));
+            const std::size_t scoped =
+                combined ^ (scope_hash + 0x9e3779b97f4a7c15ULL + (combined << 6U) +
+                             (combined >> 2U));
+            return scoped ^ (slot_hash + 0x9e3779b97f4a7c15ULL + (scoped << 6U) +
+                             (scoped >> 2U));
+        }
+    };
     std::shared_ptr<WPSoundStream> LockSoundLayer(std::string_view name) const;
     void DispatchMediaPlaybackChanged(std::string_view name, bool playing);
     void ApplyNodeTransform(std::string_view name);
     bool CursorHitsLayer(std::string_view name) const;
     bool CursorHitsScriptLayer(const ScriptedDynamicValue& value) const;
     bool CursorHitsScriptLayer(const SceneScriptProgram& script) const;
+    void StartTextWorker();
+    void StopTextWorker();
+    void EnqueueTextLayerPreparation(std::string name, const TextLayer& layer);
+    void CollectPreparedTextLayers();
+    bool ApplyPreparedTextLayer(const RuntimePreparedTextLayerImage& prepared);
+    void TextWorkerLoop();
 
     std::unique_ptr<ScriptEngine>                                  m_script_engine;
     std::unique_ptr<ScriptHostContext>                             m_host_context;
@@ -220,9 +277,12 @@ private:
     std::vector<TextValueBinding>                                  m_text_values;
     std::unordered_map<std::string, Eigen::Vector2f>               m_node_size;
     std::unordered_map<std::string, TextLayer>                     m_text_layers;
+    std::unordered_map<std::string, uint64_t>                      m_queued_text_revisions;
     std::unordered_map<std::string, NodeAlignmentBinding>          m_node_alignment;
     std::unordered_map<std::string, std::string>                   m_node_template_paths;
     std::unordered_map<std::string, LayerTemplateBinding>          m_layer_templates;
+    std::unordered_map<GeneratedLayerKey, std::string, GeneratedLayerKeyHash>
+        m_generated_layers;
     std::unordered_map<std::string, std::vector<std::string>>      m_node_video_textures;
     std::unordered_map<std::string, VideoTexturePlaybackBinding>   m_video_texture_playback;
     std::unordered_map<std::string, std::weak_ptr<WPSoundStream>>  m_sound_layers;
@@ -230,6 +290,12 @@ private:
     std::unordered_map<ScriptedDynamicValue*, bool>                m_scripted_value_cursor_inside;
     std::vector<SceneScriptBinding>                                m_scene_scripts;
     std::vector<std::string>                                       m_script_errors;
+    std::mutex                                                     m_text_worker_mutex;
+    std::condition_variable                                        m_text_worker_cv;
+    std::thread                                                    m_text_worker;
+    std::vector<RuntimePendingTextLayerJob>                        m_pending_text_jobs;
+    std::vector<RuntimePreparedTextLayerImage>                     m_prepared_text_layers;
+    bool                                                           m_stop_text_worker { false };
     uint64_t                                                       m_next_generated_layer_id { 1 };
     bool m_scene_requires_audio_response { false };
     bool m_audio_response_enabled { false };

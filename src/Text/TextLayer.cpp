@@ -2,11 +2,13 @@
 #include "Text/SystemFontResolver.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cmath>
 #include <functional>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string_view>
 #include <type_traits>
@@ -22,8 +24,9 @@ namespace
 {
 constexpr float kWallpaperEnginePointSizeToPx = 4.0f;
 #ifdef WESCENE_BUILD_TESTS
-uint64_t g_measurement_count { 0 };
+std::atomic_uint64_t g_measurement_count { 0 };
 #endif
+std::mutex g_freetype_mutex;
 
 class FtLibrary {
 public:
@@ -140,7 +143,7 @@ CreateFreeTypeFaceFromBytes(const std::vector<uint8_t>& data, float point_size) 
 std::unique_ptr<std::remove_pointer_t<FT_Face>, FtFaceDeleter>
 CreateFreeTypeFace(const TextLayerState& state, std::vector<uint8_t>& owned_data) {
     if (! state.resolved_font_data.empty()) {
-        owned_data = state.resolved_font_data;
+        return CreateFreeTypeFaceFromBytes(state.resolved_font_data.bytes(), state.point_size);
     } else if (! state.resolved_font_path.empty()) {
         owned_data = ReadFileBytes(state.resolved_font_path);
     }
@@ -496,7 +499,12 @@ Eigen::Vector2f MeasureTextLayerSize(const TextLayerState& state) {
 #ifdef WESCENE_BUILD_TESTS
     ++g_measurement_count;
 #endif
-    if (auto measured = MeasureFreeTypeText(state); measured.has_value()) {
+    std::optional<Eigen::Vector2f> measured;
+    {
+        const std::lock_guard lock { g_freetype_mutex };
+        measured = MeasureFreeTypeText(state);
+    }
+    if (measured.has_value()) {
         return *measured;
     }
     return EstimateTextLayerSize(state.text, state.point_size, state.padding);
@@ -555,18 +563,23 @@ std::string TextTextureName(std::string_view layer_key) {
 
 void RasterizeTextLayer(const TextLayerState& state, uint32_t width, uint32_t height,
                         std::vector<uint8_t>& rgba) {
-    if (! RasterizeFreeTypeText(state, width, height, rgba)) {
+    bool rasterized = false;
+    {
+        const std::lock_guard lock { g_freetype_mutex };
+        rasterized = RasterizeFreeTypeText(state, width, height, rgba);
+    }
+    if (! rasterized) {
         RasterizeFallbackText(state, width, height, rgba);
     }
 }
 
 #ifdef WESCENE_BUILD_TESTS
 uint64_t TextLayerMeasurementCountForTests() {
-    return g_measurement_count;
+    return g_measurement_count.load();
 }
 
 void ResetTextLayerMeasurementCountForTests() {
-    g_measurement_count = 0;
+    g_measurement_count.store(0);
 }
 #endif
 
@@ -581,10 +594,16 @@ TextLayer::TextLayer(TextLayerState state): m_state(std::move(state)) {
 
 void TextLayer::SetText(std::string text) {
     if (m_state.text == text) return;
-    m_state.text  = std::move(text);
-    m_state.dirty = true;
-    Relayout();
+    m_state.text           = std::move(text);
+    m_state.dirty          = true;
+    m_state.layout_pending = true;
     MarkCacheDirty();
+}
+
+void TextLayer::ApplyPreparedLayout(Eigen::Vector2f layout_size, Eigen::Vector2f raster_size) {
+    m_state.layout_size    = layout_size;
+    m_state.raster_size    = raster_size;
+    m_state.layout_pending = false;
 }
 
 void TextLayer::ClearDirty() {
@@ -593,13 +612,24 @@ void TextLayer::ClearDirty() {
     m_state.full_dirty  = false;
 }
 
-Eigen::Vector2f TextLayer::rasterSize() const { return TextLayerRasterSize(m_state); }
+Eigen::Vector2f TextLayer::rasterSize() const { return m_state.raster_size; }
 
 TextLayerRenderBounds TextLayer::renderBounds() const {
     return TextLayerRenderBoundsForRasterSize(m_state, rasterSize());
 }
 
-void TextLayer::Relayout() { m_state.layout_size = TextLayerLayoutSize(m_state); }
+void TextLayer::Relayout() {
+    const auto measured_size = MeasureTextLayerSize(m_state);
+    if (HasExplicitTextLayerSize(m_state)) {
+        m_state.layout_size = m_state.explicit_size;
+        m_state.raster_size = m_state.explicit_size.cwiseMax(measured_size);
+        m_state.layout_pending = false;
+        return;
+    }
+    m_state.layout_size = measured_size;
+    m_state.raster_size = measured_size;
+    m_state.layout_pending = false;
+}
 
 void TextLayer::EnsureCacheIdentity() {
     if (! m_state.texture_cache_key.empty()) return;

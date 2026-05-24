@@ -32,6 +32,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace wallpaper
@@ -195,6 +196,18 @@ const vulkan::CustomShaderPass* FindCustomPassForNode(const rg::RenderGraph& gra
         if (pass != nullptr && pass->desc().node == node) return pass;
     }
     return nullptr;
+}
+
+void PumpTextUntilClean(SceneRuntimeContext& runtime, int max_attempts = 200) {
+    for (int attempt = 0; attempt < max_attempts; ++attempt) {
+        runtime.PumpTextLayerCache();
+        bool any_dirty = false;
+        for (std::string_view name : { "caption", "clock", "Clock" }) {
+            any_dirty = any_dirty || runtime.NodeTextDirty(name);
+        }
+        if (! any_dirty) return;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
 }
 
 std::optional<VkDescriptorSetLayoutBinding>
@@ -402,7 +415,7 @@ TEST(TextObjectRuntime, ExplicitTextObjectSizeIsMinimumRuntimeTextureDimensions)
     EXPECT_EQ(image->header.height, 90);
 
     ASSERT_TRUE(scene->runtime->SetNodeText("clock", "12:34:56 PM UTC"));
-    scene->runtime->PumpTextLayerCache();
+    PumpTextUntilClean(*scene->runtime);
 
     auto updated = scene->imageParser->Parse(material->textures.front());
     ASSERT_NE(updated, nullptr);
@@ -466,6 +479,7 @@ TEST(TextObjectRuntime, ExplicitTextObjectSizeRemainsLogicalFrameWhenRasterExpan
     EXPECT_NEAR(initial_mesh_bounds.min_y, -logical_size.y() * 0.5f, 1.0e-4f);
 
     ASSERT_TRUE(scene->runtime->SetNodeText("caption", "Saturday Saturday Saturday"));
+    PumpTextUntilClean(*scene->runtime);
     const auto resized_logical_size = scene->runtime->NodeSize("caption");
     EXPECT_FLOAT_EQ(resized_logical_size.x(), 180.0f);
     EXPECT_FLOAT_EQ(resized_logical_size.y(), 60.0f);
@@ -478,7 +492,7 @@ TEST(TextObjectRuntime, ExplicitTextObjectSizeRemainsLogicalFrameWhenRasterExpan
     const auto resized_mesh_bounds = MeshLocalBounds(*node->Mesh());
     EXPECT_NEAR(resized_mesh_bounds.max_x, logical_size.x() * 0.5f, 1.0e-4f);
     EXPECT_NEAR(resized_mesh_bounds.min_y, -logical_size.y() * 0.5f, 1.0e-4f);
-    EXPECT_TRUE(scene->runtime->ConsumeSceneGraphMutationFlag());
+    EXPECT_FALSE(scene->runtime->ConsumeSceneGraphMutationFlag());
 }
 
 TEST(TextObjectRuntime, TextStyleColorAlphaAndBrightnessTintRuntimeTexture) {
@@ -1060,6 +1074,19 @@ TEST(TextObjectRuntime, ParserResolvesFontFamiliesAssetsAndSystemFontAliases) {
     EXPECT_EQ(prefixed->resolved_font_path, "/assets/fonts/prefixed.ttf");
 }
 
+TEST(TextObjectRuntime, TextLayerStateCopiesShareResolvedFontData) {
+    TextLayerState state {
+        .text               = "fps: 60",
+        .resolved_font_data = std::vector<uint8_t>(1024, 42),
+    };
+
+    const auto copy = state;
+
+    ASSERT_FALSE(state.resolved_font_data.empty());
+    ASSERT_FALSE(copy.resolved_font_data.empty());
+    EXPECT_EQ(copy.resolved_font_data.data(), state.resolved_font_data.data());
+}
+
 TEST(TextObjectRuntime, ParserMapsSystemFontAliasesToPlatformFontPath) {
     fs::VFS vfs;
     MountAssets(vfs);
@@ -1440,15 +1467,18 @@ TEST(TextObjectRuntime, RuntimeTextMutationUpdatesPersistentTextAndSize) {
     ASSERT_TRUE(runtime->SetNodeText("caption", "longer text"));
 
     EXPECT_EQ(runtime->NodeText("caption"), "longer text");
+    EXPECT_TRUE(runtime->NodeTextDirty("caption"));
+
+    PumpTextUntilClean(*runtime);
+
     const auto after = runtime->NodeSize("caption");
     EXPECT_GT(after.x(), before.x());
     EXPECT_FLOAT_EQ(after.y(), before.y());
-    EXPECT_TRUE(runtime->NodeTextDirty("caption"));
     const auto dirty_state = runtime->NodeTextState("caption");
     ASSERT_TRUE(dirty_state.has_value());
     EXPECT_EQ(dirty_state->cache_revision, before_state->cache_revision + 1u);
-    EXPECT_TRUE(dirty_state->cache_dirty);
-    EXPECT_TRUE(dirty_state->full_dirty);
+    EXPECT_FALSE(dirty_state->cache_dirty);
+    EXPECT_FALSE(dirty_state->full_dirty);
 
     runtime->ClearNodeTextDirty("caption");
     const auto clean_state = runtime->NodeTextState("caption");
@@ -1553,6 +1583,60 @@ TEST(TextObjectRuntime, ClockScriptUpdatesSameSizeTextOnceThenSkipsMeasurements)
     EXPECT_EQ(runtime->NodeText("Clock"), "12:34");
     EXPECT_EQ(TextLayerMeasurementCountForTests(), 0u);
     EXPECT_FALSE(runtime->NodeTextDirty("Clock"));
+}
+
+TEST(TextObjectRuntime, ClockScriptTextResizeDoesNotMutateSceneGraph) {
+    fs::VFS vfs;
+    MountAssets(vfs);
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    ProjectProperties   properties;
+    SceneParseRequest   request {
+          .scene_id           = "text-clock-script-resize-no-graph-mutation",
+          .project_properties = &properties,
+    };
+
+    auto scene = parser.Parse(request,
+                              MinimalSceneObjects(R"([
+          {
+            "id": 1,
+            "name": "Clock",
+            "text": {
+              "value": "1",
+              "script": "export function update(value) { return '888888888888'; }"
+            },
+            "font": "systemfont_sansserif",
+            "pointsize": 33,
+            "padding": 32,
+            "horizontalalign": "center",
+            "verticalalign": "center",
+            "visible": true
+          }
+        ])"),
+                              vfs,
+                              sound_manager);
+
+    ASSERT_NE(scene, nullptr);
+    ASSERT_NE(scene->runtime, nullptr);
+    auto* runtime = scene->runtime.get();
+    auto* clock   = FindRootChild(*scene, "Clock");
+    ASSERT_NE(clock, nullptr);
+    ASSERT_NE(clock->Mesh(), nullptr);
+    ASSERT_TRUE(clock->Mesh()->Dynamic());
+    ASSERT_FALSE(runtime->ConsumeSceneGraphMutationFlag());
+
+    const auto before_size      = runtime->NodeSize("Clock");
+    const auto before_mesh_size = MeshSize(*clock->Mesh());
+
+    runtime->Tick(1.0 / 60.0);
+
+    EXPECT_EQ(runtime->NodeText("Clock"), "888888888888");
+    EXPECT_TRUE(runtime->NodeTextDirty("Clock"));
+    PumpTextUntilClean(*runtime);
+    EXPECT_GT(runtime->NodeSize("Clock").x(), before_size.x());
+    EXPECT_GT(MeshSize(*clock->Mesh()).x(), before_mesh_size.x());
+    EXPECT_FALSE(runtime->ConsumeSceneGraphMutationFlag());
+    EXPECT_EQ(runtime->scriptErrorCount(), 0u);
 }
 
 TEST(TextObjectRuntime, Workshop3409533530ClockParentKeepsVisibleRuntimeTexture) {
@@ -1844,13 +1928,14 @@ TEST(TextObjectRuntime, RuntimeTextMutationResizesRenderableMesh) {
     const auto before_width = mesh_width(*node->Mesh());
 
     ASSERT_TRUE(scene->runtime->SetNodeText("caption", "aaaaaaaaaa"));
+    PumpTextUntilClean(*scene->runtime);
 
     const auto after_size  = scene->runtime->NodeSize("caption");
     const auto after_width = mesh_width(*node->Mesh());
     EXPECT_GT(after_size.x(), before_size.x());
     EXPECT_GT(after_width, before_width);
     EXPECT_NEAR(after_width, after_size.x(), 1.0f);
-    EXPECT_TRUE(scene->runtime->ConsumeSceneGraphMutationFlag());
+    EXPECT_FALSE(scene->runtime->ConsumeSceneGraphMutationFlag());
 }
 
 TEST(TextObjectRuntime, AlignedTextReanchorsWhenTextSizeChanges) {
@@ -1879,6 +1964,7 @@ TEST(TextObjectRuntime, AlignedTextReanchorsWhenTextSizeChanges) {
     const auto before_size      = scene->runtime->NodeSize("caption");
 
     ASSERT_TRUE(scene->runtime->SetNodeText("caption", "aaaaaaaaaa"));
+    PumpTextUntilClean(*scene->runtime);
 
     const auto after_translate = node->Translate();
     const auto after_size      = scene->runtime->NodeSize("caption");
@@ -1917,6 +2003,7 @@ TEST(TextObjectRuntime, ScaledTextAnchoringUsesRenderedSizeFromOriginalOrigin) {
     EXPECT_NEAR(node->Translate().y(), 50.0f + size.y() * 1.5f, 1.0e-4f);
 
     ASSERT_TRUE(scene->runtime->SetNodeText("caption", "aaaaaa"));
+    PumpTextUntilClean(*scene->runtime);
     const auto resized = scene->runtime->NodeSize("caption");
     EXPECT_NEAR(node->Translate().x(), 100.0f - resized.x(), 1.0e-4f);
     EXPECT_NEAR(node->Translate().y(), 50.0f + resized.y() * 1.5f, 1.0e-4f);
@@ -1937,7 +2024,7 @@ TEST(TextObjectRuntime, PumpTextLayerCacheClearsDirtyStateWithoutLosingText) {
 
     ASSERT_TRUE(runtime->SetNodeText("caption", "after"));
     ASSERT_TRUE(runtime->NodeTextDirty("caption"));
-    runtime->PumpTextLayerCache();
+    PumpTextUntilClean(*runtime);
 
     const auto state = runtime->NodeTextState("caption");
     ASSERT_TRUE(state.has_value());
@@ -1965,7 +2052,7 @@ TEST(TextObjectRuntime, PumpTextLayerCacheDoesNotKeepDirtyWhenSceneCannotAcceptR
     ASSERT_TRUE(scene.runtime->SetNodeText("caption", "after"));
     ASSERT_TRUE(scene.runtime->NodeTextDirty("caption"));
 
-    scene.runtime->PumpTextLayerCache();
+    PumpTextUntilClean(*scene.runtime);
 
     const auto state = scene.runtime->NodeTextState("caption");
     ASSERT_TRUE(state.has_value());
@@ -2008,14 +2095,159 @@ TEST(TextObjectRuntime, PumpTextLayerCacheRerasterizesAttachedSceneTexture) {
     ASSERT_TRUE(scene->runtime->SetNodeText("caption", "aaaaaa"));
     ASSERT_TRUE(scene->runtime->NodeTextDirty("caption"));
 
-    scene->runtime->PumpTextLayerCache();
+    PumpTextUntilClean(*scene->runtime);
 
     auto after = scene->imageParser->Parse(texture_name);
     ASSERT_NE(after, nullptr);
     EXPECT_NE(before->key, after->key);
     EXPECT_GT(after->header.width, before->header.width);
     EXPECT_FALSE(scene->runtime->NodeTextDirty("caption"));
-    EXPECT_TRUE(scene->runtime->ConsumeSceneGraphMutationFlag());
+    EXPECT_FALSE(scene->runtime->ConsumeSceneGraphMutationFlag());
+}
+
+TEST(TextObjectRuntime, PumpTextLayerCacheSkipsHiddenTextUntilVisible) {
+    fs::VFS vfs;
+    MountAssets(vfs);
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    ProjectProperties   properties;
+    SceneParseRequest   request {
+          .scene_id           = "hidden-text-cache-pump",
+          .project_properties = &properties,
+    };
+
+    auto scene = parser.Parse(request,
+                              MinimalSceneObjects(R"([
+          {
+            "id": 1,
+            "name": "caption",
+            "text": "before",
+            "font": "Arial",
+            "pointsize": 20,
+            "visible": false
+          }
+        ])"),
+                              vfs,
+                              sound_manager);
+
+    ASSERT_NE(scene, nullptr);
+    ASSERT_NE(scene->runtime, nullptr);
+    auto* node = FindRootChild(*scene, "caption");
+    ASSERT_NE(node, nullptr);
+    ASSERT_NE(node->Mesh(), nullptr);
+    auto* material = node->Mesh()->MaterialForSlot(0);
+    ASSERT_NE(material, nullptr);
+    ASSERT_EQ(material->textures.size(), 1u);
+    const auto texture_name = material->textures.front();
+
+    auto before = scene->imageParser->Parse(texture_name);
+    ASSERT_NE(before, nullptr);
+    ASSERT_TRUE(scene->runtime->SetNodeText("caption", "after"));
+    ASSERT_TRUE(scene->runtime->NodeTextDirty("caption"));
+
+    scene->runtime->PumpTextLayerCache();
+
+    auto hidden = scene->imageParser->Parse(texture_name);
+    ASSERT_NE(hidden, nullptr);
+    EXPECT_EQ(hidden->key, before->key);
+    EXPECT_TRUE(scene->runtime->NodeTextDirty("caption"));
+
+    scene->runtime->SetNodeVisible("caption", true);
+    PumpTextUntilClean(*scene->runtime);
+
+    auto visible = scene->imageParser->Parse(texture_name);
+    ASSERT_NE(visible, nullptr);
+    EXPECT_NE(visible->key, before->key);
+    EXPECT_FALSE(scene->runtime->NodeTextDirty("caption"));
+}
+
+TEST(TextObjectRuntime, RuntimeTextMutationDoesNotMeasureSynchronously) {
+    auto runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {});
+    ASSERT_NE(runtime, nullptr);
+
+    auto node = std::make_shared<SceneNode>();
+    runtime->RegisterNode("caption", node.get());
+    runtime->RegisterTextLayer("caption",
+                               TextLayerState {
+                                   .text          = "fps: 59",
+                                   .font_key      = "Arial",
+                                   .point_size    = 20.0f,
+                                   .padding       = 32.0f,
+                                   .explicit_size = Eigen::Vector2f(264.0f, 109.0f),
+                               });
+    runtime->ClearNodeTextDirty("caption");
+    ASSERT_FALSE(runtime->NodeTextDirty("caption"));
+
+    ResetTextLayerMeasurementCountForTests();
+    ASSERT_TRUE(runtime->SetNodeText("caption", "fps: 60"));
+
+    EXPECT_EQ(TextLayerMeasurementCountForTests(), 0u);
+    EXPECT_TRUE(runtime->NodeTextDirty("caption"));
+}
+
+TEST(TextObjectRuntime, RuntimeTextMutationDefersVisibleTextPreparation) {
+    fs::VFS vfs;
+    MountAssets(vfs);
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    ProjectProperties   properties;
+    SceneParseRequest   request {
+          .scene_id           = "visible-text-async-preparation",
+          .project_properties = &properties,
+    };
+
+    auto scene = parser.Parse(request,
+                              MinimalSceneObjects(R"([
+          {
+            "id": 1,
+            "name": "caption",
+            "text": "before",
+            "font": "Arial",
+            "pointsize": 28,
+            "padding": 32,
+            "visible": true
+          }
+        ])"),
+                              vfs,
+                              sound_manager);
+
+    ASSERT_NE(scene, nullptr);
+    ASSERT_NE(scene->runtime, nullptr);
+    auto* node = FindRootChild(*scene, "caption");
+    ASSERT_NE(node, nullptr);
+    ASSERT_NE(node->Mesh(), nullptr);
+    auto* material = node->Mesh()->MaterialForSlot(0);
+    ASSERT_NE(material, nullptr);
+    ASSERT_EQ(material->textures.size(), 1u);
+    const auto texture_name = material->textures.front();
+
+    auto before = scene->imageParser->Parse(texture_name);
+    ASSERT_NE(before, nullptr);
+
+    ResetTextLayerMeasurementCountForTests();
+    ASSERT_TRUE(scene->runtime->SetNodeText("caption", "after after after"));
+    EXPECT_EQ(TextLayerMeasurementCountForTests(), 0u);
+    EXPECT_EQ(scene->runtime->NodeText("caption"), "after after after");
+    EXPECT_TRUE(scene->runtime->NodeTextDirty("caption"));
+
+    scene->runtime->PumpTextLayerCache();
+    auto queued = scene->imageParser->Parse(texture_name);
+    ASSERT_NE(queued, nullptr);
+    EXPECT_EQ(queued->key, before->key);
+    EXPECT_TRUE(scene->runtime->NodeTextDirty("caption"));
+
+    std::shared_ptr<Image> updated;
+    for (int attempt = 0; attempt < 200; ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        scene->runtime->PumpTextLayerCache();
+        updated = scene->imageParser->Parse(texture_name);
+        ASSERT_NE(updated, nullptr);
+        if (updated->key != before->key) break;
+    }
+
+    ASSERT_NE(updated, nullptr);
+    EXPECT_NE(updated->key, before->key);
+    EXPECT_FALSE(scene->runtime->NodeTextDirty("caption"));
 }
 
 TEST(TextObjectRuntime, TextCacheKeysAreUniquePerLayerEvenWithSameFontAndSize) {

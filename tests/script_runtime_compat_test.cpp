@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <iterator>
 #include <memory>
 #include <thread>
 #include <unordered_map>
@@ -367,6 +368,136 @@ function update() {
         EXPECT_FLOAT_EQ(constant->second[1], 0.5f);
         EXPECT_FLOAT_EQ(constant->second[2], 0.75f);
     }
+    EXPECT_EQ(runtime->scriptErrorCount(), 0u);
+}
+
+TEST(ScriptRuntimeCompat, SceneScriptCreateLayerInUpdateReusesGeneratedLayer) {
+    Scene scene;
+    auto  runtime = MakeRuntimeWithScene(scene);
+    ASSERT_NE(runtime, nullptr);
+
+    auto source_node = std::make_shared<SceneNode>(
+        Eigen::Vector3f::Zero(), Eigen::Vector3f::Ones(), Eigen::Vector3f::Zero(), "source");
+    auto source_mesh = std::make_shared<SceneMesh>();
+    source_mesh->AddMaterial(SceneMaterial {});
+    source_node->AddMesh(source_mesh);
+    scene.sceneGraph->AppendChild(source_node);
+
+    runtime->RegisterNode("source", source_node.get());
+    runtime->RegisterLayerTemplate("models/workshop/123456/bar.json",
+                                   source_node,
+                                   Eigen::Vector2f(20.0f, 10.0f));
+
+    runtime->RegisterSceneScript(
+        R"JS(
+function update() {
+  var layer = thisScene.createLayer('models/bar.json');
+  layer.origin = new Vec3(10, 20, 0);
+}
+)JS",
+        "source");
+
+    runtime->Tick(1.0 / 60.0);
+    ASSERT_TRUE(runtime->ConsumeSceneGraphMutationFlag());
+    ASSERT_EQ(scene.sceneGraph->GetChildren().size(), 2u);
+    const auto generated_name = scene.sceneGraph->GetChildren().back()->Name();
+    ASSERT_FALSE(generated_name.empty());
+
+    runtime->Tick(1.0 / 60.0);
+    EXPECT_FALSE(runtime->ConsumeSceneGraphMutationFlag());
+    ASSERT_EQ(scene.sceneGraph->GetChildren().size(), 2u);
+    EXPECT_EQ(scene.sceneGraph->GetChildren().back()->Name(), generated_name);
+    EXPECT_EQ(runtime->scriptErrorCount(), 0u);
+}
+
+TEST(ScriptRuntimeCompat, SceneUpdateCallbackCreateLayerReusesGeneratedLayer) {
+    Scene scene;
+    auto  runtime = MakeRuntimeWithScene(scene);
+    ASSERT_NE(runtime, nullptr);
+
+    auto source_node = std::make_shared<SceneNode>(
+        Eigen::Vector3f::Zero(), Eigen::Vector3f::Ones(), Eigen::Vector3f::Zero(), "source");
+    auto source_mesh = std::make_shared<SceneMesh>();
+    source_mesh->AddMaterial(SceneMaterial {});
+    source_node->AddMesh(source_mesh);
+    scene.sceneGraph->AppendChild(source_node);
+
+    runtime->RegisterNode("source", source_node.get());
+    runtime->RegisterLayerTemplate("models/workshop/123456/bar.json",
+                                   source_node,
+                                   Eigen::Vector2f(20.0f, 10.0f));
+
+    runtime->RegisterSceneScript(
+        R"JS(
+scene.on('update', function() {
+  var layer = thisScene.createLayer('models/bar.json');
+  layer.origin = new Vec3(10, 20, 0);
+});
+)JS",
+        "source");
+
+    runtime->Tick(1.0 / 60.0);
+    ASSERT_TRUE(runtime->ConsumeSceneGraphMutationFlag());
+    ASSERT_EQ(scene.sceneGraph->GetChildren().size(), 2u);
+    const auto generated_name = scene.sceneGraph->GetChildren().back()->Name();
+    ASSERT_FALSE(generated_name.empty());
+
+    runtime->Tick(1.0 / 60.0);
+    EXPECT_FALSE(runtime->ConsumeSceneGraphMutationFlag());
+    ASSERT_EQ(scene.sceneGraph->GetChildren().size(), 2u);
+    EXPECT_EQ(scene.sceneGraph->GetChildren().back()->Name(), generated_name);
+    EXPECT_EQ(runtime->scriptErrorCount(), 0u);
+}
+
+TEST(ScriptRuntimeCompat, ExportAndCallbackCreateLayerUpdatesUseSeparateGeneratedLayers) {
+    Scene scene;
+    auto  runtime = MakeRuntimeWithScene(scene);
+    ASSERT_NE(runtime, nullptr);
+
+    auto source_node = std::make_shared<SceneNode>(
+        Eigen::Vector3f::Zero(), Eigen::Vector3f::Ones(), Eigen::Vector3f::Zero(), "source");
+    auto source_mesh = std::make_shared<SceneMesh>();
+    source_mesh->AddMaterial(SceneMaterial {});
+    source_node->AddMesh(source_mesh);
+    scene.sceneGraph->AppendChild(source_node);
+
+    runtime->RegisterNode("source", source_node.get());
+    runtime->RegisterLayerTemplate("models/workshop/123456/bar.json",
+                                   source_node,
+                                   Eigen::Vector2f(20.0f, 10.0f));
+
+    runtime->RegisterSceneScript(
+        R"JS(
+function update() {
+  var exported = thisScene.createLayer('models/bar.json');
+  exported.origin = new Vec3(10, 20, 0);
+}
+
+scene.on('update', function() {
+  var callback = thisScene.createLayer('models/bar.json');
+  callback.origin = new Vec3(30, 40, 0);
+});
+)JS",
+        "source");
+
+    runtime->Tick(1.0 / 60.0);
+    ASSERT_TRUE(runtime->ConsumeSceneGraphMutationFlag());
+    ASSERT_EQ(scene.sceneGraph->GetChildren().size(), 3u);
+    auto first_generated  = std::next(scene.sceneGraph->GetChildren().begin());
+    auto second_generated = std::next(first_generated);
+    const auto first_generated_name  = (*first_generated)->Name();
+    const auto second_generated_name = (*second_generated)->Name();
+    ASSERT_FALSE(first_generated_name.empty());
+    ASSERT_FALSE(second_generated_name.empty());
+    ASSERT_NE(first_generated_name, second_generated_name);
+
+    runtime->Tick(1.0 / 60.0);
+    EXPECT_FALSE(runtime->ConsumeSceneGraphMutationFlag());
+    ASSERT_EQ(scene.sceneGraph->GetChildren().size(), 3u);
+    first_generated  = std::next(scene.sceneGraph->GetChildren().begin());
+    second_generated = std::next(first_generated);
+    EXPECT_EQ((*first_generated)->Name(), first_generated_name);
+    EXPECT_EQ((*second_generated)->Name(), second_generated_name);
     EXPECT_EQ(runtime->scriptErrorCount(), 0u);
 }
 

@@ -2,13 +2,54 @@
 
 #include <Eigen/Dense>
 
+#include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace wallpaper
 {
+
+class SharedFontData {
+public:
+    using const_iterator = std::vector<uint8_t>::const_iterator;
+
+    SharedFontData() = default;
+    SharedFontData(std::vector<uint8_t> data) {
+        if (! data.empty()) {
+            m_data = std::make_shared<std::vector<uint8_t>>(std::move(data));
+        }
+    }
+    SharedFontData(const SharedFontData&) noexcept            = default;
+    SharedFontData(SharedFontData&&) noexcept                 = default;
+    SharedFontData& operator=(const SharedFontData&) noexcept = default;
+    SharedFontData& operator=(SharedFontData&&) noexcept      = default;
+
+    SharedFontData& operator=(std::vector<uint8_t> data) {
+        m_data.reset();
+        if (! data.empty()) {
+            m_data = std::make_shared<std::vector<uint8_t>>(std::move(data));
+        }
+        return *this;
+    }
+
+    bool empty() const { return storage().empty(); }
+    std::size_t size() const { return storage().size(); }
+    const uint8_t* data() const { return storage().data(); }
+    const std::vector<uint8_t>& bytes() const { return storage(); }
+    const_iterator begin() const { return storage().begin(); }
+    const_iterator end() const { return storage().end(); }
+
+private:
+    const std::vector<uint8_t>& storage() const {
+        static const std::vector<uint8_t> empty;
+        return m_data == nullptr ? empty : *m_data;
+    }
+
+    std::shared_ptr<const std::vector<uint8_t>> m_data;
+};
 
 struct TextLayerState {
     std::string          text;
@@ -17,7 +58,7 @@ struct TextLayerState {
     std::string          resolved_font_kind { "family" };
     std::string          resolved_font_identity;
     std::string          resolved_font_path;
-    std::vector<uint8_t> resolved_font_data;
+    SharedFontData       resolved_font_data;
     float                point_size { 12.0f };
     float                padding { 0.0f };
     Eigen::Vector2f      explicit_size { Eigen::Vector2f::Zero() };
@@ -30,10 +71,12 @@ struct TextLayerState {
     bool                 dirty { false };
     bool                 cache_dirty { false };
     bool                 full_dirty { false };
+    bool                 layout_pending { false };
     uint64_t             cache_revision { 0 };
     std::string          texture_cache_key;
     std::string          render_backend { "runtime-rgba-texture" };
     Eigen::Vector2f      layout_size { Eigen::Vector2f::Zero() };
+    Eigen::Vector2f      raster_size { Eigen::Vector2f::Zero() };
 };
 
 struct TextLayerRenderBounds {
@@ -53,8 +96,10 @@ public:
     Eigen::Vector2f       rasterSize() const;
     TextLayerRenderBounds renderBounds() const;
     bool                  dirty() const { return m_state.dirty; }
+    bool                  layoutPending() const { return m_state.layout_pending; }
 
     void SetText(std::string text);
+    void ApplyPreparedLayout(Eigen::Vector2f layout_size, Eigen::Vector2f raster_size);
     void ClearDirty();
 
 private:

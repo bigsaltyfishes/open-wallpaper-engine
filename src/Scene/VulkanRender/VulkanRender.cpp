@@ -466,6 +466,8 @@ void VulkanRender::Impl::DestroyRenderingResource(RenderingResources& rr) {}
 void VulkanRender::Impl::drawFrame(Scene& scene) {
     if (! (m_inited && m_pass_loaded)) return;
 
+    m_device->tex_cache().CollectCompletedUploads();
+
     const auto output_extent = m_device->out_extent();
     updateScalingLayout(
         scene, std::max(1u, output_extent.width), std::max(1u, output_extent.height));

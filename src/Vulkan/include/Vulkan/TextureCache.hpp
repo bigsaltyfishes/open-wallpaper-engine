@@ -51,6 +51,12 @@ struct VideoImportSubmissionPlan {
     bool        must_destroy_resource { false };
 };
 
+enum class TextureUploadSynchronization
+{
+    Blocking,
+    Deferred,
+};
+
 inline bool VideoImportSubmissionNeedsFenceWait(const VideoImportSubmissionPlan& plan) {
     if (plan.pending_submissions == 0) return false;
     if (plan.must_destroy_resource) return true;
@@ -95,6 +101,7 @@ public:
                                                  VkImageTiling);
     ImageSlotsRef CreateTex(Image&);
     ImageSlotsRef ReplaceTex(Image&, std::string_view previous_key);
+    void          CollectCompletedUploads();
     void          SetVideoPlaybackPaused(bool paused);
     void          SetVideoPlaybackRate(float rate);
     [[nodiscard]] VideoTextureSubmissionStats VideoSubmissionStats() const;
@@ -114,10 +121,19 @@ public:
     void RecGenerateMipmaps(vvk::CommandBuffer& cmd, const ImageParameters& image) const;
 
 private:
+    ImageSlotsRef                     CreateTex(Image&, TextureUploadSynchronization);
     std::optional<VmaImageParameters> CreateTex(TextureKey);
     VkSampler                         GetOrCreateSampler(TextureKey, std::string* error);
     void*                             GetMetalDeviceHandle(std::string* error);
     void                              allocateCmd();
+    struct TextureUploadSubmissionSlot {
+        vvk::CommandBuffers              commands;
+        vvk::CommandBuffer               command;
+        vvk::Fence                       fence;
+        bool                             pending { false };
+        uint64_t                         submitted_serial { 0 };
+        std::vector<VmaBufferParameters> staging_buffers;
+    };
     struct VideoImportSubmissionSlot {
         vvk::CommandBuffers commands;
         vvk::CommandBuffer  command;
@@ -125,6 +141,12 @@ private:
         bool                pending { false };
         uint64_t            submitted_serial { 0 };
     };
+    TextureUploadSubmissionSlot* acquireTextureUploadSubmissionSlot(std::string* error);
+    bool                         waitForTextureUploadSlot(TextureUploadSubmissionSlot& slot,
+                                                          std::string* error);
+    bool                         waitForPendingTextureUploads(std::string* error);
+    void                         collectCompletedTextureUploads();
+    void                         retireRuntimeTexture(std::string_view key);
     VideoImportSubmissionSlot* acquireVideoImportSubmissionSlot(std::string* error);
     bool                       waitForVideoImportSlot(VideoImportSubmissionSlot& slot,
                                                       std::string* error);
@@ -153,6 +175,7 @@ private:
     };
     static constexpr std::size_t kMaxImportedVideoFramesPerVideoTex { 4 };
     static constexpr std::size_t kMaxPendingVideoImportSubmissions { 2 };
+    static constexpr std::size_t kMaxPendingTextureUploads { 8 };
     bool                CanReuseVideoFrameImport(const video::VideoTextureFrame& frame) const;
     ImportedVideoFrame* FindImportedVideoFrame(VideoTex&                       video_tex,
                                                const video::VideoTextureFrame& frame,
@@ -161,6 +184,9 @@ private:
     Map<std::string, std::unique_ptr<VideoTex>> m_video_tex_map;
     video::VideoPlaybackState                   m_video_playback_state {};
     VideoTextureSubmissionStats                 m_video_submission_stats {};
+    std::vector<TextureUploadSubmissionSlot>    m_texture_upload_slots;
+    uint64_t                                    m_texture_upload_submit_serial { 0 };
+    std::vector<ImageSlots>                     m_retired_runtime_textures;
     void*                                       m_metal_device { nullptr };
     bool                                        m_metal_device_queried { false };
 

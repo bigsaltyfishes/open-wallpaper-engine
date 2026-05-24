@@ -481,7 +481,8 @@ CreateImage(const Device& device, VkExtent3D extent, u32 miplevel, VkFormat form
 
 inline VkResult CopyImageData(std::span<const BufferParameters> in_bufs,
                               std::span<const VkExtent3D> in_exts, const vvk::Queue& queue,
-                              vvk::CommandBuffer& cmd, const ImageParameters& image) {
+                              vvk::CommandBuffer& cmd, const ImageParameters& image,
+                              VkFence fence = VK_NULL_HANDLE) {
     VkResult result;
     do {
         result = cmd.Begin(VkCommandBufferBeginInfo {
@@ -553,7 +554,7 @@ inline VkResult CopyImageData(std::span<const BufferParameters> in_bufs,
             .commandBufferCount = 1,
             .pCommandBuffers    = cmd.address(),
         };
-        result = queue.Submit(sub_info);
+        result = queue.Submit(sub_info, fence);
     } while (false);
     return result;
 }
@@ -751,6 +752,10 @@ std::optional<ExImageParameters> TextureCache::CreateExTex(uint32_t width, uint3
 }
 
 ImageSlotsRef TextureCache::CreateTex(Image& image) {
+    return CreateTex(image, TextureUploadSynchronization::Blocking);
+}
+
+ImageSlotsRef TextureCache::CreateTex(Image& image, TextureUploadSynchronization synchronization) {
     if (image.header.isVideo) {
         if (exists(m_video_tex_map, image.key)) {
             ImageSlotsRef ref;
@@ -797,8 +802,20 @@ ImageSlotsRef TextureCache::CreateTex(Image& image) {
     }
 
     ImageSlots img_slots;
+    bool       submitted_deferred_upload = false;
+    auto       fail_texture_upload       = [&]() -> ImageSlotsRef {
+        if (submitted_deferred_upload) {
+            std::string error;
+            if (! waitForPendingTextureUploads(&error) && ! error.empty()) {
+                LOG_ERROR(
+                    "failed waiting for pending texture upload after texture load failure: %s",
+                    error.c_str());
+            }
+        }
+        return {};
+    };
 
-    if (! m_tex_cmd) allocateCmd();
+    if (synchronization == TextureUploadSynchronization::Blocking && ! m_tex_cmd) allocateCmd();
 
     img_slots.slots.resize(image.slots.size());
 
@@ -810,7 +827,7 @@ ImageSlotsRef TextureCache::CreateTex(Image& image) {
         auto  mipmap_levels = image_slot.mipmaps.size();
 
         // check data
-        if (! image_slot) return {};
+        if (! image_slot) return fail_texture_upload();
         VkSamplerCreateInfo sampler_info {
             .sType                   = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
             .pNext                   = nullptr,
@@ -841,7 +858,7 @@ ImageSlotsRef TextureCache::CreateTex(Image& image) {
             opt.has_value()) {
             image_paras = std::move(opt.value());
         } else
-            break;
+            return fail_texture_upload();
 
         std::vector<VmaBufferParameters> stage_bufs;
         std::vector<VkExtent3D>          extents;
@@ -849,37 +866,79 @@ ImageSlotsRef TextureCache::CreateTex(Image& image) {
         for (usize j = 0; j < image_slot.mipmaps.size(); j++) {
             auto&               image_data = image_slot.mipmaps[j];
             VmaBufferParameters buf;
-            (void)CreateStagingBuffer(m_device.vma_allocator(), (u32)image_data.size, buf);
+            if (image_data.size <= 0) return fail_texture_upload();
+            const auto image_data_size = static_cast<std::size_t>(image_data.size);
+            if (! CreateStagingBuffer(m_device.vma_allocator(), image_data_size, buf)) {
+                return fail_texture_upload();
+            }
             {
                 void* v_data;
                 VVK_CHECK(buf.handle.MapMemory(&v_data));
-                memcpy(v_data, image_data.data.get(), (u32)image_data.size);
+                memcpy(v_data, image_data.data.get(), image_data_size);
                 buf.handle.UnMapMemory();
             }
             stage_bufs.emplace_back(std::move(buf));
             extents.push_back(VkExtent3D { (u32)image_data.width, (u32)image_data.height, 1 });
         }
 
-        CopyImageData(transform<VmaBufferParameters>(stage_bufs,
-                                                     [](BufferParameters e) {
-                                                         return e;
-                                                     }),
-                      extents,
-                      m_device.graphics_queue().handle,
-                      m_tex_cmd,
-                      image_paras);
+        if (synchronization == TextureUploadSynchronization::Deferred) {
+            std::string error;
+            auto*       upload_slot = acquireTextureUploadSubmissionSlot(&error);
+            if (upload_slot == nullptr) {
+                if (! error.empty()) {
+                    LOG_ERROR("failed to acquire texture upload slot for \"%s\": %s",
+                              image.key.c_str(),
+                              error.c_str());
+                }
+                return fail_texture_upload();
+            }
 
-        m_device.handle().WaitIdle();
+            const VkResult result =
+                CopyImageData(transform<VmaBufferParameters>(stage_bufs,
+                                                             [](BufferParameters e) {
+                                                                 return e;
+                                                             }),
+                              extents,
+                              m_device.graphics_queue().handle,
+                              upload_slot->command,
+                              image_paras,
+                              *upload_slot->fence);
+            if (result != VK_SUCCESS) {
+                VVK_CHECK(result);
+                return fail_texture_upload();
+            }
+            upload_slot->staging_buffers  = std::move(stage_bufs);
+            upload_slot->pending          = true;
+            upload_slot->submitted_serial = ++m_texture_upload_submit_serial;
+            submitted_deferred_upload     = true;
+        } else {
+            const VkResult result =
+                CopyImageData(transform<VmaBufferParameters>(stage_bufs,
+                                                             [](BufferParameters e) {
+                                                                 return e;
+                                                             }),
+                              extents,
+                              m_device.graphics_queue().handle,
+                              m_tex_cmd,
+                              image_paras);
+            if (result != VK_SUCCESS) {
+                VVK_CHECK(result);
+                return {};
+            }
+
+            m_device.handle().WaitIdle();
+        }
     }
     m_tex_map[image.key] = std::move(img_slots);
     return m_tex_map[image.key];
 }
 
 ImageSlotsRef TextureCache::ReplaceTex(Image& image, std::string_view previous_key) {
-    if (! previous_key.empty() && previous_key != image.key) {
-        m_tex_map.erase(std::string(previous_key));
+    auto replacement = CreateTex(image, TextureUploadSynchronization::Deferred);
+    if (! replacement.slots.empty() && ! previous_key.empty() && previous_key != image.key) {
+        retireRuntimeTexture(previous_key);
     }
-    return CreateTex(image);
+    return replacement;
 }
 
 void TextureCache::allocateCmd() {
@@ -887,6 +946,109 @@ void TextureCache::allocateCmd() {
     VVK_CHECK(pool.Allocate(1, VK_COMMAND_BUFFER_LEVEL_PRIMARY, m_tex_cmds));
     m_tex_cmd = vvk::CommandBuffer(m_tex_cmds[0], m_device.handle().Dispatch());
 }
+
+TextureCache::TextureUploadSubmissionSlot*
+TextureCache::acquireTextureUploadSubmissionSlot(std::string* error) {
+    collectCompletedTextureUploads();
+    for (auto& slot : m_texture_upload_slots) {
+        if (! slot.pending) return &slot;
+    }
+
+    if (m_texture_upload_slots.size() >= kMaxPendingTextureUploads) {
+        auto oldest = std::min_element(
+            m_texture_upload_slots.begin(),
+            m_texture_upload_slots.end(),
+            [](const TextureUploadSubmissionSlot& lhs, const TextureUploadSubmissionSlot& rhs) {
+                return lhs.submitted_serial < rhs.submitted_serial;
+            });
+        if (oldest == m_texture_upload_slots.end()) {
+            SetError(error, "texture upload submission slot accounting is invalid");
+            return nullptr;
+        }
+        if (! waitForTextureUploadSlot(*oldest, error)) return nullptr;
+        return &*oldest;
+    }
+
+    TextureUploadSubmissionSlot slot;
+    const auto&                 pool = m_device.cmd_pool();
+    if (const VkResult result = pool.Allocate(1, VK_COMMAND_BUFFER_LEVEL_PRIMARY, slot.commands);
+        result != VK_SUCCESS) {
+        VVK_CHECK(result);
+        SetError(error, "failed to allocate texture upload command buffer");
+        return nullptr;
+    }
+    slot.command = vvk::CommandBuffer(slot.commands[0], m_device.handle().Dispatch());
+
+    VkFenceCreateInfo fence_info {
+        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+    };
+    if (const VkResult result = m_device.handle().CreateFence(fence_info, slot.fence);
+        result != VK_SUCCESS) {
+        VVK_CHECK(result);
+        SetError(error, "failed to create Vulkan fence for texture upload");
+        return nullptr;
+    }
+
+    m_texture_upload_slots.emplace_back(std::move(slot));
+    return &m_texture_upload_slots.back();
+}
+
+bool TextureCache::waitForTextureUploadSlot(TextureUploadSubmissionSlot& slot, std::string* error) {
+    if (! slot.pending) return true;
+
+    if (const VkResult result = slot.fence.Wait(); result != VK_SUCCESS) {
+        VVK_CHECK(result);
+        return SetError(error, "failed waiting for pending texture upload");
+    }
+    if (const VkResult result = slot.fence.Reset(); result != VK_SUCCESS) {
+        VVK_CHECK(result);
+        return SetError(error, "failed resetting texture upload fence");
+    }
+
+    slot.staging_buffers.clear();
+    slot.pending          = false;
+    slot.submitted_serial = 0;
+    return true;
+}
+
+bool TextureCache::waitForPendingTextureUploads(std::string* error) {
+    for (auto& slot : m_texture_upload_slots) {
+        if (! waitForTextureUploadSlot(slot, error)) return false;
+    }
+    m_retired_runtime_textures.clear();
+    return true;
+}
+
+void TextureCache::collectCompletedTextureUploads() {
+    bool any_pending = false;
+    for (auto& slot : m_texture_upload_slots) {
+        if (! slot.pending) continue;
+        if (slot.fence.GetStatus() != VK_SUCCESS) {
+            any_pending = true;
+            continue;
+        }
+        std::string error;
+        if (! waitForTextureUploadSlot(slot, &error)) {
+            if (! error.empty()) {
+                LOG_ERROR("failed collecting completed texture upload: %s", error.c_str());
+            }
+            any_pending = true;
+            continue;
+        }
+    }
+    if (! any_pending) m_retired_runtime_textures.clear();
+}
+
+void TextureCache::retireRuntimeTexture(std::string_view key) {
+    auto iter = m_tex_map.find(key);
+    if (iter == m_tex_map.end()) return;
+    m_retired_runtime_textures.emplace_back(std::move(iter->second));
+    m_tex_map.erase(iter);
+}
+
+void TextureCache::CollectCompletedUploads() { collectCompletedTextureUploads(); }
 
 TextureCache::VideoImportSubmissionSlot*
 TextureCache::acquireVideoImportSubmissionSlot(std::string* error) {
@@ -1113,6 +1275,11 @@ bool TextureCache::EnsureVideoFrameCacheRoom(VideoTex& video_tex, std::string* e
 
 void TextureCache::Clear() {
     std::string error;
+    if (! waitForPendingTextureUploads(&error) && ! error.empty()) {
+        LOG_ERROR("failed waiting for pending texture upload before cache clear: %s",
+                  error.c_str());
+        error.clear();
+    }
     if (! waitForPendingVideoImports(&error) && ! error.empty()) {
         LOG_ERROR("failed waiting for pending video import before cache clear: %s", error.c_str());
     }
