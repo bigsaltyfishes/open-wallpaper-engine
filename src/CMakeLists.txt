@@ -68,6 +68,7 @@ add_library(
   Runtime/SceneRuntimeContext.cpp
   Runtime/SceneSettingResolver.cpp
   Runtime/ScriptedDynamicValue.cpp
+  Shader/RustShaderBridge.cpp
   Text/SystemFontResolver.cpp
   Text/TextLayer.cpp
   Scripting/ScriptEngine.cpp
@@ -145,5 +146,11 @@ target_compile_options(${PROJECT_NAME} PRIVATE
   "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
 if(BUILD_TESTS)
   target_compile_definitions(${PROJECT_NAME} PUBLIC WESCENE_BUILD_TESTS=1)
+endif()
+if(RUST_SHADER_FFI)
+  target_compile_definitions(${PROJECT_NAME} PUBLIC WESCENE_HAS_RUST_SHADER_FFI=1)
+endif()
+if(TARGET wescene_rust_shader)
+  target_link_libraries(${PROJECT_NAME} PUBLIC wescene_rust_shader)
 endif()
 set_property(TARGET ${PROJECT_NAME} PROPERTY POSITION_INDEPENDENT_CODE ON)

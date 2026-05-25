@@ -164,6 +164,53 @@ gtest_discover_tests(
     PROPERTIES TIMEOUT 30
     DISCOVERY_TIMEOUT 60
 )
+
+add_executable(rust_shader_bridge_test rust_shader_bridge_test.cpp)
+target_link_libraries(
+    rust_shader_bridge_test
+    PRIVATE ${PROJECT_NAME} wpFs wpScene wpVulkan nlohmann_json::nlohmann_json GTest::gtest_main)
+target_include_directories(rust_shader_bridge_test PRIVATE . ${CMAKE_SOURCE_DIR}/src)
+target_compile_features(rust_shader_bridge_test PRIVATE cxx_std_20)
+if(DEFINED RUST_SHADER_STATICLIB AND NOT "${RUST_SHADER_STATICLIB}" STREQUAL "")
+    target_link_libraries(rust_shader_bridge_test PRIVATE wescene_rust_shader)
+endif()
+gtest_discover_tests(
+    rust_shader_bridge_test
+    TEST_PREFIX rust_shader_bridge_test.
+    PROPERTIES TIMEOUT 30
+    DISCOVERY_TIMEOUT 60
+)
+
+add_executable(unpack_shader_compile_smoke unpack_shader_compile_smoke.cpp)
+set(UNPACK_SHADER_COMPILE_SMOKE_CORPUS_ROOT
+    "/Users/molyuu/Workspace/WallpaperEngine/unpack"
+    CACHE PATH "Root directory containing unpacked Wallpaper Engine workshop scenes for shader smoke tests")
+set(UNPACK_SHADER_COMPILE_SMOKE_COMMON_ASSETS
+    "/Users/molyuu/Library/Application Support/Steam/steamapps/common/wallpaper_engine/assets"
+    CACHE PATH "Wallpaper Engine common assets directory for shader smoke tests")
+target_link_libraries(
+    unpack_shader_compile_smoke
+    PRIVATE ${PROJECT_NAME} wpFs wpScene wpVulkan nlohmann_json::nlohmann_json GTest::gtest_main)
+target_include_directories(unpack_shader_compile_smoke PRIVATE . ${CMAKE_SOURCE_DIR}/src)
+target_compile_features(unpack_shader_compile_smoke PRIVATE cxx_std_20)
+target_compile_definitions(
+    unpack_shader_compile_smoke
+    PRIVATE
+        "UNPACK_SHADER_COMPILE_SMOKE_CORPUS_ROOT=\"${UNPACK_SHADER_COMPILE_SMOKE_CORPUS_ROOT}\""
+        "UNPACK_SHADER_COMPILE_SMOKE_COMMON_ASSETS=\"${UNPACK_SHADER_COMPILE_SMOKE_COMMON_ASSETS}\"")
+if(TARGET wescene_rust_shader)
+    target_link_libraries(unpack_shader_compile_smoke PRIVATE wescene_rust_shader)
+else()
+    message(FATAL_ERROR
+        "unpack_shader_compile_smoke requires the Rust shader static library target. "
+        "Configure with -DRUST_SHADER_STATICLIB=<path-to-librust_shader.a>.")
+endif()
+gtest_discover_tests(
+    unpack_shader_compile_smoke
+    TEST_PREFIX unpack_shader_compile_smoke.
+    PROPERTIES TIMEOUT 600
+    DISCOVERY_TIMEOUT 120
+)
 add_executable(scenescript_sound_layer_smoke scenescript_sound_layer_smoke.cpp)
 target_link_libraries(scenescript_sound_layer_smoke PRIVATE ${PROJECT_NAME} wpAudio wpScene GTest::gtest_main)
 target_include_directories(scenescript_sound_layer_smoke PRIVATE .)
@@ -221,6 +268,7 @@ target_include_directories(text_object_runtime_test PRIVATE . ${CMAKE_SOURCE_DIR
 target_compile_features(text_object_runtime_test PRIVATE cxx_std_20)
 gtest_discover_tests(
     text_object_runtime_test
+    TEST_PREFIX text_object_runtime_test.
     PROPERTIES TIMEOUT 30
     DISCOVERY_TIMEOUT 60
 )

@@ -14,6 +14,7 @@
 #include "Scripting/ScriptEngine.hpp"
 #include "Project/ProjectProperties.hpp"
 #include "SpecTexs.hpp"
+#include "Shader/RustShaderBridge.hpp"
 #include "Text/SystemFontResolver.hpp"
 #include "Text/TextLayer.hpp"
 #include "Vulkan/Shader.hpp"
@@ -25,20 +26,31 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <thread>
 #include <vector>
 
 namespace wallpaper
 {
+namespace vulkan
+{
+bool ReflectCustomShader(const SceneShader& shader, std::vector<Uni_ShaderSpv>& spvs,
+                         ShaderReflected& ref);
+} // namespace vulkan
+
 namespace
 {
+
+constexpr uint32_t kSpirvMagic = 0x07230203u;
+constexpr int32_t  kTexFormatR8 = 9;
 
 class MemoryFs final : public fs::Fs {
 public:
@@ -60,6 +72,48 @@ public:
 private:
     std::map<std::string, std::string> m_files;
 };
+
+class TestTexBytes {
+public:
+    void Stamp(char kind, int version) {
+        char stamp[9] {};
+        std::snprintf(stamp, sizeof(stamp), "TEX%c%04d", kind, version);
+        Append(stamp, sizeof(stamp));
+    }
+
+    void I32(int32_t value) { Append(&value, sizeof(value)); }
+    void U32(uint32_t value) { Append(&value, sizeof(value)); }
+
+    std::string Take() {
+        return std::string(reinterpret_cast<const char*>(m_bytes.data()), m_bytes.size());
+    }
+
+private:
+    void Append(const void* data, std::size_t size) {
+        const auto* p = static_cast<const uint8_t*>(data);
+        m_bytes.insert(m_bytes.end(), p, p + size);
+    }
+
+    std::vector<uint8_t> m_bytes;
+};
+
+std::string BuildTextureHeaderFixture(int32_t format) {
+    TestTexBytes b;
+    b.Stamp('V', 5);
+    b.Stamp('I', 1);
+    b.I32(format);
+    b.U32(0);
+    b.I32(1);
+    b.I32(1);
+    b.I32(1);
+    b.I32(1);
+    b.I32(0);
+    b.Stamp('B', 3);
+    b.I32(1);
+    b.I32(static_cast<int32_t>(ImageType::UNKNOWN));
+    b.I32(0);
+    return b.Take();
+}
 
 void MountAssets(fs::VFS& vfs, std::map<std::string, std::string> files = {}) {
     ASSERT_TRUE(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::move(files))));
@@ -173,6 +227,25 @@ bool ShaderUsesUniformMember(const ShaderCode& spirv, std::string_view member_na
     return false;
 }
 
+bool ShaderUsesUniformMember(const SceneShader& shader, std::string_view member_name) {
+    if (shader.rust_reflection_json.has_value()) {
+        shader::RustShaderOutput output;
+        try {
+            shader::ApplyRustShaderReflectionJson(*shader.rust_reflection_json, output);
+            for (const auto& block : output.reflection.blocks) {
+                if (block.member_map.contains(std::string(member_name))) return true;
+            }
+            return false;
+        } catch (const std::exception&) {
+        }
+    }
+
+    for (const auto& code : shader.codes) {
+        if (ShaderUsesUniformMember(code, member_name)) return true;
+    }
+    return false;
+}
+
 int VisibleAlphaPixels(const Image& image) {
     int visible_pixels = 0;
     if (image.slots.empty() || image.slots[0].mipmaps.empty()) return visible_pixels;
@@ -210,6 +283,53 @@ void PumpTextUntilClean(SceneRuntimeContext& runtime, int max_attempts = 200) {
     }
 }
 
+bool ReflectShaderDescriptors(const SceneShader& shader, vulkan::ShaderReflected& reflected) {
+    std::vector<vulkan::Uni_ShaderSpv> spvs;
+    return vulkan::ReflectCustomShader(shader, spvs, reflected);
+}
+
+SceneShader CompileTextShaderForSpirvReflection(fs::VFS& vfs) {
+    std::string vertex_src =
+        "uniform mat4 g_ModelViewProjectionMatrix;\n"
+        "in vec3 a_Position;\n"
+        "in vec2 a_TexCoord;\n"
+        "out vec2 v_TexCoord;\n"
+        "void main() {\n"
+        "  gl_Position = g_ModelViewProjectionMatrix * vec4(a_Position, 1.0);\n"
+        "  v_TexCoord = a_TexCoord;\n"
+        "}\n";
+    std::string fragment_src = "uniform sampler2D g_Texture0;\n"
+                               "in vec2 v_TexCoord;\n"
+                               "void main() {\n"
+                               "  gl_FragColor = texture(g_Texture0, v_TexCoord);\n"
+                               "}\n";
+
+    WPShaderInfo                 shader_info;
+    std::vector<WPShaderTexInfo> tex_infos(1);
+    tex_infos[0].enabled = true;
+    std::array units {
+        WPShaderUnit {
+            .stage           = ShaderType::VERTEX,
+            .src             = std::move(vertex_src),
+            .preprocess_info = {},
+        },
+        WPShaderUnit {
+            .stage           = ShaderType::FRAGMENT,
+            .src             = std::move(fragment_src),
+            .preprocess_info = {},
+        },
+    };
+
+    SceneShader shader;
+    shader.name = "text";
+    if (! WPShaderParser::CompileToSpv(
+            "text-malformed-rust-reflection-fallback", units, shader.codes, vfs, &shader_info, tex_infos)) {
+        return {};
+    }
+    shader.default_uniforms = shader_info.svs;
+    return shader;
+}
+
 std::optional<VkDescriptorSetLayoutBinding>
 ShaderDescriptorBinding(const std::vector<ShaderCode>& spirv, std::string_view name) {
     std::vector<vulkan::Uni_ShaderSpv> spvs;
@@ -222,11 +342,40 @@ ShaderDescriptorBinding(const std::vector<ShaderCode>& spirv, std::string_view n
     return iterator->second;
 }
 
+std::optional<VkDescriptorSetLayoutBinding>
+ShaderDescriptorBinding(const SceneShader& shader, std::string_view name) {
+    vulkan::ShaderReflected reflected;
+    if (! ReflectShaderDescriptors(shader, reflected)) {
+        return std::nullopt;
+    }
+
+    const auto iterator = reflected.binding_map.find(std::string(name));
+    if (iterator == reflected.binding_map.end()) return std::nullopt;
+
+    return iterator->second;
+}
+
 std::vector<VkDescriptorSetLayoutBinding>
 ShaderDescriptorBindings(const std::vector<ShaderCode>& spirv) {
     std::vector<vulkan::Uni_ShaderSpv> spvs;
     vulkan::ShaderReflected            reflected;
     if (! vulkan::GenReflect(spirv, spvs, reflected)) return {};
+
+    std::vector<VkDescriptorSetLayoutBinding> bindings;
+    bindings.reserve(reflected.binding_map.size());
+    for (const auto& [name, binding] : reflected.binding_map) {
+        (void)name;
+        bindings.push_back(binding);
+    }
+    return bindings;
+}
+
+std::vector<VkDescriptorSetLayoutBinding>
+ShaderDescriptorBindings(const SceneShader& shader) {
+    vulkan::ShaderReflected reflected;
+    if (! ReflectShaderDescriptors(shader, reflected)) {
+        return {};
+    }
 
     std::vector<VkDescriptorSetLayoutBinding> bindings;
     bindings.reserve(reflected.binding_map.size());
@@ -356,22 +505,151 @@ TEST(TextObjectRuntime, ParserCreatesRenderableTextMaterialAndTexture) {
     EXPECT_TRUE(has_visible_alpha);
     EXPECT_TRUE(has_transparent_space_column);
     ASSERT_NE(material->customShader.shader, nullptr);
-    ASSERT_FALSE(material->customShader.shader->codes.empty());
-    EXPECT_TRUE(ShaderUsesUniformMember(material->customShader.shader->codes.front(),
+    ASSERT_EQ(material->customShader.shader->codes.size(), 2u);
+    for (const auto& code : material->customShader.shader->codes) {
+        ASSERT_FALSE(code.empty());
+        EXPECT_EQ(code.front(), kSpirvMagic);
+    }
+    EXPECT_TRUE(ShaderUsesUniformMember(*material->customShader.shader,
                                         "g_ModelViewProjectionMatrix"));
     const auto texture_binding =
-        ShaderDescriptorBinding(material->customShader.shader->codes, "g_Texture0");
+        ShaderDescriptorBinding(*material->customShader.shader, "g_Texture0");
     ASSERT_TRUE(texture_binding.has_value());
-    EXPECT_EQ(texture_binding->descriptorType, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
-    EXPECT_NE(texture_binding->binding, 0u);
-    const auto descriptor_bindings = ShaderDescriptorBindings(material->customShader.shader->codes);
+    if (! material->customShader.shader->rust_reflection_json.has_value()) {
+        EXPECT_EQ(texture_binding->descriptorType, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+    }
+    const auto descriptor_bindings = ShaderDescriptorBindings(*material->customShader.shader);
     ASSERT_FALSE(descriptor_bindings.empty());
+    bool has_uniform_buffer_descriptor = false;
     for (const auto& binding : descriptor_bindings) {
         if (binding.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
+            has_uniform_buffer_descriptor = true;
             EXPECT_NE(binding.binding, texture_binding->binding);
         }
     }
+    EXPECT_TRUE(has_uniform_buffer_descriptor);
     EXPECT_EQ(material->blenmode, BlendMode::Translucent);
+}
+
+TEST(TextObjectRuntime, ParserStabilizesCascadingRustShaderDefaultTextureMetadata) {
+    fs::VFS vfs;
+    MountAssets(vfs,
+                {
+                    { "/image.json", R"({"width":64,"height":32,"material":"mat.json"})" },
+                    { "/mat.json",
+                      R"({"passes":[{"blending":"translucent","cullmode":"nocull",)"
+                      R"("depthtest":"disabled","depthwrite":"disabled",)"
+                      R"("shader":"defaulttexture","textures":[""]}]})" },
+                    { "/shaders/defaulttexture.vert",
+                      R"(
+attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+varying vec2 v_TexCoord;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+  v_TexCoord = a_TexCoord;
+}
+)" },
+                    { "/shaders/defaulttexture.frag",
+                      R"(
+uniform sampler2D g_Texture0; // {"material":"albedo","default":"fallback-r8.tex"}
+#ifndef TEX0FORMAT
+// [COMBO] {"combo":"FIRST_PASS_ONLY","default":1}
+#endif
+#if FIRST_PASS_ONLY
+uniform float g_StaleFirstPassMarker; // {"default":1.0}
+#endif
+#if TEX0FORMAT == 9
+uniform sampler2D g_Texture1; // {"material":"second","default":"second-r8.tex"}
+#endif
+#if TEX1FORMAT == 9
+uniform float g_CascadedDefaultObserved; // {"default":1.0}
+#endif
+varying vec2 v_TexCoord;
+void main() {
+  vec4 texel = texture(g_Texture0, v_TexCoord);
+#if TEX1FORMAT == 9
+  texel += texture(g_Texture1, v_TexCoord) * 0.001;
+  texel.r += g_CascadedDefaultObserved * 0.001;
+#endif
+  gl_FragColor = texel;
+}
+)" },
+                    { "/materials/fallback-r8.tex.tex", BuildTextureHeaderFixture(kTexFormatR8) },
+                    { "/materials/second-r8.tex.tex", BuildTextureHeaderFixture(kTexFormatR8) },
+                });
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+
+    ProjectProperties properties;
+    SceneParseRequest request {
+        .scene_id           = "rust-default-texture-material",
+        .project_properties = &properties,
+    };
+    auto scene = parser.Parse(request,
+                              MinimalSceneObjects(R"([
+          {
+            "id": 1,
+            "name": "defaulted image",
+            "image": "image.json",
+            "visible": true
+          }
+        ])"),
+                              vfs,
+                              sound_manager);
+
+    ASSERT_NE(scene, nullptr);
+    auto* node = FindRootChild(*scene, "defaulted image");
+    ASSERT_NE(node, nullptr);
+    ASSERT_NE(node->Mesh(), nullptr);
+    auto* material = node->Mesh()->MaterialForSlot(0);
+    ASSERT_NE(material, nullptr);
+    ASSERT_EQ(material->textures.size(), 2u);
+    EXPECT_EQ(material->textures[0], "fallback-r8.tex");
+    EXPECT_EQ(material->textures[1], "second-r8.tex");
+    EXPECT_TRUE(scene->textures.contains("fallback-r8.tex"));
+    EXPECT_TRUE(scene->textures.contains("second-r8.tex"));
+    ASSERT_NE(material->customShader.shader, nullptr);
+    EXPECT_TRUE(ShaderUsesUniformMember(*material->customShader.shader,
+                                        "g_CascadedDefaultObserved"));
+    EXPECT_FALSE(ShaderUsesUniformMember(*material->customShader.shader,
+                                         "g_StaleFirstPassMarker"));
+}
+
+TEST(TextObjectRuntime, MalformedRustReflectionJsonFallsBackToSpirvReflect) {
+    fs::VFS vfs;
+    MountAssets(vfs);
+
+    SceneShader malformed_reflection_shader = CompileTextShaderForSpirvReflection(vfs);
+    ASSERT_FALSE(malformed_reflection_shader.codes.empty());
+    malformed_reflection_shader.rust_reflection_json = "{ malformed rust reflection json";
+
+    EXPECT_TRUE(ShaderUsesUniformMember(malformed_reflection_shader,
+                                        "g_ModelViewProjectionMatrix"));
+
+    const auto texture_binding =
+        ShaderDescriptorBinding(malformed_reflection_shader, "g_Texture0");
+    ASSERT_TRUE(texture_binding.has_value());
+    EXPECT_EQ(texture_binding->descriptorType, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+
+    const auto descriptor_bindings = ShaderDescriptorBindings(malformed_reflection_shader);
+    ASSERT_FALSE(descriptor_bindings.empty());
+    bool has_uniform_buffer_descriptor = false;
+    for (const auto& binding : descriptor_bindings) {
+        if (binding.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
+            has_uniform_buffer_descriptor = true;
+            EXPECT_NE(binding.binding, texture_binding->binding);
+        }
+    }
+    EXPECT_TRUE(has_uniform_buffer_descriptor);
+
+    SceneShader empty_reflection_shader = malformed_reflection_shader;
+    empty_reflection_shader.rust_reflection_json = "{}";
+    const auto fallback_texture_binding =
+        ShaderDescriptorBinding(empty_reflection_shader, "g_Texture0");
+    ASSERT_TRUE(fallback_texture_binding.has_value());
+    EXPECT_EQ(fallback_texture_binding->descriptorType,
+              VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
 }
 
 TEST(TextObjectRuntime, ExplicitTextObjectSizeIsMinimumRuntimeTextureDimensions) {

@@ -3,6 +3,7 @@
 #include "Scene/SceneShader.h"
 #include "Runtime/SceneRuntimeContext.hpp"
 #include "Runtime/RuntimeImageSource.hpp"
+#include "Shader/RustShaderBridge.hpp"
 
 #include "SpecTexs.hpp"
 #include "Vulkan/Shader.hpp"
@@ -27,6 +28,58 @@ namespace
 using wallpaper::usize;
 
 } // namespace
+
+namespace wallpaper::vulkan
+{
+
+bool HasUsableReflection(const ShaderReflected& ref) {
+    return ! ref.binding_map.empty() || ! ref.blocks.empty() || ! ref.input_location_map.empty();
+}
+
+bool ReflectCustomShader(const SceneShader& shader, std::vector<Uni_ShaderSpv>& spvs,
+                         ShaderReflected& ref) {
+    const auto reflect_spirv = [&]() {
+        ref = {};
+        return GenReflect(shader.codes, spvs, ref);
+    };
+
+    if (shader.rust_reflection_json.has_value()) {
+        wallpaper::shader::RustShaderOutput rust_shader_output;
+        try {
+            wallpaper::shader::ApplyRustShaderReflectionJson(*shader.rust_reflection_json,
+                                                              rust_shader_output);
+            if (! HasUsableReflection(rust_shader_output.reflection)) {
+                LOG_ERROR("Rust shader reflection for '%s' is empty; falling back to SPIR-V "
+                          "reflection",
+                          shader.name.c_str());
+            } else {
+                ref = std::move(rust_shader_output.reflection);
+                spvs.clear();
+                spvs.reserve(shader.codes.size());
+                for (size_t index = 0; index < shader.codes.size(); ++index) {
+                    Uni_ShaderSpv spv = std::make_unique<ShaderSpv>();
+                    spv->stage        = index == 0 ? ShaderType::VERTEX : ShaderType::FRAGMENT;
+                    spv->spirv        = shader.codes[index];
+                    spvs.emplace_back(std::move(spv));
+                }
+                return true;
+            }
+        } catch (const std::exception& error) {
+            LOG_ERROR("parse Rust shader reflection failed for '%s': %s; falling back to SPIR-V "
+                      "reflection",
+                      shader.name.c_str(),
+                      error.what());
+        }
+    }
+
+    if (! reflect_spirv()) {
+        LOG_ERROR("gen spv reflect failed, %s", shader.name.c_str());
+        return false;
+    }
+    return true;
+}
+
+} // namespace wallpaper::vulkan
 
 CustomShaderPass::CustomShaderPass(const Desc& desc) {
     m_desc.node            = desc.node;
@@ -234,10 +287,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         if (material->customShader.shader == nullptr) return;
         SceneShader& shader = *(material->customShader.shader);
 
-        if (! GenReflect(shader.codes, spvs, ref)) {
-            LOG_ERROR("gen spv reflect failed, %s", shader.name.c_str());
-            return;
-        }
+        if (! ReflectCustomShader(shader, spvs, ref)) return;
 
         auto& bindings = descriptor_info.bindings;
         bindings.resize(ref.binding_map.size());
@@ -671,6 +721,8 @@ void CustomShaderPass::recordDescriptors(RenderingResources& rr) const {
     }
 
     if (m_desc.ubo_buf) {
+        const uint32_t uniform_binding =
+            m_desc.uniform_block.has_value() ? m_desc.uniform_block->binding : 0u;
         VkDescriptorBufferInfo desc_buf {
             rr.dyn_buf->gpuBuf(),
             m_desc.ubo_buf.offset,
@@ -680,7 +732,7 @@ void CustomShaderPass::recordDescriptors(RenderingResources& rr) const {
             .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
             .pNext           = nullptr,
             .dstSet          = {},
-            .dstBinding      = 0,
+            .dstBinding      = uniform_binding,
             .descriptorCount = 1,
             .descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
             .pBufferInfo     = &desc_buf,

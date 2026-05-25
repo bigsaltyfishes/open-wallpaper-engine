@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <algorithm>
 #include <span>
+#include <optional>
 
 #include <Eigen/Dense>
 
@@ -13,7 +14,6 @@
 
 namespace wallpaper
 {
-
 using ShaderValueInter = std::array<float, 16>;
 
 class ShaderValue {
@@ -89,5 +89,6 @@ public:
 
     std::vector<ShaderAttribute> attrs;
     ShaderValues                 default_uniforms;
+    std::optional<std::string>   rust_reflection_json;
 };
 } // namespace wallpaper

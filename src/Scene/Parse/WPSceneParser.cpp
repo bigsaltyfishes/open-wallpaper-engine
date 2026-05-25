@@ -719,6 +719,169 @@ void ParseSpecTexName(std::string& name, const wpscene::WPMaterial& wpmat,
     }
 }
 
+void ApplyDefaultTextures(std::vector<std::string>& textures, const WPDefaultTexs& default_textures) {
+    for (const auto& [slot, texture] : default_textures) {
+        if (slot < 0) continue;
+        const auto index = static_cast<usize>(slot);
+        if (textures.size() > index) {
+            if (! textures.at(index).empty()) continue;
+        } else {
+            textures.resize(index + 1);
+        }
+        textures[index] = texture;
+    }
+}
+
+void DeduplicateDefaultTextures(WPDefaultTexs& default_textures) {
+    WPDefaultTexs deduped;
+    deduped.reserve(default_textures.size());
+    for (const auto& item : default_textures) {
+        const auto exists = std::find(deduped.begin(), deduped.end(), item);
+        if (exists == deduped.end()) deduped.push_back(item);
+    }
+    default_textures = std::move(deduped);
+}
+
+std::vector<std::string> BuildMaterialTextureList(const std::vector<std::string>& base_textures,
+                                                  const WPDefaultTexs& default_textures) {
+    auto textures = base_textures;
+    ApplyDefaultTextures(textures, default_textures);
+    return textures;
+}
+
+WPShaderTexInfo BuildShaderTexInfo(Scene& scene,
+                                   std::unordered_map<std::string, ImageHeader>& texHeaders,
+                                   const std::string& name) {
+    if (name.empty()) return { false };
+    if (IsSpecTex(name)) return { true };
+
+    const ImageHeader& texh =
+        texHeaders.count(name) == 0 ? scene.imageParser->ParseHeader(name) : texHeaders.at(name);
+    texHeaders[name] = texh;
+    if (texh.extraHeader.count("compo1") == 0) return { false };
+
+    return {
+        true,
+        {
+            (bool)texh.extraHeader.at("compo1").val,
+            (bool)texh.extraHeader.at("compo2").val,
+            (bool)texh.extraHeader.at("compo3").val,
+        },
+    };
+}
+
+std::vector<WPShaderTexInfo> BuildShaderTexInfos(
+    Scene& scene,
+    std::unordered_map<std::string, ImageHeader>& texHeaders,
+    const std::vector<std::string>& textures) {
+    std::vector<WPShaderTexInfo> texinfos;
+    texinfos.reserve(textures.size());
+    for (const auto& texture : textures) {
+        texinfos.push_back(BuildShaderTexInfo(scene, texHeaders, texture));
+    }
+    return texinfos;
+}
+
+void RegisterMaterialTexture(Scene& scene, SceneMaterial& material,
+                             SceneMaterialCustomShader& materialShader,
+                             WPShaderValueData& svData, const wpscene::WPMaterial& wpmat,
+                             WPShaderInfo& shader_info,
+                             std::unordered_map<std::string, ImageHeader>& texHeaders,
+                             std::string name, usize slot) {
+    ParseSpecTexName(name, wpmat, shader_info);
+    svData.renderTargets.erase(
+        std::remove_if(
+            svData.renderTargets.begin(),
+            svData.renderTargets.end(),
+            [slot](const auto& render_target) { return render_target.first == slot; }),
+        svData.renderTargets.end());
+    if (material.textures.size() <= slot) material.textures.resize(slot + 1);
+    if (material.defines.size() <= slot) material.defines.resize(slot + 1);
+    material.textures[slot] = name;
+    material.defines[slot]  = "g_Texture" + std::to_string(slot);
+    if (name.empty()) {
+        return;
+    }
+
+    std::array<i32, 4> resolution {};
+    if (IsSpecTex(name)) {
+        if (IsSpecLinkTex(name)) {
+            svData.renderTargets.push_back({ slot, name });
+        } else if (! scene.HasRenderTarget(name)) {
+            LOG_ERROR("%s not found in render targes", name.c_str());
+        } else {
+            name = scene.ResolveRenderTargetName(name);
+            svData.renderTargets.push_back({ slot, name });
+            const auto& rt = *scene.FindRenderTarget(name);
+            resolution     = { rt.width, rt.height, rt.width, rt.height };
+        }
+    } else {
+        const ImageHeader& texh =
+            texHeaders.count(name) == 0 ? scene.imageParser->ParseHeader(name) : texHeaders.at(name);
+        texHeaders[name] = texh;
+        wallpaper::shader::ApplyTextureFormatCombo(shader_info.combos, slot, texh.format);
+        if (texh.mipmap_larger) {
+            resolution = { texh.width, texh.height, texh.mapWidth, texh.mapHeight };
+        } else {
+            resolution = { texh.mapWidth, texh.mapHeight, texh.mapWidth, texh.mapHeight };
+        }
+
+        if (scene.textures.count(name) == 0) {
+            SceneTexture stex;
+            stex.sample  = texh.sample;
+            stex.url     = name;
+            stex.isVideo = texh.isVideo;
+            if (texh.isSprite) {
+                stex.isSprite   = texh.isSprite;
+                stex.spriteAnim = texh.spriteAnim;
+            }
+            scene.textures[name] = stex;
+        }
+        if ((scene.textures.at(name)).isSprite) {
+            material.hasSprite = true;
+            const auto& f1     = texh.spriteAnim.GetCurFrame();
+            if (wpmat.shader == "genericparticle" || wpmat.shader == "genericropeparticle") {
+                shader_info.combos["SPRITESHEET"] = "1";
+                shader_info.combos["THICKFORMAT"] = "1";
+                if (algorism::IsPowOfTwo((u32)texh.width) &&
+                    algorism::IsPowOfTwo((u32)texh.height)) {
+                    shader_info.combos["SPRITESHEETBLENDNPOT"] = "1";
+                    resolution[2] = resolution[0] - resolution[0] % (int)f1.width;
+                    resolution[3] = resolution[1] - resolution[1] % (int)f1.height;
+                }
+                materialShader.constValues["g_RenderVar1"] = std::array {
+                    f1.xAxis[0], f1.yAxis[1], (float)(texh.spriteAnim.numFrames()), f1.rate
+                };
+            }
+        }
+    }
+    if (! resolution.empty()) {
+        const std::string gResolution = WE_GLTEX_RESOLUTION_NAMES[slot];
+
+        materialShader.constValues[gResolution] = array_cast<float>(resolution);
+    }
+}
+
+void RegisterMaterialTextures(Scene& scene, SceneMaterial& material,
+                              SceneMaterialCustomShader& materialShader, WPShaderValueData& svData,
+                              const wpscene::WPMaterial& wpmat, WPShaderInfo& shader_info,
+                              std::unordered_map<std::string, ImageHeader>& texHeaders,
+                              const std::vector<std::string>& textures) {
+    material.textures.resize(textures.size());
+    material.defines.resize(textures.size());
+    for (usize i = 0; i < textures.size(); i++) {
+        RegisterMaterialTexture(scene,
+                                material,
+                                materialShader,
+                                svData,
+                                wpmat,
+                                shader_info,
+                                texHeaders,
+                                textures.at(i),
+                                i);
+    }
+}
+
 bool LoadMaterial(fs::VFS& vfs, const wpscene::WPMaterial& wpmat, Scene* pScene, SceneNode* pNode,
                   SceneMaterial* pMaterial, WPShaderValueData* pSvData,
                   WPShaderInfo* pWPShaderInfo = nullptr) {
@@ -756,119 +919,15 @@ bool LoadMaterial(fs::VFS& vfs, const wpscene::WPMaterial& wpmat, Scene* pScene,
                               .preprocess_info = {},
                           } };
 
-    auto textures = wpmat.textures;
-    ApplySystemUserTextures(textures, wpmat.usertextures);
+    auto base_textures = wpmat.textures;
+    ApplySystemUserTextures(base_textures, wpmat.usertextures);
 
-    std::vector<WPShaderTexInfo>                 texinfos;
     std::unordered_map<std::string, ImageHeader> texHeaders;
-    for (const auto& el : textures) {
-        if (el.empty()) {
-            texinfos.push_back({ false });
-        } else if (! IsSpecTex(el)) {
-            const auto& texh = pScene->imageParser->ParseHeader(el);
-            texHeaders[el]   = texh;
-            if (texh.extraHeader.count("compo1") == 0) {
-                texinfos.push_back({ false });
-                continue;
-            }
-            texinfos.push_back({ true,
-                                 {
-                                     (bool)texh.extraHeader.at("compo1").val,
-                                     (bool)texh.extraHeader.at("compo2").val,
-                                     (bool)texh.extraHeader.at("compo3").val,
-                                 } });
-        } else
-            texinfos.push_back({ true });
-    }
-
-    for (auto& unit : sd_units) {
-        unit.src = WPShaderParser::PreShaderSrc(vfs, unit.src, pWPShaderInfo, texinfos);
-    }
-
-    shader->default_uniforms = pWPShaderInfo->svs;
 
     for (const auto& el : wpmat.combos) {
         pWPShaderInfo->combos[el.first] = std::to_string(el.second);
     }
 
-    if (pWPShaderInfo->defTexs.size() > 0) {
-        for (auto& t : pWPShaderInfo->defTexs) {
-            if (textures.size() > t.first) {
-                if (! textures.at(t.first).empty()) continue;
-            } else {
-                textures.resize(t.first + 1);
-            }
-            textures[t.first] = t.second;
-        }
-    }
-
-    for (usize i = 0; i < textures.size(); i++) {
-        std::string name = textures.at(i);
-        ParseSpecTexName(name, wpmat, *pWPShaderInfo);
-        material.textures.push_back(name);
-        material.defines.push_back("g_Texture" + std::to_string(i));
-        if (name.empty()) {
-            continue;
-        }
-
-        std::array<i32, 4> resolution {};
-        if (IsSpecTex(name)) {
-            if (IsSpecLinkTex(name)) {
-                svData.renderTargets.push_back({ i, name });
-            } else if (! pScene->HasRenderTarget(name)) {
-                LOG_ERROR("%s not found in render targes", name.c_str());
-            } else {
-                name = pScene->ResolveRenderTargetName(name);
-                svData.renderTargets.push_back({ i, name });
-                const auto& rt = *pScene->FindRenderTarget(name);
-                resolution     = { rt.width, rt.height, rt.width, rt.height };
-            }
-        } else {
-            const ImageHeader& texh = texHeaders.count(name) == 0
-                                          ? pScene->imageParser->ParseHeader(name)
-                                          : texHeaders.at(name);
-            wallpaper::shader::ApplyTextureFormatCombo(pWPShaderInfo->combos, i, texh.format);
-            if (texh.mipmap_larger) {
-                resolution = { texh.width, texh.height, texh.mapWidth, texh.mapHeight };
-            } else {
-                resolution = { texh.mapWidth, texh.mapHeight, texh.mapWidth, texh.mapHeight };
-            }
-
-            if (pScene->textures.count(name) == 0) {
-                SceneTexture stex;
-                stex.sample  = texh.sample;
-                stex.url     = name;
-                stex.isVideo = texh.isVideo;
-                if (texh.isSprite) {
-                    stex.isSprite   = texh.isSprite;
-                    stex.spriteAnim = texh.spriteAnim;
-                }
-                pScene->textures[name] = stex;
-            }
-            if ((pScene->textures.at(name)).isSprite) {
-                material.hasSprite = true;
-                const auto& f1     = texh.spriteAnim.GetCurFrame();
-                if (wpmat.shader == "genericparticle" || wpmat.shader == "genericropeparticle") {
-                    pWPShaderInfo->combos["SPRITESHEET"] = "1";
-                    pWPShaderInfo->combos["THICKFORMAT"] = "1";
-                    if (algorism::IsPowOfTwo((u32)texh.width) &&
-                        algorism::IsPowOfTwo((u32)texh.height)) {
-                        pWPShaderInfo->combos["SPRITESHEETBLENDNPOT"] = "1";
-                        resolution[2] = resolution[0] - resolution[0] % (int)f1.width;
-                        resolution[3] = resolution[1] - resolution[1] % (int)f1.height;
-                    }
-                    materialShader.constValues["g_RenderVar1"] = std::array {
-                        f1.xAxis[0], f1.yAxis[1], (float)(texh.spriteAnim.numFrames()), f1.rate
-                    };
-                }
-            }
-        }
-        if (! resolution.empty()) {
-            const std::string gResolution = WE_GLTEX_RESOLUTION_NAMES[i];
-
-            materialShader.constValues[gResolution] = array_cast<float>(resolution);
-        }
-    }
     if (exists(pWPShaderInfo->combos, "LIGHTING")) {
         // pWPShaderInfo->combos["PRELIGHTING"] =
         // pWPShaderInfo->combos.at("LIGHTING");
@@ -877,10 +936,65 @@ bool LoadMaterial(fs::VFS& vfs, const wpscene::WPMaterial& wpmat, Scene* pScene,
         pWPShaderInfo->combos["ALPHATOCOVERAGE"] = "1";
     }
 
-    if (! WPShaderParser::CompileToSpv(
-            pScene->scene_id, sd_units, shader->codes, vfs, pWPShaderInfo, texinfos)) {
-        return false;
+    const auto base_material_textures     = material.textures;
+    const auto base_material_defines      = material.defines;
+    const auto base_material_has_sprite   = material.hasSprite;
+    const auto base_material_const_values = materialShader.constValues;
+    const auto base_render_targets        = svData.renderTargets;
+    const auto base_svs     = pWPShaderInfo->svs;
+    const auto base_alias   = pWPShaderInfo->alias;
+    const auto base_defTexs = pWPShaderInfo->defTexs;
+    const auto base_combos  = pWPShaderInfo->combos;
+
+    std::string reflection_json;
+    auto        textures = BuildMaterialTextureList(base_textures, pWPShaderInfo->defTexs);
+    constexpr usize kMaxDefaultTextureCompilePasses = 8;
+    for (usize pass = 0; pass < kMaxDefaultTextureCompilePasses; ++pass) {
+        shader->codes.clear();
+        reflection_json.clear();
+        for (auto& unit : sd_units) {
+            unit.preprocess_info = {};
+        }
+        material.textures           = base_material_textures;
+        material.defines            = base_material_defines;
+        material.hasSprite          = base_material_has_sprite;
+        materialShader.constValues  = base_material_const_values;
+        svData.renderTargets        = base_render_targets;
+        pWPShaderInfo->svs          = base_svs;
+        pWPShaderInfo->alias        = base_alias;
+        pWPShaderInfo->defTexs      = base_defTexs;
+        pWPShaderInfo->combos       = base_combos;
+
+        RegisterMaterialTextures(*pScene,
+                                 material,
+                                 materialShader,
+                                 svData,
+                                 wpmat,
+                                 *pWPShaderInfo,
+                                 texHeaders,
+                                 textures);
+
+        const auto texinfos = BuildShaderTexInfos(*pScene, texHeaders, textures);
+        if (! WPShaderParser::CompileToSpvRust(
+                pScene->scene_id, wpmat.shader, sd_units, shader->codes, vfs, pWPShaderInfo, texinfos, &reflection_json)) {
+            return false;
+        }
+        DeduplicateDefaultTextures(pWPShaderInfo->defTexs);
+
+        auto next_textures = BuildMaterialTextureList(base_textures, pWPShaderInfo->defTexs);
+        if (next_textures == textures) {
+            break;
+        }
+        if (pass + 1 == kMaxDefaultTextureCompilePasses) {
+            LOG_ERROR("Rust shader default texture list did not stabilize after %zu compile passes for '%s'",
+                      static_cast<std::size_t>(kMaxDefaultTextureCompilePasses),
+                      wpmat.shader.c_str());
+            return false;
+        }
+        textures = std::move(next_textures);
     }
+    shader->rust_reflection_json = std::move(reflection_json);
+    shader->default_uniforms = pWPShaderInfo->svs;
 
     material.blenmode = ParseBlendMode(wpmat.blending);
 
@@ -950,11 +1064,8 @@ std::string TextRuntimeName(const ParseContext& context, const wpscene::WPTextOb
 }
 
 std::shared_ptr<SceneShader> BuildTextSceneShader(fs::VFS& vfs, std::string_view scene_id) {
-    static std::weak_ptr<SceneShader> cached_shader;
-    if (auto shader = cached_shader.lock(); shader != nullptr) return shader;
-
     std::string vertex_src =
-        "uniform mat4 g_ModelViewProjectionMatrix;\n"
+        "layout(binding = 1) uniform mat4 g_ModelViewProjectionMatrix;\n"
         "in vec3 a_Position;\n"
         "in vec2 a_TexCoord;\n"
         "out vec2 v_TexCoord;\n"
@@ -985,19 +1096,16 @@ std::shared_ptr<SceneShader> BuildTextSceneShader(fs::VFS& vfs, std::string_view
         },
     };
 
-    for (auto& unit : units) {
-        unit.src = WPShaderParser::PreShaderSrc(vfs, unit.src, &shader_info, tex_infos);
-    }
-
     auto shader              = std::make_shared<SceneShader>();
     shader->name             = "text";
-    shader->default_uniforms = shader_info.svs;
-    if (! WPShaderParser::CompileToSpv(
-            scene_id, units, shader->codes, vfs, &shader_info, tex_infos)) {
+    std::string reflection_json;
+    if (! WPShaderParser::CompileToSpvRust(
+            scene_id, "text", units, shader->codes, vfs, &shader_info, tex_infos, &reflection_json)) {
         return nullptr;
     }
+    shader->rust_reflection_json = std::move(reflection_json);
+    shader->default_uniforms = shader_info.svs;
 
-    cached_shader = shader;
     return shader;
 }
 

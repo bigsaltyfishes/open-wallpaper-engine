@@ -80,5 +80,10 @@ public:
     static bool CompileToSpv(std::string_view         scene_id, std::span<WPShaderUnit>,
                              std::vector<ShaderCode>& spvs, fs::VFS&, WPShaderInfo*,
                              std::span<const WPShaderTexInfo>);
+
+    static bool CompileToSpvRust(std::string_view scene_id, std::string_view shader_name,
+                                  std::span<WPShaderUnit>, std::vector<ShaderCode>& spvs,
+                                  fs::VFS&, WPShaderInfo*, std::span<const WPShaderTexInfo>,
+                                  std::string* reflection_json = nullptr);
 };
 } // namespace wallpaper

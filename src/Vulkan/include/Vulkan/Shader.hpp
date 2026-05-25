@@ -19,6 +19,7 @@ struct ShaderReflected {
     struct Block {
         int         index;
         uint        size;
+        uint        binding { 0 };
         std::string name;
 
         Map<std::string, BlockedUniform> member_map;

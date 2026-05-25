@@ -344,6 +344,7 @@ bool wallpaper::vulkan::GenReflect(std::span<const std::vector<uint>> codes,
                 auto  block_name = std::string(block.name).empty() ? bind_name : block.name;
                 ref.blocks.push_back(ShaderReflected::Block { //.index = i,
                                                               .size       = block.size,
+                                                              .binding    = b.binding,
                                                               .name       = block.name,
                                                               .member_map = {} });
                 auto& ref_block = ref.blocks.front();

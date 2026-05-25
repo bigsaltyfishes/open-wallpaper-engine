@@ -37,6 +37,30 @@ link_libraries(Eigen3::Eigen)
 set(_wescene_build_tests_default ${_wescene_is_top_level})
 option(BUILD_TESTS "Build the wescene-renderer test suite" ${_wescene_build_tests_default})
 
+set(_wescene_rust_shader_ffi_default OFF)
+if(DEFINED RUST_SHADER_STATICLIB AND NOT "${RUST_SHADER_STATICLIB}" STREQUAL "")
+    set(_wescene_rust_shader_ffi_default ON)
+    if(NOT TARGET wescene_rust_shader)
+        add_library(wescene_rust_shader INTERFACE IMPORTED GLOBAL)
+        if(APPLE)
+            target_link_options(
+                wescene_rust_shader
+                INTERFACE "LINKER:-force_load,${RUST_SHADER_STATICLIB}")
+        else()
+            target_link_options(
+                wescene_rust_shader
+                INTERFACE
+                    "LINKER:--whole-archive"
+                    "${RUST_SHADER_STATICLIB}"
+                    "LINKER:--no-whole-archive")
+        endif()
+    endif()
+endif()
+option(
+    RUST_SHADER_FFI
+    "Compile the Rust shader bridge against externally resolved rs_shader_* symbols"
+    ${_wescene_rust_shader_ffi_default})
+
 add_subdirectory(src)
 
 if(BUILD_TESTS)

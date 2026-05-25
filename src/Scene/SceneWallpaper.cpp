@@ -256,19 +256,15 @@ bool BuildVideoCopyShader(wallpaper::fs::VFS& vfs, std::string_view scene_id,
         },
     };
 
-    for (auto& unit : units) {
-        unit.src = wallpaper::WPShaderParser::PreShaderSrc(vfs, unit.src, &shader_info, tex_infos);
-    }
-
-    ScopedGlslang glslang_scope;
-
     auto compiled_shader  = std::make_shared<wallpaper::SceneShader>();
     compiled_shader->name = "commands/copy";
-    if (! wallpaper::WPShaderParser::CompileToSpv(
-            scene_id, units, compiled_shader->codes, vfs, &shader_info, tex_infos)) {
+    std::string reflection_json;
+    if (! wallpaper::WPShaderParser::CompileToSpvRust(
+            scene_id, "commands/copy", units, compiled_shader->codes, vfs, &shader_info, tex_infos, &reflection_json)) {
         return SetError(error, "failed to compile pure-video copy shader");
     }
 
+    compiled_shader->rust_reflection_json = std::move(reflection_json);
     compiled_shader->default_uniforms = shader_info.svs;
     *shader                           = std::move(compiled_shader);
     return true;
