@@ -23,6 +23,7 @@ struct RustShaderStageSource {
 
 struct RustShaderTextureInfo {
     uint32_t            slot { 0 };
+    bool                present { true };
     bool                enabled { false };
     std::string         format { "rgba8" };
     std::array<bool, 3> components { false, false, false };

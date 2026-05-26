@@ -526,19 +526,26 @@ TEST(TextObjectRuntime, ParserCreatesRenderableTextMaterialAndTexture) {
     const auto texture_binding =
         ShaderDescriptorBinding(*material->customShader.shader, "g_Texture0");
     ASSERT_TRUE(texture_binding.has_value());
-    if (! material->customShader.shader->rust_reflection_json.has_value()) {
-        EXPECT_EQ(texture_binding->descriptorType, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
-    }
+    const bool has_rust_reflection = material->customShader.shader->rust_reflection_json.has_value();
+    EXPECT_EQ(texture_binding->descriptorType,
+              has_rust_reflection ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE
+                                  : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
     const auto descriptor_bindings = ShaderDescriptorBindings(*material->customShader.shader);
     ASSERT_FALSE(descriptor_bindings.empty());
     bool has_uniform_buffer_descriptor = false;
+    bool has_sampler_descriptor        = ! has_rust_reflection;
     for (const auto& binding : descriptor_bindings) {
         if (binding.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
             has_uniform_buffer_descriptor = true;
             EXPECT_NE(binding.binding, texture_binding->binding);
         }
+        if (binding.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER) {
+            has_sampler_descriptor = true;
+            EXPECT_NE(binding.binding, texture_binding->binding);
+        }
     }
     EXPECT_TRUE(has_uniform_buffer_descriptor);
+    EXPECT_TRUE(has_sampler_descriptor);
     EXPECT_EQ(material->blenmode, BlendMode::Translucent);
 }
 

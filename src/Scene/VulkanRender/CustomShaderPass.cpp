@@ -93,6 +93,7 @@ CustomShaderPass::CustomShaderPass(const Desc& desc) {
     m_desc.sprites_map     = desc.sprites_map;
     m_desc.video_textures  = desc.video_textures;
 };
+
 CustomShaderPass::~CustomShaderPass() {}
 
 std::optional<vvk::RenderPass> CreateRenderPass(const vvk::Device& device, VkFormat format,
@@ -289,9 +290,6 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
 
         if (! ReflectCustomShader(shader, spvs, ref)) return;
 
-        auto& bindings = descriptor_info.bindings;
-        bindings.resize(ref.binding_map.size());
-
         /*
         LOG_INFO("----shader------");
         LOG_INFO("%s", shader.name.c_str());
@@ -302,17 +300,13 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         LOG_INFO("--bindings:");
         */
 
-        std::transform(
-            ref.binding_map.begin(), ref.binding_map.end(), bindings.begin(), [](auto& item) {
-                // LOG_INFO("%d %s", item.second.binding, item.first.c_str());
-                return item.second;
-            });
-
-        for (usize i = 0; i < m_desc.vk_textures.size(); i++) {
-            i32 binding { -1 };
-            if (exists(ref.binding_map, WE_GLTEX_NAMES[i]))
-                binding = (i32)ref.binding_map.at(WE_GLTEX_NAMES[i]).binding;
-            m_desc.vk_tex_binding.push_back(binding);
+        if (! detail::PlanCustomShaderDescriptors(ref,
+                                                  m_desc.vk_textures.size(),
+                                                  m_desc.vk_texture_bindings,
+                                                  descriptor_info.bindings)) {
+            LOG_ERROR("custom shader reflection contains descriptors that cannot be written by "
+                      "CustomShaderPass");
+            return;
         }
     }
 
@@ -435,11 +429,16 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
 
     m_desc.uniform_block.reset();
     const ShaderReflected::Block* uniform_block = nullptr;
-    if (! ref.blocks.empty()) {
+    if (detail::ReflectedUniformBlockBinding(ref) != nullptr) {
         m_desc.uniform_block = ref.blocks.front();
         uniform_block        = &m_desc.uniform_block.value();
-        rr.dyn_buf->allocateSubRef(
-            uniform_block->size, m_desc.ubo_buf, device.limits().minUniformBufferOffsetAlignment);
+        if (! rr.dyn_buf->allocateSubRef(uniform_block->size,
+                                         m_desc.ubo_buf,
+                                         device.limits().minUniformBufferOffsetAlignment)) {
+            return;
+        }
+    } else if (! ref.blocks.empty()) {
+        LOG_ERROR("shader uniform block has no matching uniform-buffer descriptor binding");
     }
 
     std::function<void()> update_dyn_buf_op;
@@ -675,9 +674,10 @@ void CustomShaderPass::recordTextureBarriers(RenderingResources& rr) const {
         .layerCount     = VK_REMAINING_ARRAY_LAYERS,
     };
     for (usize i = 0; i < m_desc.vk_textures.size(); i++) {
-        auto& slot    = m_desc.vk_textures[i];
-        int   binding = m_desc.vk_tex_binding[i];
-        if (binding < 0) continue;
+        auto& slot = m_desc.vk_textures[i];
+        if (i >= m_desc.vk_texture_bindings.size()) continue;
+        const auto& binding = m_desc.vk_texture_bindings[i];
+        if (binding.image_binding < 0) continue;
         if (slot.slots.empty()) continue;
         auto& img = slot.getActive();
 
@@ -702,27 +702,65 @@ void CustomShaderPass::recordTextureBarriers(RenderingResources& rr) const {
 void CustomShaderPass::recordDescriptors(RenderingResources& rr) const {
     auto& cmd = rr.command;
     for (usize i = 0; i < m_desc.vk_textures.size(); i++) {
-        auto& slot    = m_desc.vk_textures[i];
-        int   binding = m_desc.vk_tex_binding[i];
-        if (binding < 0) continue;
+        auto& slot = m_desc.vk_textures[i];
+        if (i >= m_desc.vk_texture_bindings.size()) continue;
+        const auto& binding = m_desc.vk_texture_bindings[i];
+        if (binding.image_binding < 0) continue;
         if (slot.slots.empty()) continue;
-        auto&                 img = slot.getActive();
-        VkDescriptorImageInfo desc_img { img.sampler, img.view, img.layout };
+        auto& img = slot.getActive();
+
+        if (binding.image_descriptor_type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+            VkDescriptorImageInfo desc_img { img.sampler, img.view, img.layout };
+            VkWriteDescriptorSet  wset {
+                 .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                 .pNext           = nullptr,
+                 .dstSet          = {},
+                 .dstBinding      = (uint32_t)binding.image_binding,
+                 .descriptorCount = 1,
+                 .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                 .pImageInfo      = &desc_img,
+            };
+            cmd.PushDescriptorSetKHR(
+                VK_PIPELINE_BIND_POINT_GRAPHICS, *m_desc.pipeline.layout, 0, wset);
+            continue;
+        }
+
+        if (binding.image_descriptor_type != VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE) {
+            LOG_ERROR("unsupported texture descriptor type %d for binding %d",
+                      (int)binding.image_descriptor_type,
+                      binding.image_binding);
+            continue;
+        }
+
+        VkDescriptorImageInfo desc_img { VK_NULL_HANDLE, img.view, img.layout };
         VkWriteDescriptorSet  wset {
              .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
              .pNext           = nullptr,
              .dstSet          = {},
-             .dstBinding      = (uint32_t)binding,
+             .dstBinding      = (uint32_t)binding.image_binding,
              .descriptorCount = 1,
-             .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+             .descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
              .pImageInfo      = &desc_img,
         };
         cmd.PushDescriptorSetKHR(VK_PIPELINE_BIND_POINT_GRAPHICS, *m_desc.pipeline.layout, 0, wset);
+
+        if (binding.sampler_binding >= 0 && img.sampler != VK_NULL_HANDLE) {
+            VkDescriptorImageInfo desc_sampler { img.sampler, {}, VK_IMAGE_LAYOUT_UNDEFINED };
+            VkWriteDescriptorSet  wset {
+                 .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                 .pNext           = nullptr,
+                 .dstSet          = {},
+                 .dstBinding      = (uint32_t)binding.sampler_binding,
+                 .descriptorCount = 1,
+                 .descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLER,
+                 .pImageInfo      = &desc_sampler,
+            };
+            cmd.PushDescriptorSetKHR(
+                VK_PIPELINE_BIND_POINT_GRAPHICS, *m_desc.pipeline.layout, 0, wset);
+        }
     }
 
-    if (m_desc.ubo_buf) {
-        const uint32_t uniform_binding =
-            m_desc.uniform_block.has_value() ? m_desc.uniform_block->binding : 0u;
+    if (m_desc.ubo_buf && m_desc.uniform_block.has_value()) {
         VkDescriptorBufferInfo desc_buf {
             rr.dyn_buf->gpuBuf(),
             m_desc.ubo_buf.offset,
@@ -732,7 +770,7 @@ void CustomShaderPass::recordDescriptors(RenderingResources& rr) const {
             .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
             .pNext           = nullptr,
             .dstSet          = {},
-            .dstBinding      = uniform_binding,
+            .dstBinding      = m_desc.uniform_block->binding,
             .descriptorCount = 1,
             .descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
             .pBufferInfo     = &desc_buf,
@@ -742,10 +780,10 @@ void CustomShaderPass::recordDescriptors(RenderingResources& rr) const {
 }
 
 void CustomShaderPass::recordDraw(const Device&, RenderingResources& rr) {
-    recordDescriptors(rr);
     auto& cmd    = rr.command;
     auto& outext = m_desc.vk_output.extent;
     cmd.BindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, *m_desc.pipeline.handle);
+    recordDescriptors(rr);
     VkViewport viewport {
         .x        = 0,
         .y        = (float)outext.height,
@@ -888,7 +926,7 @@ void CustomShaderPass::destory(const Device&, RenderingResources& rr) {
     m_desc.ubo_buf = {};
     m_desc.fb.reset();
     m_desc.vk_textures.clear();
-    m_desc.vk_tex_binding.clear();
+    m_desc.vk_texture_bindings.clear();
     m_desc.vk_texture_image_keys.clear();
     m_desc.vk_output = {};
     m_desc.vk_output_msaa = {};

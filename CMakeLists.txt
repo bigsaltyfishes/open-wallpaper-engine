@@ -42,6 +42,9 @@ if(DEFINED RUST_SHADER_STATICLIB AND NOT "${RUST_SHADER_STATICLIB}" STREQUAL "")
     set(_wescene_rust_shader_ffi_default ON)
     if(NOT TARGET wescene_rust_shader)
         add_library(wescene_rust_shader INTERFACE IMPORTED GLOBAL)
+        set_target_properties(
+            wescene_rust_shader
+            PROPERTIES INTERFACE_LINK_DEPENDS "${RUST_SHADER_STATICLIB}")
         if(APPLE)
             target_link_options(
                 wescene_rust_shader

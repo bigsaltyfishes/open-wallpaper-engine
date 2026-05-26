@@ -34,7 +34,9 @@ struct WPPreprocessorInfo {
 };
 
 struct WPShaderTexInfo {
+    bool                present { false };
     bool                enabled { false };
+    TextureFormat       format { TextureFormat::RGBA8 };
     std::array<bool, 3> composEnabled { false, false, false };
 };
 

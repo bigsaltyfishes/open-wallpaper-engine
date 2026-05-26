@@ -24,6 +24,16 @@ double MeasureElapsedMs(const std::chrono::steady_clock::time_point started)
         .count();
 }
 
+std::string RustTextureFormat(TextureFormat format)
+{
+    switch (format) {
+    case TextureFormat::R8: return "r8";
+    case TextureFormat::RG8: return "rg8";
+    case TextureFormat::RGBA8: return "rgba8";
+    default: return "unknown";
+    }
+}
+
 } // namespace
 
 void WPShaderParser::InitGlslang() { glslang::InitializeProcess(); }
@@ -57,8 +67,9 @@ bool WPShaderParser::CompileToSpvRust(std::string_view scene_id, std::string_vie
     for (usize slot = 0; slot < texs.size(); ++slot) {
         request.textures.push_back(wallpaper::shader::RustShaderTextureInfo {
             .slot       = static_cast<uint32_t>(slot),
+            .present    = texs[slot].present,
             .enabled    = texs[slot].enabled,
-            .format     = "unknown",
+            .format     = RustTextureFormat(texs[slot].format),
             .components = texs[slot].composEnabled,
         });
     }

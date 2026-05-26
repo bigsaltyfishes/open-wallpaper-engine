@@ -698,6 +698,98 @@ void SceneRuntimeContext::UnregisterNode(std::string_view name) {
     m_sound_layers.erase(key);
 }
 
+void SceneRuntimeContext::RollbackNodeRegistration(
+    std::string_view name,
+    SceneNode* node,
+    std::shared_ptr<const NodeRegistrationSnapshot> previous) {
+    if (node == nullptr) return;
+    const std::string key(name);
+    const auto        node_iterator = m_nodes.find(key);
+    if (node_iterator == m_nodes.end() || node_iterator->second != node) return;
+
+    UnregisterNode(key);
+    if (previous == nullptr) return;
+
+    for (std::size_t index = previous->scripted_values_size; index < m_scripted_values.size();
+         ++index) {
+        m_scripted_value_cursor_inside.erase(m_scripted_values[index]);
+    }
+    m_scripted_values.resize(previous->scripted_values_size);
+    m_owned_values.resize(previous->owned_values_size);
+
+    if (previous->has_node) m_nodes[key] = previous->node;
+    if (previous->visibility.has_value()) m_node_visibility[key] = *previous->visibility;
+    if (previous->translate.has_value()) m_node_translate[key] = *previous->translate;
+    if (previous->scale.has_value()) m_node_scale[key] = *previous->scale;
+    if (previous->rotation.has_value()) m_node_rotation[key] = *previous->rotation;
+    if (previous->effect_final.has_value()) m_node_effect_final[key] = *previous->effect_final;
+    if (previous->size.has_value()) m_node_size[key] = *previous->size;
+    if (previous->text_layer.has_value()) m_text_layers.emplace(key, *previous->text_layer);
+    m_text_values.insert(m_text_values.end(),
+                         previous->text_values.begin(),
+                         previous->text_values.end());
+    if (previous->alignment.has_value()) m_node_alignment[key] = *previous->alignment;
+    if (previous->template_path.has_value()) m_node_template_paths[key] = *previous->template_path;
+    if (! previous->video_textures.empty()) {
+        m_node_video_textures[key] = previous->video_textures;
+    }
+    if (previous->has_sound_layer) m_sound_layers[key] = previous->sound_layer;
+}
+
+std::shared_ptr<SceneRuntimeContext::NodeRegistrationSnapshot>
+SceneRuntimeContext::CaptureNodeRegistration(std::string_view name) const {
+    const std::string key(name);
+    auto              snapshot = std::make_shared<NodeRegistrationSnapshot>();
+
+    if (const auto iterator = m_nodes.find(key); iterator != m_nodes.end()) {
+        snapshot->has_node = true;
+        snapshot->node     = iterator->second;
+    }
+    if (const auto iterator = m_node_visibility.find(key); iterator != m_node_visibility.end()) {
+        snapshot->visibility = iterator->second;
+    }
+    if (const auto iterator = m_node_translate.find(key); iterator != m_node_translate.end()) {
+        snapshot->translate = iterator->second;
+    }
+    if (const auto iterator = m_node_scale.find(key); iterator != m_node_scale.end()) {
+        snapshot->scale = iterator->second;
+    }
+    if (const auto iterator = m_node_rotation.find(key); iterator != m_node_rotation.end()) {
+        snapshot->rotation = iterator->second;
+    }
+    if (const auto iterator = m_node_effect_final.find(key); iterator != m_node_effect_final.end()) {
+        snapshot->effect_final = iterator->second;
+    }
+    if (const auto iterator = m_node_size.find(key); iterator != m_node_size.end()) {
+        snapshot->size = iterator->second;
+    }
+    if (const auto iterator = m_text_layers.find(key); iterator != m_text_layers.end()) {
+        snapshot->text_layer = iterator->second;
+    }
+    for (const auto& binding : m_text_values) {
+        if (binding.name == key) snapshot->text_values.push_back(binding);
+    }
+    if (const auto iterator = m_node_alignment.find(key); iterator != m_node_alignment.end()) {
+        snapshot->alignment = iterator->second;
+    }
+    if (const auto iterator = m_node_template_paths.find(key);
+        iterator != m_node_template_paths.end()) {
+        snapshot->template_path = iterator->second;
+    }
+    if (const auto iterator = m_node_video_textures.find(key);
+        iterator != m_node_video_textures.end()) {
+        snapshot->video_textures = iterator->second;
+    }
+    if (const auto iterator = m_sound_layers.find(key); iterator != m_sound_layers.end()) {
+        snapshot->sound_layer     = iterator->second;
+        snapshot->has_sound_layer = true;
+    }
+    snapshot->owned_values_size    = m_owned_values.size();
+    snapshot->scripted_values_size = m_scripted_values.size();
+
+    return snapshot;
+}
+
 void SceneRuntimeContext::RegisterNodeSize(std::string name, Eigen::Vector2f value) {
     if (name.empty()) return;
     m_node_size[std::move(name)] = value;

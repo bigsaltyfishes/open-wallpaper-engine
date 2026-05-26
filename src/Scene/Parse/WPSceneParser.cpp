@@ -263,6 +263,49 @@ std::string LayerRuntimeName(const ParseContext& context, const T& object) {
     return "__we_layer_" + std::to_string(object.id);
 }
 
+class RuntimeNodeRegistrationRollback {
+public:
+    RuntimeNodeRegistrationRollback(
+        SceneRuntimeContext* runtime, std::string name, SceneNode* node,
+        std::unordered_map<int32_t, std::shared_ptr<SceneNode>>* layer_nodes = nullptr,
+        int32_t                                                  layer_id    = 0,
+        std::vector<std::pair<std::string, std::string>>*        pending_scene_scripts = nullptr)
+        : m_runtime(runtime),
+          m_name(std::move(name)),
+          m_node(node),
+          m_previous(runtime != nullptr ? runtime->CaptureNodeRegistration(m_name) : nullptr),
+          m_layer_nodes(layer_nodes),
+          m_layer_id(layer_id),
+          m_pending_scene_scripts(pending_scene_scripts),
+          m_pending_scene_script_size(
+              pending_scene_scripts != nullptr ? pending_scene_scripts->size() : 0u) {}
+
+    ~RuntimeNodeRegistrationRollback() {
+        if (! m_committed && m_runtime != nullptr && ! m_name.empty()) {
+            m_runtime->RollbackNodeRegistration(m_name, m_node, m_previous);
+        }
+        if (! m_committed && m_layer_nodes != nullptr) {
+            m_layer_nodes->erase(m_layer_id);
+        }
+        if (! m_committed && m_pending_scene_scripts != nullptr) {
+            m_pending_scene_scripts->resize(m_pending_scene_script_size);
+        }
+    }
+
+    void Commit() { m_committed = true; }
+
+private:
+    SceneRuntimeContext*                                     m_runtime { nullptr };
+    std::string                                              m_name;
+    SceneNode*                                               m_node { nullptr };
+    std::shared_ptr<SceneRuntimeContext::NodeRegistrationSnapshot> m_previous;
+    std::unordered_map<int32_t, std::shared_ptr<SceneNode>>* m_layer_nodes { nullptr };
+    int32_t                                                  m_layer_id { 0 };
+    std::vector<std::pair<std::string, std::string>>*        m_pending_scene_scripts { nullptr };
+    std::size_t                                              m_pending_scene_script_size { 0 };
+    bool                                                     m_committed { false };
+};
+
 void AttachLayerNode(ParseContext& context, int32_t layer_id) {
     if (context.attached_layer_nodes.contains(layer_id)) return;
 
@@ -752,16 +795,18 @@ std::vector<std::string> BuildMaterialTextureList(const std::vector<std::string>
 WPShaderTexInfo BuildShaderTexInfo(Scene& scene,
                                    std::unordered_map<std::string, ImageHeader>& texHeaders,
                                    const std::string& name) {
-    if (name.empty()) return { false };
-    if (IsSpecTex(name)) return { true };
+    if (name.empty()) return {};
+    if (IsSpecTex(name)) return { true, true, TextureFormat::RGBA8 };
 
     const ImageHeader& texh =
         texHeaders.count(name) == 0 ? scene.imageParser->ParseHeader(name) : texHeaders.at(name);
     texHeaders[name] = texh;
-    if (texh.extraHeader.count("compo1") == 0) return { false };
+    if (texh.extraHeader.count("compo1") == 0) return { true, false, texh.format };
 
     return {
         true,
+        true,
+        texh.format,
         {
             (bool)texh.extraHeader.at("compo1").val,
             (bool)texh.extraHeader.at("compo2").val,
@@ -1873,7 +1918,14 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     const bool allow_script_update =
         AllowSceneScriptsForVisibilitySetting(wpimgobj.dynamic_visible, wpimgobj.visible_setting);
     context.layer_nodes[wpimgobj.id] = spImgNode;
-    auto appendImageNode             = [&context, &wpimgobj, &spImgNode]() {
+    RuntimeNodeRegistrationRollback runtime_node_registration(
+        context.scene->runtime.get(),
+        runtime_name,
+        spImgNode.get(),
+        &context.layer_nodes,
+        wpimgobj.id,
+        &context.pending_scene_scripts);
+    auto appendImageNode = [&context, &wpimgobj, &spImgNode]() {
         if (context.layer_parent_ids.contains(wpimgobj.parent_id)) {
             AttachLayerNode(context, wpimgobj.parent_id);
         }
@@ -1948,11 +2000,13 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     const bool skipComposeRender = isCompose && ! hasEffect;
     if (skipComposeRender) {
         appendImageNode();
+        runtime_node_registration.Commit();
         return;
     }
 
     if (wpimgobj.config.passthrough && ! hasEffect && ! isCompose) {
         appendImageNode();
+        runtime_node_registration.Commit();
         return;
     }
 
@@ -2325,6 +2379,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
         }
     }
     appendImageNode();
+    runtime_node_registration.Commit();
     if (context.scene->runtime != nullptr) {
         context.scene->runtime->RegisterLayerTemplate(
             wpimgobj.image,
@@ -2370,7 +2425,9 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
     std::shared_ptr<SceneNode> spNode;
     ChildData                  child_data;
 
-    bool is_child = child_ptr.child != nullptr;
+    bool              is_child = child_ptr.child != nullptr;
+    const std::string runtime_name =
+        is_child ? std::string {} : LayerRuntimeName(context, wppartobj);
     if (is_child) {
         p_particle_obj = &(child_ptr.child->obj);
         spNode         = std::make_shared<SceneNode>(Vector3f(child_ptr.child->origin.data()),
@@ -2382,11 +2439,21 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
 
     } else {
         p_particle_obj = &wppartobj.particleObj;
-        const auto runtime_name = LayerRuntimeName(context, wppartobj);
         spNode         = std::make_shared<SceneNode>(Vector3f(wppartobj.origin.data()),
                                              Vector3f(wppartobj.scale.data()),
                                              Vector3f(wppartobj.angles.data()),
                                              runtime_name);
+    }
+
+    RuntimeNodeRegistrationRollback runtime_node_registration(
+        is_child ? nullptr : context.scene->runtime.get(),
+        runtime_name,
+        spNode.get(),
+        is_child ? nullptr : &context.layer_nodes,
+        wppartobj.id,
+        is_child ? nullptr : &context.pending_scene_scripts);
+
+    if (! is_child) {
         const bool allow_script_update = AllowSceneScriptsForVisibilitySetting(
             wppartobj.dynamic_visible, wppartobj.visible_setting);
         if (context.scene->runtime != nullptr) {
@@ -2607,6 +2674,7 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
         parent_iterator->second->AppendChild(spNode);
     else
         context.scene->sceneGraph->AppendChild(spNode);
+    runtime_node_registration.Commit();
 }
 
 void ParseLightObj(ParseContext& context, wpscene::WPLightObject& light_obj) {

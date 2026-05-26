@@ -95,6 +95,9 @@ VkDescriptorType ToVkDescriptorType(std::string_view descriptor)
     if (descriptor == "uniform_buffer") {
         return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     }
+    if (descriptor == "sampled_image") {
+        return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    }
     if (descriptor == "combined_image_sampler") {
         return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     }
@@ -117,6 +120,30 @@ VkFormat ToVkVertexFormat(std::string_view format)
     }
     if (format == "r32g32b32a32_sfloat") {
         return VK_FORMAT_R32G32B32A32_SFLOAT;
+    }
+    if (format == "r32_uint") {
+        return VK_FORMAT_R32_UINT;
+    }
+    if (format == "r32g32_uint") {
+        return VK_FORMAT_R32G32_UINT;
+    }
+    if (format == "r32g32b32_uint") {
+        return VK_FORMAT_R32G32B32_UINT;
+    }
+    if (format == "r32g32b32a32_uint") {
+        return VK_FORMAT_R32G32B32A32_UINT;
+    }
+    if (format == "r32_sint") {
+        return VK_FORMAT_R32_SINT;
+    }
+    if (format == "r32g32_sint") {
+        return VK_FORMAT_R32G32_SINT;
+    }
+    if (format == "r32g32b32_sint") {
+        return VK_FORMAT_R32G32B32_SINT;
+    }
+    if (format == "r32g32b32a32_sint") {
+        return VK_FORMAT_R32G32B32A32_SINT;
     }
     throw std::runtime_error("unsupported Rust vertex input format");
 }
@@ -212,6 +239,7 @@ nlohmann::json BuildRustShaderRequestJson(const RustShaderRequest& request)
     for (const auto& texture : request.textures) {
         textures.push_back({
             { "slot", texture.slot },
+            { "present", texture.present },
             { "enabled", texture.enabled },
             { "format", texture.format },
             {
@@ -286,6 +314,13 @@ void ApplyRustShaderReflectionJson(std::string_view reflection_json, RustShaderO
 
     output.reflection.binding_map.clear();
     for (const auto& descriptor : reflection.value("descriptor_bindings", nlohmann::json::array())) {
+        if (descriptor.value("set", 0u) != 0u) {
+            throw std::runtime_error("Rust shader descriptors must use descriptor set 0");
+        }
+        if (descriptor.value("count", 1u) != 1u) {
+            throw std::runtime_error("Rust shader descriptor arrays are not supported");
+        }
+
         VkDescriptorSetLayoutBinding binding {};
         binding.binding         = descriptor.at("binding").get<uint32_t>();
         binding.descriptorType  = ToVkDescriptorType(descriptor.at("descriptor").get<std::string>());

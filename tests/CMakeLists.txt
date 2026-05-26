@@ -148,8 +148,8 @@ gtest_discover_tests(
 add_executable(rust_shader_bridge_test rust_shader_bridge_test.cpp)
 target_link_libraries(
     rust_shader_bridge_test
-    PRIVATE ${PROJECT_NAME} wpFs wpScene wpVulkan nlohmann_json::nlohmann_json GTest::gtest_main)
-target_include_directories(rust_shader_bridge_test PRIVATE . ${CMAKE_SOURCE_DIR}/src)
+    PRIVATE ${PROJECT_NAME} wpFs wpScene wpVulkan wpVulkanRender wpRGraph nlohmann_json::nlohmann_json GTest::gtest_main)
+target_include_directories(rust_shader_bridge_test PRIVATE . ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/Scene/VulkanRender)
 target_compile_features(rust_shader_bridge_test PRIVATE cxx_std_20)
 if(DEFINED RUST_SHADER_STATICLIB AND NOT "${RUST_SHADER_STATICLIB}" STREQUAL "")
     target_link_libraries(rust_shader_bridge_test PRIVATE wescene_rust_shader)

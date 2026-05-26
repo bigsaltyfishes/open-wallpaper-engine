@@ -414,7 +414,8 @@ std::vector<WPShaderTexInfo> BuildConservativeTextureInfos(
     tex_infos.reserve(textures.size());
     for (const auto& texture : textures) {
         WPShaderTexInfo info;
-        info.enabled = ! texture.empty();
+        info.present = ! texture.empty();
+        info.enabled = info.present;
         tex_infos.push_back(info);
     }
     return tex_infos;

@@ -58,6 +58,8 @@ struct RuntimePendingTextLayerJob {
 
 class SceneRuntimeContext {
 public:
+    struct NodeRegistrationSnapshot;
+
     explicit SceneRuntimeContext(SceneRuntimeBootstrap bootstrap);
     ~SceneRuntimeContext();
 
@@ -80,6 +82,12 @@ public:
     void          RegisterScriptedValue(ScriptedDynamicValue* value);
     void          RegisterNode(std::string name, SceneNode* node);
     void          UnregisterNode(std::string_view name);
+    void          RollbackNodeRegistration(
+                     std::string_view name,
+                     SceneNode* node,
+                     std::shared_ptr<const NodeRegistrationSnapshot> previous);
+    [[nodiscard]] std::shared_ptr<NodeRegistrationSnapshot>
+                  CaptureNodeRegistration(std::string_view name) const;
     void          RegisterNodeSize(std::string name, Eigen::Vector2f value);
     void          RegisterLayerTemplate(std::string template_path, std::shared_ptr<SceneNode> node,
                                         Eigen::Vector2f size);
@@ -202,6 +210,28 @@ private:
         Eigen::Vector3f scale { Eigen::Vector3f::Ones() };
         bool            size_anchor { false };
     };
+public:
+    struct NodeRegistrationSnapshot {
+        bool                                    has_node { false };
+        SceneNode*                              node { nullptr };
+        std::optional<NodeVisibilityBinding>    visibility;
+        std::optional<NodeVec3Binding>          translate;
+        std::optional<NodeVec3Binding>          scale;
+        std::optional<NodeVec3Binding>          rotation;
+        std::optional<NodeEffectFinalBinding>   effect_final;
+        std::optional<Eigen::Vector2f>          size;
+        std::optional<TextLayer>                text_layer;
+        std::vector<TextValueBinding>           text_values;
+        std::optional<NodeAlignmentBinding>     alignment;
+        std::optional<std::string>              template_path;
+        std::vector<std::string>                video_textures;
+        std::weak_ptr<WPSoundStream>            sound_layer;
+        bool                                    has_sound_layer { false };
+        std::size_t                             owned_values_size { 0 };
+        std::size_t                             scripted_values_size { 0 };
+    };
+
+private:
     struct VideoTexturePlaybackBinding {
         double duration_seconds { 0.0 };
         double absolute_seconds { 0.0 };

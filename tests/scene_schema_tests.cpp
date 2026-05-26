@@ -401,6 +401,51 @@ std::string BasicImageSceneJson() {
     })";
 }
 
+std::string DynamicImageSceneJson() {
+    return R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0.2,0.2,0.2], "skylightcolor":[0.3,0.3,0.3],
+        "clearcolor":[0,0,0], "cameraparallax":false,
+        "cameraparallaxamount":0, "cameraparallaxdelay":0,
+        "cameraparallaxmouseinfluence":0,
+        "orthogonalprojection":{"width":640,"height":360}
+      },
+      "objects": [
+        {"id":310,"name":"valid scripted image","image":"valid.json",
+         "origin":{"value":[4,0,0],"script":"export function update(value) { return value; }"},
+         "angles":[0,0,0],"visible":true},
+        {"id":311,"name":"failed dynamic image","image":"image.json",
+         "origin":{"value":[0,0,0],"script":"export function update(value) { return value; }"},
+         "scale":{"value":[1,1,1],"user":"scaleProperty"},
+         "angles":[0,0,0],"visible":true}
+      ]
+    })";
+}
+
+std::string DynamicParticleSceneJson() {
+    return R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0.2,0.2,0.2], "skylightcolor":[0.3,0.3,0.3],
+        "clearcolor":[0,0,0], "cameraparallax":false,
+        "cameraparallaxamount":0, "cameraparallaxdelay":0,
+        "cameraparallaxmouseinfluence":0,
+        "orthogonalprojection":{"width":640,"height":360}
+      },
+      "objects": [
+        {"id":310,"name":"valid scripted particle","particle":"valid_particle.json",
+         "origin":{"value":[4,0,0],"script":"export function update(value) { return value; }"},
+         "angles":[0,0,0],"visible":true},
+        {"id":312,"name":"failed dynamic particle","particle":"particle.json",
+         "origin":{"value":[0,0,0],"script":"export function update(value) { return value; }"},
+         "scale":{"value":[1,1,1],"user":"scaleProperty"},
+         "angles":[0,0,0],
+         "visible":{"value":true,"script":"thisScene.on('cursorClick', function() { thisScene.getLayer('failed dynamic particle').visible = false; });"}}
+      ]
+    })";
+}
+
 std::string BasicPuppetSceneJson(bool dynamic_alpha = false) {
     return std::string(R"({
       "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
@@ -1532,6 +1577,184 @@ TEST(SceneSchema, ParserRegistersEveryVideoTextureInImageMaterialForLayerControl
     EXPECT_TRUE(mask.paused);
     EXPECT_FLOAT_EQ(mask.rate, 0.25f);
     EXPECT_DOUBLE_EQ(mask.scene_elapsed_seconds, 7.5);
+}
+
+TEST(SceneSchema, ParserUnregistersRuntimeNodeWhenImageMaterialFailsToLoad) {
+    auto files = std::map<std::string, std::string> {
+        { "/valid.json", R"({"width":64,"height":32,"material":"valid_mat.json"})" },
+        { "/image.json", R"({"width":64,"height":32,"material":"mat.json"})" },
+        { "/valid_mat.json",
+          R"({"passes":[{"blending":"translucent","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"validimage","textures":["a.tex"]}]})" },
+        { "/shaders/validimage.vert",
+          R"(attribute vec3 a_Position;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+}
+)" },
+        { "/shaders/validimage.frag",
+          R"(void main() {
+  gl_FragColor = vec4(1.0);
+}
+)" },
+        { "/mat.json",
+          R"({"passes":[{"blending":"translucent","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"brokenimage","textures":["a.tex"]}]})" },
+        { "/shaders/brokenimage.vert",
+          R"(attribute vec3 a_Position;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+}
+)" },
+        { "/shaders/brokenimage.frag",
+          R"(this is not valid GLSL
+)" },
+        { "/materials/a.tex.tex", "" },
+    };
+    fs::VFS vfs;
+    EXPECT_TRUE(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::move(files))));
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    ProjectProperties   properties;
+    SceneParseRequest   request {
+          .scene_id           = "failed-dynamic-image",
+          .project_properties = &properties,
+    };
+
+    auto parsed = parser.Parse(request, DynamicImageSceneJson(), vfs, sound_manager);
+
+    ASSERT_NE(parsed, nullptr);
+    ASSERT_NE(parsed->runtime, nullptr);
+    EXPECT_EQ(parsed->runtime->sceneScriptCount(), 1u);
+    EXPECT_TRUE(parsed->runtime->HasNodeNamed("valid scripted image"));
+    EXPECT_FALSE(parsed->runtime->HasNodeNamed("failed dynamic image"));
+    parsed->runtime->Tick(1.0 / 60.0);
+}
+
+TEST(SceneSchema, ParserRemovesQueuedSceneScriptWhenImageMaterialFailsToLoad) {
+    auto files = std::map<std::string, std::string> {
+        { "/image.json", R"({"width":64,"height":32,"material":"mat.json"})" },
+        { "/mat.json",
+          R"({"passes":[{"blending":"translucent","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"brokenimage","textures":["a.tex"]}]})" },
+        { "/shaders/brokenimage.vert",
+          R"(attribute vec3 a_Position;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+}
+)" },
+        { "/shaders/brokenimage.frag",
+          R"(this is not valid GLSL
+)" },
+        { "/materials/a.tex.tex", "" },
+    };
+    fs::VFS vfs;
+    EXPECT_TRUE(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::move(files))));
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    ProjectProperties   properties;
+    SceneParseRequest   request {
+          .scene_id           = "failed-scene-script-image",
+          .project_properties = &properties,
+    };
+    const auto scene_json = R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0.2,0.2,0.2], "skylightcolor":[0.3,0.3,0.3],
+        "clearcolor":[0,0,0], "cameraparallax":false,
+        "cameraparallaxamount":0, "cameraparallaxdelay":0,
+        "cameraparallaxmouseinfluence":0,
+        "orthogonalprojection":{"width":640,"height":360}
+      },
+      "objects": [
+        {"id":313,"name":"failed scene-script image","image":"image.json",
+         "origin":[0,0,0],"scale":[1,1,1],"angles":[0,0,0],
+         "visible":{"value":true,"script":"thisScene.on('cursorClick', function() { thisScene.getLayer('failed scene-script image').visible = false; });"}}
+      ]
+    })";
+
+    auto parsed = parser.Parse(request, scene_json, vfs, sound_manager);
+
+    ASSERT_NE(parsed, nullptr);
+    ASSERT_NE(parsed->runtime, nullptr);
+    EXPECT_FALSE(parsed->runtime->HasNodeNamed("failed scene-script image"));
+    EXPECT_EQ(parsed->runtime->sceneScriptCount(), 0u);
+}
+
+TEST(SceneSchema, RuntimeScopedUnregisterPreservesExistingSameNameNode) {
+    auto runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {});
+    auto previous_node = std::make_shared<SceneNode>(
+        Eigen::Vector3f(25.0f, 0.0f, 0.0f),
+        Eigen::Vector3f::Ones(),
+        Eigen::Vector3f::Zero(),
+        "runtime target");
+    auto failed_node = std::make_shared<SceneNode>(
+        Eigen::Vector3f(50.0f, 0.0f, 0.0f),
+        Eigen::Vector3f::Ones(),
+        Eigen::Vector3f::Zero(),
+        "runtime target");
+
+    runtime->RegisterNode("runtime target", previous_node.get());
+    const auto previous = runtime->CaptureNodeRegistration("runtime target");
+    runtime->RegisterNode("runtime target", failed_node.get());
+    ASSERT_FLOAT_EQ(runtime->NodeTranslate("runtime target").x(), 50.0f);
+    runtime->RollbackNodeRegistration("runtime target", failed_node.get(), previous);
+
+    EXPECT_TRUE(runtime->HasNodeNamed("runtime target"));
+    EXPECT_FLOAT_EQ(runtime->NodeTranslate("runtime target").x(), 25.0f);
+
+    runtime->RegisterNode("runtime target", failed_node.get());
+    runtime->RollbackNodeRegistration("runtime target", failed_node.get(), nullptr);
+    EXPECT_FALSE(runtime->HasNodeNamed("runtime target"));
+}
+
+TEST(SceneSchema, ParserUnregistersRuntimeNodeWhenParticleMaterialFailsToLoad) {
+    auto files = std::map<std::string, std::string> {
+        { "/valid_particle.json",
+          R"({"emitter":[{"name":"emit","id":1}],"material":"valid_mat.json","maxcount":4,"starttime":0})" },
+        { "/particle.json",
+          R"({"emitter":[{"name":"emit","id":1}],"material":"mat.json","maxcount":4,"starttime":0})" },
+        { "/valid_mat.json",
+          R"({"passes":[{"blending":"translucent","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"validparticle","textures":["a.tex"]}]})" },
+        { "/shaders/validparticle.vert",
+          R"(attribute vec3 a_Position;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+}
+)" },
+        { "/shaders/validparticle.frag",
+          R"(void main() {
+  gl_FragColor = vec4(1.0);
+}
+)" },
+        { "/mat.json",
+          R"({"passes":[{"blending":"translucent","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"brokenparticle","textures":["a.tex"]}]})" },
+        { "/shaders/brokenparticle.vert",
+          R"(attribute vec3 a_Position;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+}
+)" },
+        { "/shaders/brokenparticle.frag",
+          R"(this is not valid GLSL
+)" },
+        { "/materials/a.tex.tex", "" },
+    };
+    fs::VFS vfs;
+    EXPECT_TRUE(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::move(files))));
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    ProjectProperties   properties;
+    SceneParseRequest   request {
+          .scene_id           = "failed-dynamic-particle",
+          .project_properties = &properties,
+    };
+
+    auto parsed = parser.Parse(request, DynamicParticleSceneJson(), vfs, sound_manager);
+
+    ASSERT_NE(parsed, nullptr);
+    ASSERT_NE(parsed->runtime, nullptr);
+    EXPECT_EQ(parsed->runtime->sceneScriptCount(), 1u);
+    EXPECT_TRUE(parsed->runtime->HasNodeNamed("valid scripted particle"));
+    EXPECT_FALSE(parsed->runtime->HasNodeNamed("failed dynamic particle"));
+    parsed->runtime->Tick(1.0 / 60.0);
 }
 
 TEST(SceneSchema, RuntimeProjectPropertyResolutionStillWorks) {
