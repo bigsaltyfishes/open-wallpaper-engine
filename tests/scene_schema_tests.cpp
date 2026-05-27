@@ -932,6 +932,182 @@ TEST(SceneSchema, ParserCreatesTextChildWithoutBreakingLayerParents) {
     EXPECT_NE((*group)->GetChildren().front()->Mesh(), nullptr);
 }
 
+TEST(SceneSchema, ParserKeepsInvisibleImageDependencySources) {
+    fs::VFS vfs;
+    MountSceneFiles(vfs);
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    const std::string   scene = R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0.2,0.2,0.2], "skylightcolor":[0.3,0.3,0.3],
+        "clearcolor":[0,0,0], "cameraparallax":false,
+        "cameraparallaxamount":0, "cameraparallaxdelay":0,
+        "cameraparallaxmouseinfluence":0,
+        "orthogonalprojection":{"width":640,"height":360}
+      },
+      "objects": [
+        {"id":159,"name":"dependency source","image":"image.json",
+         "origin":[0,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":false},
+        {"id":160,"name":"consumer","image":"image.json","dependencies":[159],
+         "origin":[8,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":true}
+      ]
+    })";
+
+    auto parsed = parser.Parse("invisible-dependency-source", scene, vfs, sound_manager);
+
+    ASSERT_NE(parsed, nullptr);
+    auto source = FindRootChildByName(*parsed, "dependency source");
+    ASSERT_NE(source, nullptr);
+    EXPECT_FALSE(source->Visible());
+    EXPECT_EQ(source->ID(), 159);
+    ASSERT_NE(source->Mesh(), nullptr);
+    auto consumer = FindRootChildByName(*parsed, "consumer");
+    ASSERT_NE(consumer, nullptr);
+    EXPECT_TRUE(consumer->Visible());
+}
+
+TEST(SceneSchema, ParserKeepsTransitiveInvisibleImageDependencySources) {
+    fs::VFS vfs;
+    MountSceneFiles(vfs);
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    const std::string   scene = R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0.2,0.2,0.2], "skylightcolor":[0.3,0.3,0.3],
+        "clearcolor":[0,0,0], "cameraparallax":false,
+        "cameraparallaxamount":0, "cameraparallaxdelay":0,
+        "cameraparallaxmouseinfluence":0,
+        "orthogonalprojection":{"width":640,"height":360}
+      },
+      "objects": [
+        {"id":159,"name":"transitive source","image":"image.json",
+         "origin":[0,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":false},
+        {"id":200,"name":"hidden relay","image":"image.json","dependencies":[159],
+         "origin":[4,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":false},
+        {"id":201,"name":"visible consumer","image":"image.json","dependencies":[200],
+         "origin":[8,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":true}
+      ]
+    })";
+
+    auto parsed = parser.Parse("transitive-invisible-dependency-source", scene, vfs, sound_manager);
+
+    ASSERT_NE(parsed, nullptr);
+    auto source = FindRootChildByName(*parsed, "transitive source");
+    ASSERT_NE(source, nullptr);
+    EXPECT_FALSE(source->Visible());
+    EXPECT_EQ(source->ID(), 159);
+    ASSERT_NE(source->Mesh(), nullptr);
+    auto relay = FindRootChildByName(*parsed, "hidden relay");
+    ASSERT_NE(relay, nullptr);
+    EXPECT_FALSE(relay->Visible());
+    auto consumer = FindRootChildByName(*parsed, "visible consumer");
+    ASSERT_NE(consumer, nullptr);
+    EXPECT_TRUE(consumer->Visible());
+}
+
+TEST(SceneSchema, ParserKeepsTransitiveInvisibleImageDependenciesFromDynamicVisibleImageRoots) {
+    fs::VFS vfs;
+    MountSceneFiles(vfs);
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    const std::string   scene = R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0.2,0.2,0.2], "skylightcolor":[0.3,0.3,0.3],
+        "clearcolor":[0,0,0], "cameraparallax":false,
+        "cameraparallaxamount":0, "cameraparallaxdelay":0,
+        "cameraparallaxmouseinfluence":0,
+        "orthogonalprojection":{"width":640,"height":360}
+      },
+      "objects": [
+        {"id":180,"name":"dynamic transitive source","image":"image.json",
+         "origin":[0,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":false},
+        {"id":181,"name":"dynamic hidden relay","image":"image.json","dependencies":[180],
+         "origin":[4,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":false},
+        {"id":182,"name":"dynamic image consumer","image":"image.json","dependencies":[181],
+         "origin":[8,0,0],"scale":[1,1,1],"angles":[0,0,0],
+         "visible":{"value":false,"script":"export function update(value) { return value; }"}}
+      ]
+    })";
+
+    auto parsed =
+        parser.Parse("dynamic-visible-image-root-dependency-source", scene, vfs, sound_manager);
+
+    ASSERT_NE(parsed, nullptr);
+    auto source = FindRootChildByName(*parsed, "dynamic transitive source");
+    ASSERT_NE(source, nullptr);
+    EXPECT_FALSE(source->Visible());
+    auto relay = FindRootChildByName(*parsed, "dynamic hidden relay");
+    ASSERT_NE(relay, nullptr);
+    EXPECT_FALSE(relay->Visible());
+    auto consumer = FindRootChildByName(*parsed, "dynamic image consumer");
+    ASSERT_NE(consumer, nullptr);
+}
+
+TEST(SceneSchema, ParserDoesNotRetainInvisibleImageDependenciesFromNonImageRoots) {
+    fs::VFS vfs;
+    MountSceneFiles(vfs);
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    const std::string   scene = R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0.2,0.2,0.2], "skylightcolor":[0.3,0.3,0.3],
+        "clearcolor":[0,0,0], "cameraparallax":false,
+        "cameraparallaxamount":0, "cameraparallaxdelay":0,
+        "cameraparallaxmouseinfluence":0,
+        "orthogonalprojection":{"width":640,"height":360}
+      },
+      "objects": [
+        {"id":190,"name":"hidden image source from particle","image":"image.json",
+         "origin":[0,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":false},
+        {"id":191,"name":"visible particle root","particle":"particle.json","dependencies":[190],
+         "origin":[8,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":true}
+      ]
+    })";
+
+    auto parsed = parser.Parse("non-image-root-image-dependency-source", scene, vfs, sound_manager);
+
+    ASSERT_NE(parsed, nullptr);
+    EXPECT_EQ(FindRootChildByName(*parsed, "hidden image source from particle"), nullptr);
+    auto particle = FindRootChildByName(*parsed, "visible particle root");
+    ASSERT_NE(particle, nullptr);
+    EXPECT_TRUE(particle->Visible());
+}
+
+TEST(SceneSchema, ParserDoesNotRetainInvisibleNonImageDependencySources) {
+    fs::VFS vfs;
+    MountSceneFiles(vfs);
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    const std::string   scene = R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0.2,0.2,0.2], "skylightcolor":[0.3,0.3,0.3],
+        "clearcolor":[0,0,0], "cameraparallax":false,
+        "cameraparallaxamount":0, "cameraparallaxdelay":0,
+        "cameraparallaxmouseinfluence":0,
+        "orthogonalprojection":{"width":640,"height":360}
+      },
+      "objects": [
+        {"id":170,"name":"hidden particle source","particle":"particle.json",
+         "origin":[0,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":false},
+        {"id":171,"name":"image consumer","image":"image.json","dependencies":[170],
+         "origin":[8,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":true}
+      ]
+    })";
+
+    auto parsed = parser.Parse("invisible-non-image-dependency-source", scene, vfs, sound_manager);
+
+    ASSERT_NE(parsed, nullptr);
+    EXPECT_EQ(FindRootChildByName(*parsed, "hidden particle source"), nullptr);
+    auto consumer = FindRootChildByName(*parsed, "image consumer");
+    ASSERT_NE(consumer, nullptr);
+    EXPECT_TRUE(consumer->Visible());
+}
+
 TEST(SceneSchema, SchemaOnlyObjectPreservesRenderableChildParentTransform) {
     fs::VFS vfs;
     MountSceneFiles(vfs);

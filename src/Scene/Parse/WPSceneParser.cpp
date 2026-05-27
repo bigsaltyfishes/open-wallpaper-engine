@@ -433,6 +433,35 @@ i32 EffectiveProjectionDimension(i32 base_dimension, float zoom) {
     return std::max(1, static_cast<i32>(static_cast<float>(base_dimension) / zoom));
 }
 
+std::array<int32_t, 2> ResolveImageRenderExtent(const wpscene::WPImageObject& object,
+                                                const ParseContext&           context) {
+    const auto object_width  = std::isfinite(object.size[0])
+                                   ? static_cast<int32_t>(std::lround(object.size[0]))
+                                   : 0;
+    const auto object_height = std::isfinite(object.size[1])
+                                   ? static_cast<int32_t>(std::lround(object.size[1]))
+                                   : 0;
+    if (object_width > 2 && object_height > 2) {
+        return { object_width, object_height };
+    }
+
+    // Invisible utility sources in Wallpaper Engine scenes often carry one
+    // invalid size axis while effects still use the valid axis as authored.
+    // Fill only invalid axes from the scene projection, then clamp FBOs later.
+    return {
+        object_width > 2 ? object_width : std::max(4, context.ortho_w),
+        object_height > 2 ? object_height : std::max(4, context.ortho_h),
+    };
+}
+
+int32_t ResolveRenderTargetDimension(float base_dimension, uint32_t scale) {
+    if (scale == 0) scale = 1;
+    if (! std::isfinite(base_dimension)) base_dimension = 0.0f;
+    return std::max(
+        4,
+        static_cast<int32_t>(std::lround(base_dimension / static_cast<float>(scale))));
+}
+
 // mapRate < 1.0
 void GenCardMesh(SceneMesh& mesh, const std::array<uint16_t, 2> size,
                  const std::array<float, 2> mapRate = { 1.0f, 1.0f }) {
@@ -1401,6 +1430,14 @@ std::string ResolveConstvalueGlName(const std::string& name, const WPShaderInfo&
     return {};
 }
 
+bool IsCompositeMaterialShaderValue(std::string_view name, const WPAliasValueDict& aliases,
+                                    const wpscene::WPMaterial& material) {
+    const std::string prefix { name };
+    return aliases.contains(prefix + "Start") && aliases.contains(prefix + "End") &&
+           material.constantshadervalues.contains(prefix + "Start") &&
+           material.constantshadervalues.contains(prefix + "End");
+}
+
 std::unique_ptr<DynamicValue>
 MakeMaterialConstantValue(const wpscene::WPConstantShaderValue& source) {
     const auto& value = source.value;
@@ -1420,19 +1457,26 @@ MakeMaterialConstantValue(const wpscene::WPConstantShaderValue& source) {
     return std::make_unique<DynamicValue>(0.0f);
 }
 
-void LoadConstvalue(SceneMaterial& material, const wpscene::WPMaterial& wpmat,
-                    const WPShaderInfo& info) {
+void LoadMaterialConstantShaderValuesImpl(SceneMaterial& material, const wpscene::WPMaterial& wpmat,
+                                          const WPShaderInfo& info) {
     // load glname from alias and load to constvalue
     for (const auto& cs : wpmat.constantshadervalues) {
         const auto& name   = cs.first;
         const auto& value  = cs.second;
         const auto  glname = ResolveConstvalueGlName(name, info);
         if (glname.empty()) {
-            LOG_ERROR("ShaderValue: %s not found in glsl", name.c_str());
+            if (! IsCompositeMaterialShaderValue(name, info.alias, wpmat)) {
+                LOG_ERROR("ShaderValue: %s not found in glsl", name.c_str());
+            }
         } else {
             material.customShader.constValues[glname] = value.value;
         }
     }
+}
+
+void LoadConstvalue(SceneMaterial& material, const wpscene::WPMaterial& wpmat,
+                    const WPShaderInfo& info) {
+    LoadMaterialConstantShaderValuesImpl(material, wpmat, info);
 }
 
 void AddConstantValue(wpscene::WPMaterial& material, std::string name, std::vector<float> value) {
@@ -1844,7 +1888,6 @@ void InitContext(ParseContext& context, fs::VFS& vfs, wpscene::WPScene& sc) {
 void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     auto& wpimgobj = img_obj;
     const auto runtime_name = LayerRuntimeName(context, wpimgobj);
-    if (! wpimgobj.visible && ! wpimgobj.dynamic_visible) return;
 
     auto& vfs = *context.vfs;
 
@@ -1918,6 +1961,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     const bool allow_script_update =
         AllowSceneScriptsForVisibilitySetting(wpimgobj.dynamic_visible, wpimgobj.visible_setting);
     context.layer_nodes[wpimgobj.id] = spImgNode;
+    spImgNode->SetVisible(wpimgobj.visible);
     RuntimeNodeRegistrationRollback runtime_node_registration(
         context.scene->runtime.get(),
         runtime_name,
@@ -2145,17 +2189,17 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
         auto& scene = *context.scene;
         // currently use addr for unique
         std::string nodeAddr = getAddr(spImgNode.get());
+        const auto render_extent = ResolveImageRenderExtent(wpimgobj, context);
         // set camera to attatch effect
         if (render_as_compose) {
             scene.cameras[nodeAddr] = std::make_shared<SceneCamera>(
-                (int32_t)wpimgobj.size[0], (int32_t)wpimgobj.size[1], -1.0f, 1.0f);
+                render_extent[0], render_extent[1], -1.0f, 1.0f);
             scene.cameras.at(nodeAddr)->SetComposeLayer(true);
             scene.cameras.at(nodeAddr)->AttatchNode(spImgNode);
         } else {
             // applly scale to crop
-            i32 w                   = (i32)wpimgobj.size[0];
-            i32 h                   = (i32)wpimgobj.size[1];
-            scene.cameras[nodeAddr] = std::make_shared<SceneCamera>(w, h, -1.0f, 1.0f);
+            scene.cameras[nodeAddr] =
+                std::make_shared<SceneCamera>(render_extent[0], render_extent[1], -1.0f, 1.0f);
             scene.cameras.at(nodeAddr)->AttatchNode(context.effect_camera_node);
         }
         spImgNode->SetCamera(nodeAddr);
@@ -2164,7 +2208,11 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
         effect_ppong_b = WE_EFFECT_PPONG_PREFIX_B.data() + nodeAddr;
         // set image effect
         auto imgEffectLayer = std::make_shared<SceneImageEffectLayer>(
-            spImgNode.get(), wpimgobj.size[0], wpimgobj.size[1], effect_ppong_a, effect_ppong_b);
+            spImgNode.get(),
+            static_cast<float>(render_extent[0]),
+            static_cast<float>(render_extent[1]),
+            effect_ppong_a,
+            effect_ppong_b);
         {
             imgEffectLayer->SetFinalBlend(imgBlendMode);
             imgEffectLayer->FinalMesh().ChangeMeshDataFrom(effct_final_mesh);
@@ -2186,8 +2234,8 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
         // set renderTarget for ping-pong operate
         {
             scene.renderTargets[effect_ppong_a] = {
-                .width      = (uint16_t)wpimgobj.size[0],
-                .height     = (uint16_t)wpimgobj.size[1],
+                .width      = render_extent[0],
+                .height     = render_extent[1],
                 .allowReuse = true,
             };
             if (wpimgobj.fullscreen) {
@@ -2268,13 +2316,15 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                         scene.renderTargets[rtname].bind = {
                             .enable = true,
                             .screen = true,
-                            .scale  = 1.0 / wpfbo.scale,
+                            .scale  = 1.0 / static_cast<double>(wpfbo.scale),
                         };
                     } else {
                         // i+2 for not override object's rt
                         scene.renderTargets[rtname] = {
-                            .width      = (uint16_t)(wpimgobj.size[0] / (float)wpfbo.scale),
-                            .height     = (uint16_t)(wpimgobj.size[1] / (float)wpfbo.scale),
+                            .width      = ResolveRenderTargetDimension(
+                                static_cast<float>(render_extent[0]), wpfbo.scale),
+                            .height     = ResolveRenderTargetDimension(
+                                static_cast<float>(render_extent[1]), wpfbo.scale),
                             .allowReuse = true
                         };
                     }
@@ -2702,14 +2752,68 @@ bool HasDynamicVisible(const wpscene::WPParticleObject& object) { return object.
 
 bool HasDynamicVisible(const wpscene::WPTextObject&) { return true; }
 
+bool HasDynamicVisibleSetting(const nlohmann::json& object) {
+    return object.contains("visible") && HasDynamicSetting(object.at("visible"));
+}
+
+bool IsReachabilityRoot(const nlohmann::json& object) {
+    if (! object.contains("image") || object.at("image").is_null()) return false;
+    if (! object.contains("visible") || HasDynamicVisibleSetting(object)) return true;
+
+    bool visible = true;
+    GET_JSON_NAME_VALUE_NOWARN(object, "visible", visible);
+    return visible;
+}
+
+std::unordered_set<int32_t> CollectReachableDependencyIds(const nlohmann::json& objects) {
+    std::unordered_map<int32_t, std::vector<int32_t>> dependencies_by_id;
+    std::vector<int32_t>                              pending;
+
+    for (const auto& object : objects) {
+        int32_t object_id = 0;
+        GET_JSON_NAME_VALUE_NOWARN(object, "id", object_id);
+        if (object_id == 0) continue;
+
+        auto& dependencies = dependencies_by_id[object_id];
+        if (object.contains("dependencies") && object.at("dependencies").is_array()) {
+            for (const auto& dependency : object.at("dependencies")) {
+                if (dependency.is_number_integer()) {
+                    dependencies.push_back(dependency.get<int32_t>());
+                }
+            }
+        }
+        if (IsReachabilityRoot(object)) {
+            pending.insert(pending.end(), dependencies.begin(), dependencies.end());
+        }
+    }
+
+    std::unordered_set<int32_t> reachable_dependency_ids;
+    while (! pending.empty()) {
+        const auto dependency_id = pending.back();
+        pending.pop_back();
+        if (! reachable_dependency_ids.insert(dependency_id).second) continue;
+
+        const auto iterator = dependencies_by_id.find(dependency_id);
+        if (iterator == dependencies_by_id.end()) continue;
+        pending.insert(pending.end(), iterator->second.begin(), iterator->second.end());
+    }
+    return reachable_dependency_ids;
+}
+
 template<typename T>
-void AddWPObject(std::vector<WPObjectVar>& objs, const nlohmann::json& json_obj, fs::VFS& vfs) {
+void AddWPObject(std::vector<WPObjectVar>&        objs,
+                 const nlohmann::json&           json_obj,
+                 fs::VFS&                        vfs,
+                 const std::unordered_set<int32_t>& dependency_ids = {}) {
     T wpobj;
     if (! wpobj.FromJson(json_obj, vfs)) {
         LOG_ERROR("parse scene object failed, name: %s", wpobj.name.c_str());
         return;
     }
-    if (! wpobj.visible && ! HasDynamicVisible(wpobj)) return;
+    int32_t object_id = 0;
+    GET_JSON_NAME_VALUE_NOWARN(json_obj, "id", object_id);
+    const bool keep_invisible_dependency = dependency_ids.contains(object_id);
+    if (! wpobj.visible && ! HasDynamicVisible(wpobj) && ! keep_invisible_dependency) return;
     objs.push_back(wpobj);
 }
 } // namespace
@@ -2735,6 +2839,12 @@ void wallpaper::ApplySystemUserTextures(std::vector<std::string>&               
     }
 }
 
+void wallpaper::LoadMaterialConstantShaderValues(SceneMaterial& material,
+                                                 const wpscene::WPMaterial& wpmat,
+                                                 const WPShaderInfo& info) {
+    LoadMaterialConstantShaderValuesImpl(material, wpmat, info);
+}
+
 std::shared_ptr<Scene> WPSceneParser::Parse(const SceneParseRequest& request,
                                             const std::string& buf, fs::VFS& vfs,
                                             audio::SoundManager& sm) {
@@ -2747,12 +2857,13 @@ std::shared_ptr<Scene> WPSceneParser::Parse(const SceneParseRequest& request,
     ParseContext context;
     context.request     = &request;
     context.object_list = &json.at("objects");
+    const auto reachable_dependency_ids = CollectReachableDependencyIds(json.at("objects"));
 
     std::vector<WPObjectVar> wp_objs;
 
     for (auto& obj : json.at("objects")) {
         if (obj.contains("image") && ! obj.at("image").is_null()) {
-            AddWPObject<wpscene::WPImageObject>(wp_objs, obj, vfs);
+            AddWPObject<wpscene::WPImageObject>(wp_objs, obj, vfs, reachable_dependency_ids);
         } else if (obj.contains("particle") && ! obj.at("particle").is_null()) {
             AddWPObject<wpscene::WPParticleObject>(wp_objs, obj, vfs);
         } else if (obj.contains("sound") && ! obj.at("sound").is_null()) {

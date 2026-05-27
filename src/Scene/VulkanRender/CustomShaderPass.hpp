@@ -94,6 +94,8 @@ public:
     void                     recordDraw(const Device&, RenderingResources&);
     void                     recordClear(const Device&, RenderingResources&);
 
+    bool textureDescriptorsReady() const;
+
 private:
     void recordTextureBarriers(RenderingResources&) const;
     void recordDescriptors(RenderingResources&) const;

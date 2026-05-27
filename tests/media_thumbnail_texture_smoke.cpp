@@ -6,6 +6,8 @@
 #include "Scene/include/Scene/SceneMaterial.h"
 #include "Scene/include/Scene/SceneMesh.h"
 #include "Scene/SceneNode.h"
+#include "Utils/Logging.h"
+#include "WPShaderParser.hpp"
 #include "WPSceneParser.hpp"
 #include "wpscene/WPMaterial.h"
 
@@ -15,6 +17,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace wallpaper
@@ -55,6 +58,39 @@ std::unique_ptr<DynamicValue> BoundValue(SceneRuntimeContext& runtime,
         value->connect(property);
     }
     return value;
+}
+
+std::vector<std::string>* captured_error_logs = nullptr;
+
+void CaptureErrorLogs(int level, const char*, int, const char* message) {
+    if (level == LOGLEVEL_ERROR && captured_error_logs != nullptr) {
+        captured_error_logs->push_back(message == nullptr ? "" : message);
+    }
+}
+
+class ScopedErrorLogCapture {
+public:
+    explicit ScopedErrorLogCapture(std::vector<std::string>& logs) {
+        captured_error_logs = &logs;
+        SetWallpaperLogCallback(CaptureErrorLogs);
+    }
+
+    ~ScopedErrorLogCapture() {
+        SetWallpaperLogCallback(nullptr);
+        captured_error_logs = nullptr;
+    }
+};
+
+bool ContainsLog(std::span<const std::string> logs, std::string_view message) {
+    return std::any_of(logs.begin(), logs.end(), [message](const std::string& log) {
+        return log.find(message) != std::string::npos;
+    });
+}
+
+void AddTestConstantValue(wpscene::WPMaterial& material, std::string name, std::vector<float> value) {
+    material.constantshadervalues[std::move(name)] = wpscene::WPConstantShaderValue {
+        .value = std::move(value),
+    };
 }
 
 TEST(MediaThumbnailTextureSmoke, RegularUserTextureSlotZeroResolvesToMediaThumbnail) {
@@ -196,6 +232,46 @@ TEST(MediaThumbnailTextureSmoke, RuntimeMaterialConstantsFollowProjectProperties
     EXPECT_FLOAT_EQ(material.customShader.constValues.at("g_Color")[2], 0.75f);
     ASSERT_EQ(material.customShader.constValues.at("g_UserAlpha").size(), 1u);
     EXPECT_FLOAT_EQ(material.customShader.constValues.at("g_UserAlpha")[0], 0.25f);
+}
+
+TEST(MediaThumbnailTextureSmoke, CompositeMaterialShaderValueRequiresSplitShaderAndMaterialValues) {
+    WPShaderInfo shader_info;
+    shader_info.alias = {
+        { "frequencyRangeStart", "u_FrequencyRangeStart" },
+        { "frequencyRangeEnd", "u_FrequencyRangeEnd" },
+        { "volumeScale", "u_VolumeScale" },
+    };
+
+    wpscene::WPMaterial complete_material;
+    AddTestConstantValue(complete_material, "frequencyRange", { 0.0f, 31.73f });
+    AddTestConstantValue(complete_material, "frequencyRangeStart", { 0.0f });
+    AddTestConstantValue(complete_material, "frequencyRangeEnd", { 63.0f });
+    AddTestConstantValue(complete_material, "volumeScale", { 0.8f });
+
+    SceneMaterial complete_scene_material;
+    std::vector<std::string> complete_logs;
+    {
+        ScopedErrorLogCapture capture(complete_logs);
+        LoadMaterialConstantShaderValues(complete_scene_material, complete_material, shader_info);
+    }
+
+    EXPECT_FALSE(ContainsLog(complete_logs, "ShaderValue: frequencyRange not found in glsl"));
+    EXPECT_TRUE(complete_scene_material.customShader.constValues.contains("u_FrequencyRangeStart"));
+    EXPECT_TRUE(complete_scene_material.customShader.constValues.contains("u_FrequencyRangeEnd"));
+    EXPECT_TRUE(complete_scene_material.customShader.constValues.contains("u_VolumeScale"));
+
+    wpscene::WPMaterial incomplete_material;
+    AddTestConstantValue(incomplete_material, "frequencyRange", { 0.0f, 31.73f });
+
+    SceneMaterial incomplete_scene_material;
+    std::vector<std::string> incomplete_logs;
+    {
+        ScopedErrorLogCapture capture(incomplete_logs);
+        LoadMaterialConstantShaderValues(
+            incomplete_scene_material, incomplete_material, shader_info);
+    }
+
+    EXPECT_TRUE(ContainsLog(incomplete_logs, "ShaderValue: frequencyRange not found in glsl"));
 }
 
 TEST(MediaThumbnailTextureSmoke, GeneratedTemplateLayersKeepMaterialConstantBindings) {

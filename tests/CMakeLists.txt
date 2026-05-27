@@ -290,7 +290,7 @@ target_include_directories(vulkan_sample_count_smoke PRIVATE
 target_compile_features(vulkan_sample_count_smoke PRIVATE cxx_std_20)
 add_test(NAME vulkan_sample_count_smoke COMMAND vulkan_sample_count_smoke)
 add_executable(rendergraph_smoke rendergraph_smoke.cpp)
-target_link_libraries(rendergraph_smoke PRIVATE ${PROJECT_NAME} wpVulkanRender wpVulkan wpRGraph wpScene)
+target_link_libraries(rendergraph_smoke PRIVATE ${PROJECT_NAME} wpVulkanRender wpVulkan wpRGraph wpScene wpAudio wpFs)
 target_include_directories(rendergraph_smoke PRIVATE . ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/Scene/VulkanRender)
 target_compile_features(rendergraph_smoke PRIVATE cxx_std_20)
 add_test(NAME rendergraph_smoke COMMAND rendergraph_smoke)

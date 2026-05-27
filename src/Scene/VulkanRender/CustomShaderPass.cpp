@@ -660,8 +660,41 @@ CustomPassBatchCandidate CustomShaderPass::preRecord(const Device&, RenderingRes
     }
 
     if (m_desc.update_op) m_desc.update_op();
+    if (! textureDescriptorsReady()) {
+        candidate.visible   = false;
+        candidate.clear_only = false;
+        return candidate;
+    }
     recordTextureBarriers(rr);
     return candidate;
+}
+
+bool CustomShaderPass::textureDescriptorsReady() const {
+    for (usize i = 0; i < m_desc.vk_texture_bindings.size(); ++i) {
+        const auto& binding = m_desc.vk_texture_bindings[i];
+        if (binding.image_binding < 0) continue;
+        if (i >= m_desc.vk_textures.size() || m_desc.vk_textures[i].slots.empty()) {
+            const auto texture_name =
+                i < m_desc.textures.size() ? m_desc.textures[i].c_str() : "<missing texture slot>";
+            LOG_ERROR("custom shader texture descriptor slot %zu (%s) has no image for binding %d",
+                      i,
+                      texture_name,
+                      binding.image_binding);
+            return false;
+        }
+        if (binding.sampler_binding >= 0 &&
+            m_desc.vk_textures[i].getActive().sampler == VK_NULL_HANDLE) {
+            const auto texture_name =
+                i < m_desc.textures.size() ? m_desc.textures[i].c_str() : "<missing texture slot>";
+            LOG_ERROR(
+                "custom shader texture descriptor slot %zu (%s) has no sampler for binding %d",
+                i,
+                texture_name,
+                binding.sampler_binding);
+            return false;
+        }
+    }
+    return true;
 }
 
 void CustomShaderPass::recordTextureBarriers(RenderingResources& rr) const {

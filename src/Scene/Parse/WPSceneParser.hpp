@@ -2,18 +2,25 @@
 #include "Interface/ISceneParser.h"
 
 #include <string>
+#include <string_view>
 #include <random>
 #include <vector>
 
 namespace wallpaper
 {
+struct SceneMaterial;
+struct WPShaderInfo;
+
 namespace wpscene
 {
+class WPMaterial;
 struct WPUserTexture;
 }
 
 void ApplySystemUserTextures(std::vector<std::string>& textures,
                              const std::vector<wpscene::WPUserTexture>& usertextures);
+void LoadMaterialConstantShaderValues(SceneMaterial& material, const wpscene::WPMaterial& wpmat,
+                                      const WPShaderInfo& info);
 
 class WPSceneParser : public ISceneParser {
 public:

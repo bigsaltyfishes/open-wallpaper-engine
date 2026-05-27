@@ -195,6 +195,8 @@ struct DelayLinkInfo {
 
 struct ExtraInfo {
     Map<size_t, rg::TexNode*>  id_link_map {};
+    Map<size_t, rg::TexNode*>  id_base_output_link_map {};
+    Set<size_t>                ids_with_effect_graph {};
     std::vector<DelayLinkInfo> link_info {};
     rg::RenderGraph*           rgraph { nullptr };
     Scene*                     scene { nullptr };
@@ -212,7 +214,8 @@ static void AddCustomShaderGraphPass(
     i32 imgId,
     std::string camera_override,
     std::size_t submesh_index,
-    uint32_t material_slot) {
+    uint32_t material_slot,
+    bool register_base_link_output = false) {
     rgraph.addPass<vulkan::CustomShaderPass>(
         material.name,
         rg::PassNode::Type::CustomShader,
@@ -226,7 +229,8 @@ static void AddCustomShaderGraphPass(
          &extra,
          camera_override,
          submesh_index,
-         material_slot](
+         material_slot,
+         register_base_link_output](
             rg::RenderGraphBuilder& builder, vulkan::CustomShaderPass::Desc& pdesc) {
             const auto& pass = builder.workPassNode();
             const auto  resolved_output = scene.ResolveRenderTargetName(output);
@@ -281,6 +285,8 @@ static void AddCustomShaderGraphPass(
             builder.write(output_node);
             if (resolved_output == SpecTex_Default) {
                 extra.id_link_map[(usize)imgId] = output_node;
+            } else if (register_base_link_output) {
+                extra.id_base_output_link_map[(usize)imgId] = output_node;
             }
         });
 }
@@ -310,6 +316,7 @@ static void ToGraphPass(
                     cmdItor++;
                 }
                 auto& name = n.output;
+                extra.ids_with_effect_graph.insert((usize)node->ID());
                 ToGraphPass(n.sceneNode.get(), name, node->ID(), extra, node);
                 nodePos++;
             }
@@ -363,7 +370,8 @@ static void ToGraphPass(
                     imgId,
                     camera_override,
                     submesh_index,
-                    material_slot);
+                    material_slot,
+                    imgeff != nullptr);
             }
         } else {
             auto* material = mesh->MaterialForSlot(0);
@@ -380,7 +388,8 @@ static void ToGraphPass(
                     imgId,
                     camera_override,
                     0,
-                    0);
+                    0,
+                    imgeff != nullptr);
             }
         }
     }
@@ -456,6 +465,11 @@ std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
     }
 
     for (auto& info : extra.link_info) {
+        if (! exists(extra.id_link_map, info.link_id) &&
+            ! exists(extra.ids_with_effect_graph, info.link_id) &&
+            exists(extra.id_base_output_link_map, info.link_id)) {
+            extra.id_link_map[info.link_id] = extra.id_base_output_link_map.at(info.link_id);
+        }
         if (! exists(extra.id_link_map, info.link_id)) {
             LOG_ERROR("link tex %d not found", info.link_id);
             continue;

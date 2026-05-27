@@ -20,6 +20,7 @@
 #include "FinPass.hpp"
 #include "Resource.hpp"
 #include "SpecTexs.hpp"
+#include "PassCommon.hpp"
 
 #include "Core/ArrayHelper.hpp"
 
@@ -75,25 +76,6 @@ const char* WallpaperScalingModeName(wallpaper::WallpaperScalingMode mode) {
 double NormalizeScaleFactor(double scale_factor) {
     if (! std::isfinite(scale_factor) || scale_factor <= 0.0) return 1.0;
     return scale_factor;
-}
-
-VkExtent2D ResolveSceneSourceExtent(const wallpaper::Scene& scene,
-                                    const VkExtent2D&       fallback_extent) {
-    auto spec_rt = scene.renderTargets.find(std::string(wallpaper::SpecTex_Default));
-    if (spec_rt != scene.renderTargets.end()) {
-        const auto width  = static_cast<uint32_t>(std::max(1, spec_rt->second.width));
-        const auto height = static_cast<uint32_t>(std::max(1, spec_rt->second.height));
-        if (width > 1 && height > 1) return { width, height };
-    }
-
-    const auto ortho_width  = static_cast<uint32_t>(std::max(0, scene.ortho[0]));
-    const auto ortho_height = static_cast<uint32_t>(std::max(0, scene.ortho[1]));
-    if (ortho_width > 2 && ortho_height > 2) return { ortho_width, ortho_height };
-
-    return {
-        std::max(1u, fallback_extent.width),
-        std::max(1u, fallback_extent.height),
-    };
 }
 
 } // namespace
@@ -666,18 +648,7 @@ void VulkanRender::Impl::drawFrameOffscreen() {
 
 void VulkanRender::Impl::setRenderTargetSize(Scene& scene, rg::RenderGraph& rg) {
     auto&      ext           = m_device->out_extent();
-    const auto source_extent = ResolveSceneSourceExtent(scene, ext);
-    for (auto& item : scene.renderTargets) {
-        auto& rt = item.second;
-        if (rt.bind.enable && rt.bind.screen) {
-            rt.width  = std::max(1,
-                                static_cast<i32>(std::lround(
-                                    rt.bind.scale * static_cast<double>(source_extent.width))));
-            rt.height = std::max(1,
-                                 static_cast<i32>(std::lround(
-                                     rt.bind.scale * static_cast<double>(source_extent.height))));
-        }
-    }
+    const auto source_extent = ResolveScreenBoundRenderTargetSizes(scene, ext);
     for (auto& item : scene.renderTargets) {
         auto& rt = item.second;
         if (rt.bind.screen || ! rt.bind.enable) continue;

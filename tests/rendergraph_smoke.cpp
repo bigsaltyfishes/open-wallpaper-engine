@@ -1,15 +1,24 @@
 #include "RenderGraph/RenderGraph.hpp"
 #include "Scene/Scene.h"
+#include "WPSceneParser.hpp"
 #include "SpecTexs.hpp"
 #include "VulkanRender/CopyPass.hpp"
 #include "VulkanRender/CustomShaderPass.hpp"
+#include "VulkanRender/PassCommon.hpp"
 #include "VulkanRender/SceneToRenderGraph.hpp"
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <memory>
+#include <map>
 #include <string>
 #include <vector>
+
+#include "Audio/SoundManager.h"
+#include "Fs/Fs.h"
+#include "Fs/MemBinaryStream.h"
+#include "Fs/VFS.h"
 
 namespace
 {
@@ -25,6 +34,30 @@ using wallpaper::SceneRenderTarget;
 using wallpaper::SpecTex_Default;
 using wallpaper::vulkan::CopyPass;
 using wallpaper::vulkan::CustomShaderPass;
+
+class MemoryFs final : public wallpaper::fs::Fs {
+public:
+    explicit MemoryFs(std::map<std::string, std::string> files): m_files(std::move(files)) {}
+
+    bool Contains(std::string_view path) const override {
+        return m_files.contains(std::string(path));
+    }
+
+    std::shared_ptr<wallpaper::fs::IBinaryStream> Open(std::string_view path) override {
+        const auto it = m_files.find(std::string(path));
+        if (it == m_files.end()) return nullptr;
+        const auto& s = it->second;
+        return std::make_shared<wallpaper::fs::MemBinaryStream>(
+            std::vector<uint8_t>(s.begin(), s.end()));
+    }
+
+    std::shared_ptr<wallpaper::fs::IBinaryStreamW> OpenW(std::string_view) override {
+        return nullptr;
+    }
+
+private:
+    std::map<std::string, std::string> m_files;
+};
 
 struct GraphPassView {
     std::string             name;
@@ -76,12 +109,46 @@ const CustomShaderPass* findCustomPass(
     return it->custom;
 }
 
+const CustomShaderPass* findCustomPassByNodeName(
+    const std::vector<GraphPassView>& passes,
+    const std::string& name) {
+    const auto it = std::find_if(passes.begin(), passes.end(), [&name](const auto& pass) {
+        return pass.custom != nullptr && pass.custom->desc().node != nullptr &&
+            pass.custom->desc().node->Name() == name;
+    });
+    assert(it != passes.end());
+    return it->custom;
+}
+
+const GraphPassView* findCustomPassViewByNodeName(
+    const std::vector<GraphPassView>& passes,
+    const std::string& name) {
+    const auto it = std::find_if(passes.begin(), passes.end(), [&name](const auto& pass) {
+        return pass.custom != nullptr && pass.custom->desc().node != nullptr &&
+            pass.custom->desc().node->Name() == name;
+    });
+    assert(it != passes.end());
+    return &(*it);
+}
+
 size_t findPassIndex(const std::vector<GraphPassView>& passes, const std::string& name) {
     const auto it = std::find_if(passes.begin(), passes.end(), [&name](const auto& pass) {
         return pass.name == name;
     });
     assert(it != passes.end());
     return static_cast<size_t>(std::distance(passes.begin(), it));
+}
+
+const GraphPassView* findCopyPass(
+    const std::vector<GraphPassView>& passes,
+    const std::string& src,
+    const std::string& dst) {
+    const auto it = std::find_if(passes.begin(), passes.end(), [&src, &dst](const auto& pass) {
+        return pass.copy != nullptr && pass.copy->desc().src == src &&
+            pass.copy->desc().dst == dst;
+    });
+    if (it == passes.end()) return nullptr;
+    return &(*it);
 }
 
 void installDefaultTargets(Scene& scene, bool default_reuse = true) {
@@ -804,6 +871,491 @@ void postProcessCopyStepsResolveRenderTargetAliases() {
     const auto copy_index = static_cast<size_t>(std::distance(passes.begin(), copy_it));
     assert(post_index < copy_index);
 }
+
+void linkedImageCompositeTexturesResolveToSourceLayerOutput() {
+    Scene scene;
+    installDefaultTargets(scene);
+
+    auto source = makeNode("source_layer");
+    source->ID() = 159;
+    scene.sceneGraph->AppendChild(source);
+
+    auto consumer = makeNode("consumer_layer", { wallpaper::GenLinkTex(159) });
+    consumer->ID() = 160;
+    scene.sceneGraph->AppendChild(consumer);
+
+    const auto graph  = wallpaper::sceneToRenderGraph(scene);
+    const auto passes = graphPasses(*graph);
+
+    const auto* consumer_pass = findCustomPass(passes, "consumer_layer");
+    assert(consumer_pass->desc().textures.size() == 1);
+    assert(consumer_pass->desc().textures[0] == wallpaper::GenLinkTex(159));
+
+    const auto copy_it = std::find_if(passes.begin(), passes.end(), [](const auto& pass) {
+        return pass.copy != nullptr && pass.copy->desc().dst == wallpaper::GenLinkTex(159);
+    });
+    assert(copy_it != passes.end());
+}
+
+void parsedInvisibleDependencySourceResolvesLinkedRenderTexture() {
+    wallpaper::fs::VFS vfs;
+    auto files = std::map<std::string, std::string> {
+        { "/image.json", R"({"width":64,"height":32,"material":"mat.json"})" },
+        { "/mat.json",
+          R"({"passes":[{"blending":"translucent","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"genericimage","textures":["a.tex"]}]})" },
+        { "/linked.json",
+          R"({"width":64,"height":32,"material":"linked_mat.json"})" },
+        { "/linked_mat.json",
+          R"({"passes":[{"blending":"translucent","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"genericimage","textures":["_rt_imageLayerComposite_159"]}]})" },
+        { "/shaders/genericimage.vert",
+          R"(attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+varying vec2 v_TexCoord;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+  v_TexCoord = a_TexCoord;
+}
+)" },
+        { "/shaders/genericimage.frag",
+          R"(uniform sampler2D g_Texture0;
+varying vec2 v_TexCoord;
+void main() {
+  gl_FragColor = texture(g_Texture0, v_TexCoord);
+}
+)" },
+        { "/materials/a.tex.tex", "" },
+    };
+    assert(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::move(files))));
+
+    wallpaper::audio::SoundManager sound_manager;
+    wallpaper::WPSceneParser       parser;
+    const std::string              scene_json = R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0.2,0.2,0.2], "skylightcolor":[0.3,0.3,0.3],
+        "clearcolor":[0,0,0], "cameraparallax":false,
+        "cameraparallaxamount":0, "cameraparallaxdelay":0,
+        "cameraparallaxmouseinfluence":0,
+        "orthogonalprojection":{"width":640,"height":360}
+      },
+      "objects": [
+        {"id":159,"name":"dependency source","image":"image.json",
+         "origin":[0,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":false},
+        {"id":160,"name":"consumer","image":"linked.json","dependencies":[159],
+         "origin":[8,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":true}
+      ]
+    })";
+
+    auto parsed = parser.Parse("linked-invisible-dependency", scene_json, vfs, sound_manager);
+    assert(parsed != nullptr);
+    installDefaultTargets(*parsed);
+
+    const auto graph  = wallpaper::sceneToRenderGraph(*parsed);
+    const auto passes = graphPasses(*graph);
+
+    const auto* consumer_pass = findCustomPassByNodeName(passes, "consumer");
+    assert(consumer_pass->desc().textures.size() == 1);
+    assert(consumer_pass->desc().textures[0] == wallpaper::GenLinkTex(159));
+
+    const auto copy_it = std::find_if(passes.begin(), passes.end(), [](const auto& pass) {
+        return pass.copy != nullptr && pass.copy->desc().dst == wallpaper::GenLinkTex(159);
+    });
+    assert(copy_it != passes.end());
+}
+
+void parsedZeroHeightDependencyEffectUsesNonZeroRenderTargets() {
+    wallpaper::fs::VFS vfs;
+    auto files = std::map<std::string, std::string> {
+        { "/models/util/solidlayer.json",
+          R"({"material":"materials/util/solidlayer.json"})" },
+        { "/materials/util/solidlayer.json",
+          R"({"passes":[{"blending":"translucent","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"genericimage","textures":["solid.tex"]}]})" },
+        { "/effects/audio_buffer_accumulation/effect.json",
+          R"({"name":"Audio Buffer Accumulation","fbos":[{"name":"_rt_FullCompoBuffer1","scale":1},{"name":"_rt_FullCompoBuffer2","scale":1},{"name":"_rt_TinyScaledBuffer","scale":512}],"passes":[{"material":"materials/effects/accumulate.json","target":"_rt_FullCompoBuffer2","bind":[{"name":"previous","index":0},{"name":"_rt_FullCompoBuffer1","index":1}]},{"command":"copy","source":"_rt_FullCompoBuffer2","target":"_rt_FullCompoBuffer1"},{"material":"materials/effects/combine.json","bind":[{"name":"_rt_FullCompoBuffer2","index":0}]}]})" },
+        { "/materials/effects/accumulate.json",
+          R"({"passes":[{"blending":"translucent","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"genericimage","textures":[null,null]}]})" },
+        { "/materials/effects/combine.json",
+          R"({"passes":[{"blending":"translucent","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"genericimage","textures":[null]}]})" },
+        { "/linked.json",
+          R"({"width":64,"height":32,"material":"linked_mat.json"})" },
+        { "/linked_mat.json",
+          R"({"passes":[{"blending":"translucent","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"genericimage","textures":["_rt_imageLayerComposite_915"]}]})" },
+        { "/shaders/genericimage.vert",
+          R"(attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+varying vec2 v_TexCoord;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+  v_TexCoord = a_TexCoord;
+}
+)" },
+        { "/shaders/genericimage.frag",
+          R"(uniform sampler2D g_Texture0;
+varying vec2 v_TexCoord;
+void main() {
+  gl_FragColor = texture(g_Texture0, v_TexCoord);
+}
+)" },
+        { "/materials/solid.tex.tex", "" },
+    };
+    assert(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::move(files))));
+
+    wallpaper::audio::SoundManager sound_manager;
+    wallpaper::WPSceneParser       parser;
+    const std::string              scene_json = R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0.2,0.2,0.2], "skylightcolor":[0.3,0.3,0.3],
+        "clearcolor":[0,0,0], "cameraparallax":false,
+        "cameraparallaxamount":0, "cameraparallaxdelay":0,
+        "cameraparallaxmouseinfluence":0,
+        "orthogonalprojection":{"width":640,"height":360}
+      },
+      "objects": [
+        {"id":915,"name":"zero height dependency source","image":"models/util/solidlayer.json",
+         "origin":[0,0,0],"scale":[0,0,0],"size":[64,0],"visible":false,
+         "effects":[{"file":"effects/audio_buffer_accumulation/effect.json","id":917,"visible":true}]},
+        {"id":916,"name":"consumer","image":"linked.json","dependencies":[915],
+         "origin":[8,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":true}
+      ]
+    })";
+
+    auto parsed = parser.Parse("zero-height-dependency-effect", scene_json, vfs, sound_manager);
+    assert(parsed != nullptr);
+    installDefaultTargets(*parsed);
+
+    const auto graph  = wallpaper::sceneToRenderGraph(*parsed);
+    const auto passes = graphPasses(*graph);
+
+    const auto* consumer_pass = findCustomPassByNodeName(passes, "consumer");
+    assert(consumer_pass->desc().textures.size() == 1);
+    assert(consumer_pass->desc().textures[0] == wallpaper::GenLinkTex(915));
+
+    const auto copy_it = std::find_if(passes.begin(), passes.end(), [](const auto& pass) {
+        return pass.copy != nullptr && pass.copy->desc().dst == wallpaper::GenLinkTex(915);
+    });
+    assert(copy_it != passes.end());
+
+    const std::string full_compo_prefix =
+        std::string(wallpaper::WE_FULL_COMPO_BUFFER_PREFIX);
+    const std::string effect_pingpong_prefix =
+        std::string(wallpaper::WE_EFFECT_PPONG_PREFIX);
+    for (const auto& [name, target] : parsed->renderTargets) {
+        const bool relevant =
+            name.rfind(full_compo_prefix, 0) == 0 || name.rfind(effect_pingpong_prefix, 0) == 0 ||
+            name.find("_rt_TinyScaledBuffer") != std::string::npos;
+        if (!relevant) continue;
+        assert(target.width * target.height > 4);
+        assert(target.width >= 4);
+        assert(target.height >= 4);
+        if (name.find("_rt_TinyScaledBuffer") == std::string::npos) {
+            assert(target.width == 64);
+            assert(target.height == 360);
+        }
+    }
+}
+
+void linkedEffectSourceFallsBackToBaseTargetWhenEffectsFailToLoad() {
+    wallpaper::fs::VFS vfs;
+    auto files = std::map<std::string, std::string> {
+        { "/source.json", R"({"width":64,"height":32,"material":"mat.json"})" },
+        { "/mat.json",
+          R"({"passes":[{"blending":"translucent","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"genericimage","textures":["a.tex"]}]})" },
+        { "/effects/failing/effect.json",
+          R"({"name":"failing effect","passes":[{"material":"materials/missing.json"}]})" },
+        { "/linked.json",
+          R"({"width":64,"height":32,"material":"linked_mat.json"})" },
+        { "/linked_mat.json",
+          R"({"passes":[{"blending":"translucent","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"genericimage","textures":["_rt_imageLayerComposite_915"]}]})" },
+        { "/shaders/genericimage.vert",
+          R"(attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+varying vec2 v_TexCoord;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+  v_TexCoord = a_TexCoord;
+}
+)" },
+        { "/shaders/genericimage.frag",
+          R"(uniform sampler2D g_Texture0;
+varying vec2 v_TexCoord;
+void main() {
+  gl_FragColor = texture(g_Texture0, v_TexCoord);
+}
+)" },
+        { "/materials/a.tex.tex", "" },
+    };
+    assert(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::move(files))));
+
+    wallpaper::audio::SoundManager sound_manager;
+    wallpaper::WPSceneParser       parser;
+    const std::string              scene_json = R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0.2,0.2,0.2], "skylightcolor":[0.3,0.3,0.3],
+        "clearcolor":[0,0,0], "cameraparallax":false,
+        "cameraparallaxamount":0, "cameraparallaxdelay":0,
+        "cameraparallaxmouseinfluence":0,
+        "orthogonalprojection":{"width":640,"height":360}
+      },
+      "objects": [
+        {"id":915,"name":"dependency source with failed effect","image":"source.json",
+         "origin":[0,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":false,
+         "effects":[{"file":"effects/failing/effect.json","id":917,"visible":true}]},
+        {"id":916,"name":"consumer","image":"linked.json","dependencies":[915],
+         "origin":[8,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":true}
+      ]
+    })";
+
+    auto parsed = parser.Parse("failed-effect-linked-source", scene_json, vfs, sound_manager);
+    assert(parsed != nullptr);
+    installDefaultTargets(*parsed);
+
+    const auto graph  = wallpaper::sceneToRenderGraph(*parsed);
+    const auto passes = graphPasses(*graph);
+
+    const auto* consumer_pass = findCustomPassByNodeName(passes, "consumer");
+    assert(consumer_pass->desc().textures.size() == 1);
+    assert(consumer_pass->desc().textures[0] == wallpaper::GenLinkTex(915));
+
+    const auto* source_view = findCustomPassViewByNodeName(passes, "dependency source with failed effect");
+    const auto* source_pass = source_view->custom;
+    assert(source_pass->desc().output.rfind(wallpaper::WE_EFFECT_PPONG_PREFIX_A, 0) == 0);
+    const auto* link_copy = findCopyPass(passes, source_pass->desc().output, wallpaper::GenLinkTex(915));
+    assert(link_copy != nullptr);
+
+    const auto source_index =
+        static_cast<size_t>(std::distance(passes.data(), source_view));
+    const auto copy_index =
+        static_cast<size_t>(std::distance(passes.data(), link_copy));
+    const auto* consumer_view = findCustomPassViewByNodeName(passes, "consumer");
+    const auto consumer_index =
+        static_cast<size_t>(std::distance(passes.data(), consumer_view));
+    assert(source_index < copy_index);
+    assert(copy_index < consumer_index);
+}
+
+void linkedEffectSourceDoesNotUseIntermediateTargetAsFallback() {
+    Scene scene;
+    installDefaultTargets(scene);
+    scene.renderTargets["_rt_source_base"] = SceneRenderTarget {
+        .width      = 64,
+        .height     = 64,
+        .allowReuse = true,
+    };
+    scene.renderTargets["_rt_intermediate_effect"] = SceneRenderTarget {
+        .width      = 64,
+        .height     = 64,
+        .allowReuse = true,
+    };
+
+    auto source = makeNode("source_base");
+    source->ID() = 915;
+    scene.sceneGraph->AppendChild(source);
+
+    auto effect_node = makeNode("source_intermediate_effect", { "_rt_source_base" });
+    auto effect      = std::make_shared<SceneImageEffect>();
+    effect->nodes.push_back(SceneImageEffectNode {
+        .output    = "_rt_intermediate_effect",
+        .sceneNode = effect_node,
+    });
+
+    auto layer = std::make_shared<SceneImageEffectLayer>(
+        source.get(),
+        64.0f,
+        64.0f,
+        "_rt_source_base",
+        "_rt_unused_pingpong");
+    layer->AddEffect(effect);
+
+    auto camera = std::make_shared<SceneCamera>(64, 64, 0.01f, 100.0f);
+    camera->AttatchImgEffect(layer);
+    source->SetCamera("source_effect_camera");
+    scene.cameras["source_effect_camera"] = camera;
+
+    auto consumer = makeNode("consumer_of_base", { wallpaper::GenLinkTex(915) });
+    consumer->ID() = 916;
+    scene.sceneGraph->AppendChild(consumer);
+
+    const auto graph  = wallpaper::sceneToRenderGraph(scene);
+    const auto passes = graphPasses(*graph);
+
+    const auto* consumer_pass = findCustomPass(passes, "consumer_of_base");
+    assert(consumer_pass->desc().textures.size() == 1);
+    assert(consumer_pass->desc().textures[0].empty());
+    assert(findCopyPass(passes, "_rt_source_base", wallpaper::GenLinkTex(915)) == nullptr);
+    assert(findCopyPass(passes, "_rt_intermediate_effect", wallpaper::GenLinkTex(915)) == nullptr);
+}
+
+void parsedFullscreenScaledFbosStayValidAfterScreenBindSizing() {
+    wallpaper::fs::VFS vfs;
+    auto files = std::map<std::string, std::string> {
+        { "/fullscreen.json",
+          R"({"fullscreen":true,"material":"materials/fullscreen.json"})" },
+        { "/materials/fullscreen.json",
+          R"({"passes":[{"blending":"translucent","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"genericimage","textures":["solid.tex"]}]})" },
+        { "/effects/fullscreen_scaled/effect.json",
+          R"({"name":"Fullscreen Scaled FBO","fbos":[{"name":"_rt_TinyFullscreenBuffer","scale":512}],"passes":[{"material":"materials/effects/copy.json","target":"_rt_TinyFullscreenBuffer","bind":[{"name":"previous","index":0}]}]})" },
+        { "/materials/effects/copy.json",
+          R"({"passes":[{"blending":"translucent","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"genericimage","textures":[null]}]})" },
+        { "/shaders/genericimage.vert",
+          R"(attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+varying vec2 v_TexCoord;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+  v_TexCoord = a_TexCoord;
+}
+)" },
+        { "/shaders/genericimage.frag",
+          R"(uniform sampler2D g_Texture0;
+varying vec2 v_TexCoord;
+void main() {
+  gl_FragColor = texture(g_Texture0, v_TexCoord);
+}
+)" },
+        { "/materials/solid.tex.tex", "" },
+    };
+    assert(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::move(files))));
+
+    wallpaper::audio::SoundManager sound_manager;
+    wallpaper::WPSceneParser       parser;
+    const std::string              scene_json = R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0.2,0.2,0.2], "skylightcolor":[0.3,0.3,0.3],
+        "clearcolor":[0,0,0], "cameraparallax":false,
+        "cameraparallaxamount":0, "cameraparallaxdelay":0,
+        "cameraparallaxmouseinfluence":0,
+        "zoom":4,
+        "orthogonalprojection":{"width":640,"height":360}
+      },
+      "objects": [
+        {"id":930,"name":"fullscreen tiny fbo","image":"fullscreen.json",
+         "origin":[0,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":true,
+         "effects":[{"file":"effects/fullscreen_scaled/effect.json","id":931,"visible":true}]}
+      ]
+    })";
+
+    auto parsed = parser.Parse("fullscreen-scaled-fbo", scene_json, vfs, sound_manager);
+    assert(parsed != nullptr);
+    const auto tiny_it = std::find_if(
+        parsed->renderTargets.begin(),
+        parsed->renderTargets.end(),
+        [](const auto& item) {
+            return item.first.find("_rt_TinyFullscreenBuffer") != std::string::npos;
+        });
+    assert(tiny_it != parsed->renderTargets.end());
+
+    const auto& target = tiny_it->second;
+    assert(target.bind.enable);
+    assert(target.bind.screen);
+    const auto& default_target = parsed->renderTargets.at(std::string(SpecTex_Default));
+    assert(default_target.width == 160);
+    assert(default_target.height == 90);
+    assert(std::abs(target.bind.scale - (1.0 / 512.0)) < 0.000001);
+
+    auto runtime_target = target;
+    Scene runtime_scene;
+    runtime_scene.renderTargets[std::string(SpecTex_Default)] = default_target;
+    runtime_scene.renderTargets["fullscreen_runtime_target"] = runtime_target;
+    wallpaper::vulkan::ResolveScreenBoundRenderTargetSizes(
+        runtime_scene,
+        VkExtent2D {
+            .width  = 999,
+            .height = 999,
+        });
+    runtime_target = runtime_scene.renderTargets.at("fullscreen_runtime_target");
+    assert(runtime_target.width >= 4);
+    assert(runtime_target.height >= 4);
+    assert(runtime_target.width * runtime_target.height > 4);
+}
+
+void screenBoundSizingHonorsTinyAuthoredDefaultExtent() {
+    Scene scene;
+    scene.ortho[0] = 640;
+    scene.ortho[1] = 360;
+    scene.renderTargets[std::string(SpecTex_Default)] = SceneRenderTarget {
+        .width  = 1,
+        .height = 90,
+        .bind   = { .enable = true, .screen = true },
+    };
+    scene.renderTargets["screen_bound_tiny"] = SceneRenderTarget {
+        .width = 2,
+        .height = 2,
+        .bind = {
+            .enable = true,
+            .screen = true,
+            .scale = 1.0,
+        },
+    };
+
+    const auto source_extent = wallpaper::vulkan::ResolveScreenBoundRenderTargetSizes(
+        scene,
+        VkExtent2D {
+            .width  = 999,
+            .height = 999,
+        });
+
+    assert(source_extent.width == 1);
+    assert(source_extent.height == 90);
+    const auto& target = scene.renderTargets.at("screen_bound_tiny");
+    assert(target.width == 4);
+    assert(target.height == 90);
+
+    const auto second_source_extent = wallpaper::vulkan::ResolveScreenBoundRenderTargetSizes(
+        scene,
+        VkExtent2D {
+            .width  = 999,
+            .height = 999,
+        });
+    assert(second_source_extent.width == 1);
+    assert(second_source_extent.height == 90);
+    const auto& second_target = scene.renderTargets.at("screen_bound_tiny");
+    assert(second_target.width == 4);
+    assert(second_target.height == 90);
+    const auto& default_target = scene.renderTargets.at(std::string(SpecTex_Default));
+    assert(default_target.width == 1);
+    assert(default_target.height == 90);
+}
+
+void textureDescriptorReadinessRejectsMissingImages() {
+    wallpaper::vulkan::CustomShaderPass::Desc desc {};
+    desc.textures = { "_rt_imageLayerComposite_159_a" };
+    desc.vk_textures.resize(1);
+    desc.vk_texture_bindings.push_back({
+        .image_binding = 1,
+        .image_descriptor_type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .sampler_binding = -1,
+    });
+
+    wallpaper::vulkan::CustomShaderPass pass(desc);
+    pass.desc().vk_textures = desc.vk_textures;
+    pass.desc().vk_texture_bindings = desc.vk_texture_bindings;
+    assert(! pass.textureDescriptorsReady());
+}
+
+void textureDescriptorReadinessRejectsMissingSeparateSampler() {
+    wallpaper::vulkan::CustomShaderPass::Desc desc {};
+    desc.textures = { "image.png" };
+    desc.vk_textures.resize(1);
+    wallpaper::vulkan::ImageParameters image {};
+    image.handle  = reinterpret_cast<VkImage>(1);
+    image.view    = reinterpret_cast<VkImageView>(1);
+    image.sampler = VK_NULL_HANDLE;
+    image.layout  = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    desc.vk_textures[0].slots.push_back(image);
+    desc.vk_texture_bindings.push_back({
+        .image_binding = 1,
+        .image_descriptor_type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+        .sampler_binding = 2,
+    });
+
+    wallpaper::vulkan::CustomShaderPass pass(desc);
+    pass.desc().vk_textures = desc.vk_textures;
+    pass.desc().vk_texture_bindings = desc.vk_texture_bindings;
+    assert(! pass.textureDescriptorsReady());
+}
 } // namespace
 
 int main() {
@@ -824,5 +1376,14 @@ int main() {
     postProcessesAppendPassesAndCopiesAfterSceneGraph();
     nullPostProcessPassNodesAreSkipped();
     postProcessCopyStepsResolveRenderTargetAliases();
+    linkedImageCompositeTexturesResolveToSourceLayerOutput();
+    parsedInvisibleDependencySourceResolvesLinkedRenderTexture();
+    parsedZeroHeightDependencyEffectUsesNonZeroRenderTargets();
+    linkedEffectSourceFallsBackToBaseTargetWhenEffectsFailToLoad();
+    linkedEffectSourceDoesNotUseIntermediateTargetAsFallback();
+    parsedFullscreenScaledFbosStayValidAfterScreenBindSizing();
+    screenBoundSizingHonorsTinyAuthoredDefaultExtent();
+    textureDescriptorReadinessRejectsMissingImages();
+    textureDescriptorReadinessRejectsMissingSeparateSampler();
     return 0;
 }

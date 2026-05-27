@@ -209,9 +209,19 @@ VkResult StagingBuffer::mapStageBuf() { return m_stage_buf.handle.MapMemory(&m_s
 bool StagingBuffer::writeToBuf(const StagingBufferRef& ref, std::span<uint8_t> data,
                                size_t offset) {
     CHECK_REF(ref, return false);
+    if (offset > ref.size) {
+        LOG_ERROR("staging buffer write offset %zu exceeds ref size %zu",
+                  offset,
+                  static_cast<size_t>(ref.size));
+        return false;
+    }
 
     if (m_stage_raw == nullptr) {
-        mapStageBuf();
+        const auto result = mapStageBuf();
+        if (result != VK_SUCCESS || m_stage_raw == nullptr) {
+            LOG_ERROR("map staging buffer for write failed: %d", result);
+            return false;
+        }
     }
     const VkDeviceSize size = std::min<VkDeviceSize>(ref.size - static_cast<VkDeviceSize>(offset),
                                                      static_cast<VkDeviceSize>(data.size()));
@@ -224,9 +234,19 @@ bool StagingBuffer::writeToBuf(const StagingBufferRef& ref, std::span<uint8_t> d
 
 bool StagingBuffer::fillBuf(const StagingBufferRef& ref, size_t offset, size_t size, uint8_t c) {
     CHECK_REF(ref, return false);
+    if (offset > ref.size) {
+        LOG_ERROR("staging buffer fill offset %zu exceeds ref size %zu",
+                  offset,
+                  static_cast<size_t>(ref.size));
+        return false;
+    }
 
     if (m_stage_raw == nullptr) {
-        mapStageBuf();
+        const auto result = mapStageBuf();
+        if (result != VK_SUCCESS || m_stage_raw == nullptr) {
+            LOG_ERROR("map staging buffer for fill failed: %d", result);
+            return false;
+        }
     }
     const VkDeviceSize size_ = std::min<VkDeviceSize>(ref.size - static_cast<VkDeviceSize>(offset),
                                                       static_cast<VkDeviceSize>(size));
