@@ -1,5 +1,7 @@
 #include "WPScene.h"
 
+#include <sstream>
+
 using namespace wallpaper::wpscene;
 
 bool Orthogonalprojection::FromJson(const nlohmann::json& json) {
@@ -30,12 +32,47 @@ namespace
 bool WantsVersion(uint16_t pkg_version, uint16_t gate) {
     return pkg_version == WPSceneGeneral::kSceneVersionUnknown || pkg_version >= gate;
 }
+
+const nlohmann::json& UnwrapSettingValue(const nlohmann::json& value) {
+    if (value.is_object() && value.contains("value")) return value.at("value");
+    return value;
+}
+
+bool HasDynamicSetting(const nlohmann::json& value) {
+    return value.is_object() && (value.contains("script") || value.contains("user"));
+}
+
+void ReadVec3Setting(const nlohmann::json& json, const char* key, std::array<float, 3>* destination,
+                     nlohmann::json* setting, bool* dynamic) {
+    if (! json.contains(key) || destination == nullptr || setting == nullptr || dynamic == nullptr)
+        return;
+
+    *setting           = json.at(key);
+    *dynamic           = HasDynamicSetting(*setting);
+    const auto& source = UnwrapSettingValue(*setting);
+
+    if (source.is_array() && source.size() >= 3) {
+        (*destination)[0] = source.at(0).get<float>();
+        (*destination)[1] = source.at(1).get<float>();
+        (*destination)[2] = source.at(2).get<float>();
+        return;
+    }
+    if (source.is_number()) {
+        const float scalar = source.get<float>();
+        *destination       = { scalar, scalar, scalar };
+        return;
+    }
+    if (source.is_string()) {
+        std::istringstream stream(source.get<std::string>());
+        stream >> (*destination)[0] >> (*destination)[1] >> (*destination)[2];
+    }
+}
 }
 
 bool WPSceneGeneral::FromJson(const nlohmann::json& json, uint16_t pkg_version) {
     GET_JSON_NAME_VALUE(json, "ambientcolor", ambientcolor);
     GET_JSON_NAME_VALUE(json, "skylightcolor", skylightcolor);
-	GET_JSON_NAME_VALUE(json, "clearcolor", clearcolor);
+    ReadVec3Setting(json, "clearcolor", &clearcolor, &clearcolor_setting, &dynamic_clearcolor);
 	GET_JSON_NAME_VALUE_NOWARN(json, "clearenabled", clearenabled);
 	GET_JSON_NAME_VALUE(json, "cameraparallax", cameraparallax);
 	GET_JSON_NAME_VALUE(json, "cameraparallaxamount", cameraparallaxamount);

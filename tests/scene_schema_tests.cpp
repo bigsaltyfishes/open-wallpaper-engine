@@ -833,6 +833,44 @@ TEST(SceneSchema, ImageAbsorbsDependenciesInstanceAnimationLayersAndBindings) {
     EXPECT_TRUE(image.field_bindings.contains("visible"));
 }
 
+TEST(SceneSchema, MaterialConstantShaderValueUserBindingsSurvivePassParsingAndMerge) {
+    const auto material_json = nlohmann::json::parse(R"({
+      "passes": [{
+        "blending": "translucent",
+        "cullmode": "nocull",
+        "depthtest": "disabled",
+        "depthwrite": "disabled",
+        "shader": "genericimage",
+        "textures": ["a.tex"],
+        "constantshadervalues": {
+          "Opacity": { "user": "opacity_user", "value": [0.25] },
+          "Tint": { "user": "tint_user", "value": [0.1, 0.2, 0.3] }
+        }
+      }]
+    })");
+    wpscene::WPMaterial material;
+    ASSERT_TRUE(material.FromJson(material_json));
+
+    ASSERT_TRUE(material.constantshadervalues.contains("Opacity"));
+    EXPECT_EQ(material.constantshadervalues.at("Opacity").user, "opacity_user");
+    ASSERT_EQ(material.constantshadervalues.at("Opacity").value.size(), 1u);
+    EXPECT_FLOAT_EQ(material.constantshadervalues.at("Opacity").value[0], 0.25f);
+
+    wpscene::WPMaterialPass pass;
+    ASSERT_TRUE(pass.FromJson(nlohmann::json::parse(R"({
+      "constantshadervalues": {
+        "Opacity": { "user": "override_opacity", "value": [0.75] }
+      }
+    })")));
+
+    material.MergePass(pass);
+
+    ASSERT_TRUE(material.constantshadervalues.contains("Opacity"));
+    EXPECT_EQ(material.constantshadervalues.at("Opacity").user, "override_opacity");
+    ASSERT_EQ(material.constantshadervalues.at("Opacity").value.size(), 1u);
+    EXPECT_FLOAT_EQ(material.constantshadervalues.at("Opacity").value[0], 0.75f);
+}
+
 TEST(SceneSchema, ParticleAbsorbsInstanceOverrideExtrasAndNestedChildren) {
     fs::VFS vfs;
     MountSceneFiles(vfs);
@@ -1944,4 +1982,46 @@ TEST(SceneSchema, RuntimeProjectPropertyResolutionStillWorks) {
     auto* value = runtime->FindPropertyValue("speed");
     ASSERT_NE(value, nullptr);
     EXPECT_FLOAT_EQ(value->getFloat(), 2.5f);
+}
+
+TEST(SceneSchema, SchemecolorUserPropertyUpdatesSceneClearColor) {
+    fs::VFS vfs;
+    EXPECT_TRUE(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::map<std::string, std::string> {})));
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    ProjectProperties   properties {
+          { "background_color", RuntimeScalarValue::String("0.25 0.5 0.75") },
+    };
+    SceneParseRequest request {
+        .scene_id           = "schemecolor-clearcolor",
+        .project_properties = &properties,
+    };
+    const auto scene_json = R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0.2,0.2,0.2], "skylightcolor":[0.3,0.3,0.3],
+        "clearcolor":{"user":"background_color","value":"0.1 0.2 0.3"},
+        "cameraparallax":false,
+        "cameraparallaxamount":0, "cameraparallaxdelay":0,
+        "cameraparallaxmouseinfluence":0,
+        "orthogonalprojection":{"width":640,"height":360}
+      },
+      "objects": []
+    })";
+
+    auto parsed = parser.Parse(request, scene_json, vfs, sound_manager);
+
+    ASSERT_NE(parsed, nullptr);
+    ASSERT_NE(parsed->runtime, nullptr);
+    EXPECT_FLOAT_EQ(parsed->clearColor[0], 0.25f);
+    EXPECT_FLOAT_EQ(parsed->clearColor[1], 0.5f);
+    EXPECT_FLOAT_EQ(parsed->clearColor[2], 0.75f);
+
+    parsed->runtime->ApplyProjectPropertyOverride({
+        { "background_color", RuntimeScalarValue::String("0.5 0.25 0.125") },
+    });
+
+    EXPECT_FLOAT_EQ(parsed->clearColor[0], 0.5f);
+    EXPECT_FLOAT_EQ(parsed->clearColor[1], 0.25f);
+    EXPECT_FLOAT_EQ(parsed->clearColor[2], 0.125f);
 }

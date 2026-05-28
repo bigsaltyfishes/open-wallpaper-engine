@@ -908,6 +908,31 @@ void SceneRuntimeContext::RegisterMaterialConstant(SceneMaterial* material, std:
     });
 }
 
+void SceneRuntimeContext::RegisterSceneClearColor(std::unique_ptr<DynamicValue> value) {
+    if (m_scene == nullptr || value == nullptr) return;
+
+    RegisterDynamicValueListener(std::move(value), [this](const DynamicValue& color) {
+        if (m_scene == nullptr) return;
+        const auto vec = color.getVec3();
+        m_scene->clearColor = { vec.x(), vec.y(), vec.z() };
+    });
+}
+
+void SceneRuntimeContext::RegisterDynamicValueListener(
+    std::unique_ptr<DynamicValue> value,
+    std::function<void(const DynamicValue&)> callback) {
+    if (value == nullptr || ! callback) return;
+
+    callback(*value);
+    auto* raw        = value.get();
+    auto  deregister = raw->listen(std::move(callback));
+    m_owned_values.push_back(std::move(value));
+    m_dynamic_value_listeners.push_back(DynamicValueListenerBinding {
+        .value      = raw,
+        .deregister = std::move(deregister),
+    });
+}
+
 void SceneRuntimeContext::RegisterNodeEffectFinal(std::string name, SceneNode* node,
                                                   SceneImageEffectLayer* layer) {
     if (node == nullptr || layer == nullptr) return;

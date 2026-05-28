@@ -1858,6 +1858,10 @@ void InitContext(ParseContext& context, fs::VFS& vfs, wpscene::WPScene& sc) {
         };
         scene.runtime = CreateSceneRuntimeContext(std::move(bootstrap));
         scene.runtime->AttachScene(&scene);
+        if (sc.general.dynamic_clearcolor) {
+            scene.runtime->RegisterSceneClearColor(ResolveVec3Setting(
+                *scene.runtime, sc.general.clearcolor_setting, {}, Vec3SettingSemantic::Generic));
+        }
     }
     context.ortho_w = scene.ortho[0];
     context.ortho_h = scene.ortho[1];

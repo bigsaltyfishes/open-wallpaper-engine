@@ -968,8 +968,20 @@ void AppendCommonHostBootstrap(std::ostringstream& wrapper) {
         << "    log: __consoleNoop,\n"
         << "    error: __consoleNoop,\n"
         << "    warn: __consoleNoop,\n"
-        << "    info: __consoleNoop\n"
+        << "    info: __consoleNoop,\n"
+        << "    debug: __consoleNoop,\n"
+        << "    trace: __consoleNoop,\n"
+        << "    dir: __consoleNoop,\n"
+        << "    assert: __consoleNoop,\n"
+        << "    group: __consoleNoop,\n"
+        << "    groupCollapsed: __consoleNoop,\n"
+        << "    groupEnd: __consoleNoop\n"
         << "  };\n"
+        << "  ['log','error','warn','info','debug','trace','dir','assert','group',"
+           "'groupCollapsed','groupEnd'].forEach(function(name) {\n"
+        << "    if (typeof globalThis.console[name] !== 'function') "
+           "globalThis.console[name] = __consoleNoop;\n"
+        << "  });\n"
         << "  globalThis.WEMath = globalThis.WEMath || {\n"
         << "    mix: function(x, y, a) { return x * (1 - a) + y * a; },\n"
         << "    lerp: function(x, y, a) { return x * (1 - a) + y * a; },\n"
@@ -1037,6 +1049,7 @@ void AppendCommonHostBootstrap(std::ostringstream& wrapper) {
         << "    };\n"
         << "  }\n"
         << "  globalThis.isRunningInEditor = false;\n"
+        << "  engine.isScreensaver = engine.isScreensaver || function() { return false; };\n"
         << "  globalThis.editorInfo = [];\n"
         << "  globalThis.debugMode = false;\n"
         << "  globalThis.logInterrupts = false;\n"
@@ -1047,6 +1060,14 @@ void AppendCommonHostBootstrap(std::ostringstream& wrapper) {
         << "  globalThis.input = globalThis.input || {};\n"
         << "  globalThis.input.cursorPosition = globalThis.__cursorPosition;\n"
         << "  globalThis.input.cursorWorldPosition = globalThis.__cursorWorldPosition;\n"
+        << "  globalThis.input.cursorLocalPosition = globalThis.input.cursorLocalPosition || "
+           "globalThis.__cursorWorldPosition;\n"
+        << "  globalThis.input.cursorScreenPosition = globalThis.input.cursorScreenPosition || "
+           "globalThis.__cursorWorldPosition;\n"
+        << "  globalThis.input.mouseButtonsDown = globalThis.__mouseButtonsDown || 0;\n"
+        << "  globalThis.input.mouseButtonsPressed = globalThis.__mouseButtonsPressed || 0;\n"
+        << "  globalThis.input.mouseButtonsReleased = globalThis.__mouseButtonsReleased || 0;\n"
+        << "  globalThis.input.inWindow = !!globalThis.__cursorInWindow;\n"
         << "  globalThis.__timeouts = globalThis.__timeouts || [];\n"
         << "  globalThis.__timeoutSeq = globalThis.__timeoutSeq || 1;\n"
         << "  engine.setTimeout = function(fn, delayMs) {\n"
@@ -1511,6 +1532,30 @@ void UpdateEngineObject(JSContext* context, JSValue global_object,
                               input_object,
                               "cursorWorldPosition",
                               CreateCursorWorldPositionObject(context, host_context));
+            JS_SetPropertyStr(context,
+                              input_object,
+                              "cursorLocalPosition",
+                              CreateCursorWorldPositionObject(context, host_context));
+            JS_SetPropertyStr(context,
+                              input_object,
+                              "cursorScreenPosition",
+                              CreateCursorWorldPositionObject(context, host_context));
+            JS_SetPropertyStr(context,
+                              input_object,
+                              "mouseButtonsDown",
+                              JS_NewUint32(context, host_context.mouse_buttons_down));
+            JS_SetPropertyStr(context,
+                              input_object,
+                              "mouseButtonsPressed",
+                              JS_NewUint32(context, host_context.mouse_buttons_pressed));
+            JS_SetPropertyStr(context,
+                              input_object,
+                              "mouseButtonsReleased",
+                              JS_NewUint32(context, host_context.mouse_buttons_released));
+            JS_SetPropertyStr(context,
+                              input_object,
+                              "inWindow",
+                              JS_NewBool(context, host_context.cursor_in_window));
         }
     }
     JS_FreeValue(context, input_object);
@@ -1583,6 +1628,22 @@ void UpdateEngineObject(JSContext* context, JSValue global_object,
         JSValue canvas_size = CreateCanvasSizeObject(context, host_context);
         JS_SetPropertyStr(context, global_object, "canvasSize", JS_DupValue(context, canvas_size));
         JS_SetPropertyStr(context, global_object, "__canvasSize", canvas_size);
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__mouseButtonsDown",
+                          JS_NewUint32(context, host_context.mouse_buttons_down));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__mouseButtonsPressed",
+                          JS_NewUint32(context, host_context.mouse_buttons_pressed));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__mouseButtonsReleased",
+                          JS_NewUint32(context, host_context.mouse_buttons_released));
+        JS_SetPropertyStr(context,
+                          global_object,
+                          "__cursorInWindow",
+                          JS_NewBool(context, host_context.cursor_in_window));
 
         cache_state.last_host_context     = host_context;
         cache_state.has_last_host_context = true;

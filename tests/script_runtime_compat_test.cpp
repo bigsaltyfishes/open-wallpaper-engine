@@ -174,6 +174,52 @@ export function update(value) { return fired * 10 + canceled; }
     EXPECT_FLOAT_EQ(later->getFloat(), 10.0f);
 }
 
+TEST(ScriptRuntimeCompat, UpstreamConsoleInputAndEngineCompatibilityStubsAreCallable) {
+    ScriptEngine      engine;
+    ScriptHostContext host {};
+    host.canvas_size                = Eigen::Vector2f(1920.0f, 1080.0f);
+    host.cursor_normalized_position = Eigen::Vector2f(0.25f, 0.75f);
+    host.cursor_world_position      = Eigen::Vector3f(480.0f, 270.0f, 0.0f);
+    host.cursor_in_window           = true;
+    host.mouse_buttons_down         = 3u;
+    host.mouse_buttons_pressed      = 1u;
+    host.mouse_buttons_released     = 2u;
+
+    auto program = engine.CreatePropertyScriptProgram(
+        nullptr,
+        R"JS(
+console.debug('debug');
+console.trace('trace');
+console.dir({ value: 1 });
+console.assert(false, 'assertion text is ignored by the no-op shim');
+console.group('group');
+console.groupCollapsed('collapsed');
+console.groupEnd();
+
+export function update(value) {
+  var ok = 0;
+  if (typeof engine.isRunningInEditor === 'function' && engine.isRunningInEditor() === false) ok += 1;
+  if (typeof engine.isScreensaver === 'function' && engine.isScreensaver() === false) ok += 1;
+  if (input.cursorPosition.x === 0.25 && input.cursorPosition.y === 0.75) ok += 1;
+  if (input.cursorWorldPosition.x === 480 && input.cursorWorldPosition.y === 270) ok += 1;
+  if (input.cursorLocalPosition && input.cursorLocalPosition.x === 480) ok += 1;
+  if (input.cursorScreenPosition && input.cursorScreenPosition.y === 270) ok += 1;
+  if (input.mouseButtonsDown === 3 && input.mouseButtonsPressed === 1 && input.mouseButtonsReleased === 2) ok += 1;
+  if (input.inWindow === true) ok += 1;
+  return ok;
+}
+)JS",
+        "",
+        {},
+        DynamicValue(0.0f),
+        host);
+    ASSERT_NE(program, nullptr);
+
+    const auto result = program->Evaluate(host, DynamicValue(0.0f));
+    ASSERT_NE(result, nullptr);
+    EXPECT_FLOAT_EQ(result->getFloat(), 8.0f);
+}
+
 TEST(ScriptRuntimeCompat, ThrowingOneShotTimeoutDoesNotFireAgainOrBlockLaterTimers) {
     auto runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {});
     ASSERT_NE(runtime, nullptr);
@@ -369,6 +415,46 @@ function update() {
         EXPECT_FLOAT_EQ(constant->second[2], 0.75f);
     }
     EXPECT_EQ(runtime->scriptErrorCount(), 0u);
+}
+
+TEST(ScriptRuntimeCompat, MaterialConstantUserBindingUpdatesThroughRuntimeProperties) {
+    auto runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {
+        .project_properties = {
+            { "tint", RuntimeScalarValue::String("0.25 0.5 0.75") },
+        },
+    });
+    ASSERT_NE(runtime, nullptr);
+
+    SceneMaterial material;
+    runtime->RegisterMaterialConstant(
+        &material,
+        "g_Tint",
+        ResolveVec3Setting(
+            *runtime,
+            nlohmann::json {
+                { "user", "tint" },
+                { "value", { 1.0f, 1.0f, 1.0f } },
+            }));
+
+    runtime->Tick(1.0 / 60.0);
+    auto constant = material.customShader.constValues.find("g_Tint");
+    ASSERT_NE(constant, material.customShader.constValues.end());
+    ASSERT_EQ(constant->second.size(), 3u);
+    EXPECT_FLOAT_EQ(constant->second[0], 0.25f);
+    EXPECT_FLOAT_EQ(constant->second[1], 0.5f);
+    EXPECT_FLOAT_EQ(constant->second[2], 0.75f);
+
+    runtime->ApplyProjectPropertyOverride({
+        { "tint", RuntimeScalarValue::String("0.1 0.2 0.3") },
+    });
+    runtime->Tick(1.0 / 60.0);
+
+    constant = material.customShader.constValues.find("g_Tint");
+    ASSERT_NE(constant, material.customShader.constValues.end());
+    ASSERT_EQ(constant->second.size(), 3u);
+    EXPECT_FLOAT_EQ(constant->second[0], 0.1f);
+    EXPECT_FLOAT_EQ(constant->second[1], 0.2f);
+    EXPECT_FLOAT_EQ(constant->second[2], 0.3f);
 }
 
 TEST(ScriptRuntimeCompat, SceneScriptCreateLayerInUpdateReusesGeneratedLayer) {

@@ -34,6 +34,8 @@ public:
     bool                 FromJson(const nlohmann::json&);
     bool                 FromJson(const nlohmann::json&, uint16_t pkg_version);
     std::array<float, 3> clearcolor { 0.0f, 0.0f, 0.0f };
+    nlohmann::json       clearcolor_setting;
+    bool                 dynamic_clearcolor { false };
     bool                 clearenabled { true };
     bool                 cameraparallax { false };
     float                cameraparallaxamount;

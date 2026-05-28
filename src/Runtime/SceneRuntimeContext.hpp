@@ -102,6 +102,9 @@ public:
     void RegisterTextValue(std::string name, std::unique_ptr<DynamicValue> value);
     void RegisterMaterialConstant(SceneMaterial* material, std::string name,
                                   std::unique_ptr<DynamicValue> value);
+    void RegisterSceneClearColor(std::unique_ptr<DynamicValue> value);
+    void RegisterDynamicValueListener(std::unique_ptr<DynamicValue> value,
+                                      std::function<void(const DynamicValue&)> callback);
     void RegisterNodeEffectFinal(std::string name, SceneNode* node, SceneImageEffectLayer* layer);
     void RegisterMaterialAlphaAnimation(SceneMaterial* material, ScalarAnimation animation);
     void RegisterSceneScript(std::string script_source, std::string layer_name);
