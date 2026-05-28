@@ -664,6 +664,29 @@ SceneNode* FindFirstChildByName(SceneNode& node, std::string_view name) {
     return child == node.GetChildren().end() ? nullptr : child->get();
 }
 
+std::array<float, 3> VertexPosition(const SceneVertexArray& vertices, std::size_t index) {
+    EXPECT_LT(index, vertices.VertexCount());
+    const float* data = vertices.Data() + index * vertices.OneSize();
+    return { data[0], data[1], data[2] };
+}
+
+std::array<float, 2> VertexUv(const SceneVertexArray& vertices, std::size_t index) {
+    EXPECT_LT(index, vertices.VertexCount());
+    const float* data = vertices.Data() + index * vertices.OneSize();
+    return { data[4], data[5] };
+}
+
+void ExpectVec3Near(std::array<float, 3> actual, std::array<float, 3> expected, float tolerance) {
+    EXPECT_NEAR(actual[0], expected[0], tolerance);
+    EXPECT_NEAR(actual[1], expected[1], tolerance);
+    EXPECT_NEAR(actual[2], expected[2], tolerance);
+}
+
+void ExpectVec2Near(std::array<float, 2> actual, std::array<float, 2> expected, float tolerance) {
+    EXPECT_NEAR(actual[0], expected[0], tolerance);
+    EXPECT_NEAR(actual[1], expected[1], tolerance);
+}
+
 void MountBloomSceneFiles(fs::VFS& vfs) {
     auto files = std::map<std::string, std::string> {
         { "/materials/util/downsample_quarter_bloom.json",
@@ -1577,6 +1600,178 @@ void main() {
     auto& final_node = camera->second->GetImgEffect()->FinalNode();
     final_node.UpdateTrans();
     EXPECT_NEAR(final_node.RenderTrans()(0, 3), 46.0, 1.0e-5);
+}
+
+TEST(SceneSchema, PassthroughImageEffectBaseMeshUsesLayerLocalCardGeometry) {
+    fs::VFS vfs;
+    auto files = std::map<std::string, std::string> {
+        { "/models/util/composelayer.json",
+          R"({"width":64,"height":32,"passthrough":true,"material":"materials/base_passthrough.json"})" },
+        { "/materials/base_passthrough.json",
+          R"({"passes":[{"blending":"translucent","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"passthrough","textures":["a.tex"]}]})" },
+        { "/effects/copy/effect.json",
+          R"({"name":"copy","passes":[{"material":"materials/effect_copy.json","bind":[{"name":"previous","index":0}]}]})" },
+        { "/materials/effect_copy.json",
+          R"({"passes":[{"blending":"translucent","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"effectcopy","textures":[null]}]})" },
+        { "/shaders/passthrough.vert",
+          R"(attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+varying vec2 v_TexCoord;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+  v_TexCoord = a_TexCoord;
+}
+)" },
+        { "/shaders/passthrough.frag",
+          R"(uniform sampler2D g_Texture0;
+varying vec2 v_TexCoord;
+void main() {
+  gl_FragColor = texture(g_Texture0, v_TexCoord);
+}
+)" },
+        { "/shaders/effectcopy.vert",
+          R"(attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+varying vec2 v_TexCoord;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+  v_TexCoord = a_TexCoord;
+}
+)" },
+        { "/shaders/effectcopy.frag",
+          R"(uniform sampler2D g_Texture0;
+varying vec2 v_TexCoord;
+void main() {
+  gl_FragColor = texture(g_Texture0, v_TexCoord);
+}
+)" },
+        { "/materials/a.tex.tex", "" },
+    };
+    EXPECT_TRUE(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::move(files))));
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    const std::string   scene = R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0.2,0.2,0.2], "skylightcolor":[0.3,0.3,0.3],
+        "clearcolor":[0,0,0], "cameraparallax":false,
+        "cameraparallaxamount":0, "cameraparallaxdelay":0,
+        "cameraparallaxmouseinfluence":0,
+        "orthogonalprojection":{"width":640,"height":360}
+      },
+      "objects": [
+        {"id":401,"name":"green audio bars","image":"models/util/composelayer.json",
+         "origin":[180,90,0],"scale":[1,1,1],"angles":[0,0,0],"visible":true,
+         "config":{"passthrough":true},
+         "effects":[{"file":"effects/copy/effect.json","id":402,"visible":true}]}
+      ]
+    })";
+
+    auto parsed = parser.Parse("passthrough-effect-local-card", scene, vfs, sound_manager);
+    ASSERT_NE(parsed, nullptr);
+    auto node = FindRootChildByName(*parsed, "green audio bars");
+    ASSERT_NE(node, nullptr);
+    ASSERT_NE(node->Mesh(), nullptr);
+    ASSERT_EQ(node->Mesh()->Submeshes().size(), 1u);
+    ASSERT_EQ(node->Mesh()->Submeshes()[0].VertexCount(), 1u);
+    const auto& vertices = node->Mesh()->Submeshes()[0].GetVertexArray(0);
+    ASSERT_EQ(vertices.VertexCount(), 4u);
+
+    EXPECT_EQ(VertexPosition(vertices, 0), (std::array<float, 3> { -32.0f, -16.0f, 0.0f }));
+    EXPECT_EQ(VertexPosition(vertices, 1), (std::array<float, 3> { -32.0f, 16.0f, 0.0f }));
+    EXPECT_EQ(VertexPosition(vertices, 2), (std::array<float, 3> { 32.0f, -16.0f, 0.0f }));
+    EXPECT_EQ(VertexPosition(vertices, 3), (std::array<float, 3> { 32.0f, 16.0f, 0.0f }));
+}
+
+TEST(SceneSchema, PassthroughNonComposeImageEffectKeepsProjectionBakedBaseMesh) {
+    fs::VFS vfs;
+    auto files = std::map<std::string, std::string> {
+        { "/image.json",
+          R"({"width":64,"height":32,"passthrough":true,"material":"materials/base_passthrough.json"})" },
+        { "/materials/base_passthrough.json",
+          R"({"passes":[{"blending":"translucent","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"passthrough","textures":["a.tex"]}]})" },
+        { "/effects/copy/effect.json",
+          R"({"name":"copy","passes":[{"material":"materials/effect_copy.json","bind":[{"name":"previous","index":0}]}]})" },
+        { "/materials/effect_copy.json",
+          R"({"passes":[{"blending":"translucent","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"effectcopy","textures":[null]}]})" },
+        { "/shaders/passthrough.vert",
+          R"(attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+varying vec2 v_TexCoord;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+  v_TexCoord = a_TexCoord;
+}
+)" },
+        { "/shaders/passthrough.frag",
+          R"(uniform sampler2D g_Texture0;
+varying vec2 v_TexCoord;
+void main() {
+  gl_FragColor = texture(g_Texture0, v_TexCoord);
+}
+)" },
+        { "/shaders/effectcopy.vert",
+          R"(attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+varying vec2 v_TexCoord;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+  v_TexCoord = a_TexCoord;
+}
+)" },
+        { "/shaders/effectcopy.frag",
+          R"(uniform sampler2D g_Texture0;
+varying vec2 v_TexCoord;
+void main() {
+  gl_FragColor = texture(g_Texture0, v_TexCoord);
+}
+)" },
+        { "/materials/a.tex.tex", "" },
+    };
+    EXPECT_TRUE(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::move(files))));
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    const std::string   scene = R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0.2,0.2,0.2], "skylightcolor":[0.3,0.3,0.3],
+        "clearcolor":[0,0,0], "cameraparallax":false,
+        "cameraparallaxamount":0, "cameraparallaxdelay":0,
+        "cameraparallaxmouseinfluence":0,
+        "orthogonalprojection":{"width":640,"height":360}
+      },
+      "objects": [
+        {"id":501,"name":"regular passthrough effect","image":"image.json",
+         "origin":[180,90,0],"scale":[1,1,1],"angles":[0,0,0],"visible":true,
+         "config":{"passthrough":true},
+         "effects":[{"file":"effects/copy/effect.json","id":502,"visible":true}]}
+      ]
+    })";
+
+    auto parsed = parser.Parse("passthrough-non-compose-effect", scene, vfs, sound_manager);
+    ASSERT_NE(parsed, nullptr);
+    auto node = FindRootChildByName(*parsed, "regular passthrough effect");
+    ASSERT_NE(node, nullptr);
+    ASSERT_NE(node->Mesh(), nullptr);
+    ASSERT_EQ(node->Mesh()->Submeshes().size(), 1u);
+    ASSERT_EQ(node->Mesh()->Submeshes()[0].VertexCount(), 1u);
+    const auto& vertices = node->Mesh()->Submeshes()[0].GetVertexArray(0);
+    ASSERT_EQ(vertices.VertexCount(), 4u);
+
+    EXPECT_NE(VertexPosition(vertices, 0), (std::array<float, 3> { -32.0f, -16.0f, 0.0f }));
+    EXPECT_NE(VertexUv(vertices, 0), (std::array<float, 2> { 0.0f, 1.0f }));
+    ExpectVec3Near(
+        VertexPosition(vertices, 0), { -0.5375f, -0.5888889f, 0.0f }, 1.0e-6f);
+    ExpectVec3Near(
+        VertexPosition(vertices, 1), { -0.5375f, -0.41111112f, 0.0f }, 1.0e-6f);
+    ExpectVec3Near(
+        VertexPosition(vertices, 2), { -0.3375f, -0.5888889f, 0.0f }, 1.0e-6f);
+    ExpectVec3Near(
+        VertexPosition(vertices, 3), { -0.3375f, -0.41111112f, 0.0f }, 1.0e-6f);
+    ExpectVec2Near(VertexUv(vertices, 0), { 0.23125f, 0.79444444f }, 1.0e-6f);
+    ExpectVec2Near(VertexUv(vertices, 1), { 0.23125f, 0.70555556f }, 1.0e-6f);
+    ExpectVec2Near(VertexUv(vertices, 2), { 0.33125f, 0.79444444f }, 1.0e-6f);
+    ExpectVec2Near(VertexUv(vertices, 3), { 0.33125f, 0.70555556f }, 1.0e-6f);
 }
 
 TEST(SceneSchema, ImageChildAttachmentAnchorsToParentPuppetMdat) {

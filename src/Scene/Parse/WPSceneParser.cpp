@@ -2046,11 +2046,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
 
     auto& vfs = *context.vfs;
 
-    const bool isCompose                = (wpimgobj.image == "models/util/composelayer.json");
-    int32_t    explicit_visible_effects = 0;
-    for (const auto& wpeffobj : wpimgobj.effects) {
-        if (wpeffobj.visible) explicit_visible_effects++;
-    }
+    const bool isCompose = (wpimgobj.image == "models/util/composelayer.json");
 
     // coloBlendMode load passthrough manaully
     if (wpimgobj.colorBlendMode != 0) {
@@ -2285,7 +2281,9 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
             }
         }
         if (! puppet) {
-            if (wpimgobj.config.passthrough && hasEffect) {
+            const bool use_compose_effect_local_card =
+                wpimgobj.config.passthrough && isCompose && count_eff > 0;
+            if (wpimgobj.config.passthrough && hasEffect && ! use_compose_effect_local_card) {
                 if (material.name == "passthrough") {
                     GenPassthroughClipSpaceMesh(
                         mesh,
