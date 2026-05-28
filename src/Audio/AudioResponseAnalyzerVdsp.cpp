@@ -14,7 +14,9 @@ namespace
 constexpr uint32_t kFftSize = 1024;
 constexpr uint32_t kBandCount64 = 64;
 constexpr int kFftLog2 = 10;
-constexpr float kMoveTowardsDelta = 0.16f;
+constexpr float kAnalysisStepSeconds = 200.0f / 12000.0f;
+constexpr float kAttackTauSeconds = 0.020f;
+constexpr float kReleaseTauSeconds = 0.180f;
 constexpr float kDecay = 0.88f;
 constexpr float kNeighborFalloff1 = 0.72f;
 constexpr float kNeighborFalloff2 = 0.42f;
@@ -44,13 +46,31 @@ AnalyzerResources& Resources()
     return resources;
 }
 
-float SmoothValue(float current, float target)
+float EmaAlpha(float elapsed_seconds, float tau_seconds)
 {
-    if (std::abs(target - current) <= kMoveTowardsDelta) {
-        return target;
+    return 1.0f - std::exp(-elapsed_seconds / tau_seconds);
+}
+
+float SmoothValue(float current, float target, uint32_t step_count)
+{
+    const float elapsed_seconds = kAnalysisStepSeconds * static_cast<float>(step_count);
+    const float tau_seconds = target > current ? kAttackTauSeconds : kReleaseTauSeconds;
+    const float alpha = EmaAlpha(elapsed_seconds, tau_seconds);
+    return current + alpha * (target - current);
+}
+
+void SmoothBins(
+    const std::array<float, kBandCount64>& target,
+    uint32_t step_count,
+    std::array<float, kBandCount64>& output)
+{
+    if (step_count == 0u) {
+        return;
     }
 
-    return current + (target > current ? kMoveTowardsDelta : -kMoveTowardsDelta);
+    for (size_t band = 0; band < output.size(); ++band) {
+        output[band] = SmoothValue(output[band], target[band], step_count);
+    }
 }
 
 float WeightedMagnitude(float magnitude_squared, float band, float denominator)
@@ -151,9 +171,7 @@ void AnalyzeMono(const float* mono_pcm, std::array<float, 64>& output)
         continuous_bands[band] = std::clamp(value, 0.0f, 1.0f);
     }
 
-    for (size_t band = 0; band < output.size(); ++band) {
-        output[band] = SmoothValue(output[band], continuous_bands[band]);
-    }
+    SmoothBins(continuous_bands, 1u, output);
 }
 
 } // namespace
@@ -202,5 +220,36 @@ void DecayAudioResponseSnapshot(AudioSpectrumSnapshot* snapshot)
     snapshot->left16 = snapshot->average16;
     snapshot->right16 = snapshot->average16;
 }
+
+void ClearAudioResponseSnapshot(AudioSpectrumSnapshot* snapshot)
+{
+    if (snapshot == nullptr) {
+        return;
+    }
+
+    snapshot->left64.fill(0.0f);
+    snapshot->right64.fill(0.0f);
+    snapshot->average64.fill(0.0f);
+    snapshot->left32.fill(0.0f);
+    snapshot->right32.fill(0.0f);
+    snapshot->average32.fill(0.0f);
+    snapshot->left16.fill(0.0f);
+    snapshot->right16.fill(0.0f);
+    snapshot->average16.fill(0.0f);
+}
+
+#ifdef WESCENE_BUILD_TESTS
+void SmoothAudioResponseBinsForTesting(
+    const std::array<float, 64>& target,
+    uint32_t step_count,
+    std::array<float, 64>* output)
+{
+    if (output == nullptr) {
+        return;
+    }
+
+    SmoothBins(target, step_count, *output);
+}
+#endif
 
 } // namespace wallpaper::audio

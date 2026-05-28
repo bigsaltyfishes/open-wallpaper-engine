@@ -20,6 +20,7 @@ constexpr uint32_t kFftSize = 1024;
 constexpr uint32_t kHopSize = 200;
 constexpr size_t kInterleavedChannels = 2u;
 constexpr size_t kMaxRetainedMonoFrames = static_cast<size_t>(kAnalysisSampleRate) * 2u;
+constexpr auto kSnapshotStaleAfter = std::chrono::milliseconds(250);
 
 struct AudioResponseState
 {
@@ -63,13 +64,25 @@ bool ValidateSubmitInput(
     return true;
 }
 
+bool SnapshotHasSignal(const AudioSpectrumSnapshot& snapshot)
+{
+    return std::any_of(snapshot.average64.begin(), snapshot.average64.end(), [](float value) {
+        return value != 0.0f;
+    });
+}
+
+bool InputStreamIsStale(std::chrono::steady_clock::time_point now)
+{
+    return g_state.last_submit_time != std::chrono::steady_clock::time_point {} &&
+           (now - g_state.last_submit_time) > kSnapshotStaleAfter;
+}
+
 void WorkerMain(std::stop_token stop_token)
 {
     while (!stop_token.stop_requested()) {
         std::array<float, kFftSize> block {};
         AudioSpectrumSnapshot next_snapshot {};
         bool analyze_block { false };
-        bool decay_snapshot { false };
 
         {
             std::unique_lock<std::mutex> lock(g_state.mutex);
@@ -82,15 +95,25 @@ void WorkerMain(std::stop_token stop_token)
                 break;
             }
 
-            if (g_state.fifo.size() >= block.size()) {
+            const bool input_stream_is_stale = InputStreamIsStale(std::chrono::steady_clock::now());
+            const bool snapshot_has_signal = SnapshotHasSignal(g_state.snapshot);
+
+            if (input_stream_is_stale) {
+                g_state.fifo.clear();
+                if (g_state.snapshot.generation > 0 && snapshot_has_signal) {
+                    next_snapshot = g_state.snapshot;
+                    ClearAudioResponseSnapshot(&next_snapshot);
+                    next_snapshot.generation += 1u;
+                    next_snapshot.sample_rate = kAnalysisSampleRate;
+                    next_snapshot.last_submit_sample_rate = g_state.snapshot.last_submit_sample_rate;
+                    next_snapshot.accepted_frame_count = g_state.snapshot.accepted_frame_count;
+                    g_state.snapshot = next_snapshot;
+                }
+            } else if (g_state.fifo.size() >= block.size()) {
                 std::copy_n(g_state.fifo.begin(), block.size(), block.begin());
                 g_state.fifo.erase(g_state.fifo.begin(), g_state.fifo.begin() + kHopSize);
                 next_snapshot = g_state.snapshot;
                 analyze_block = true;
-            } else if (g_state.snapshot.generation > 0 &&
-                       (std::chrono::steady_clock::now() - g_state.last_submit_time) > std::chrono::milliseconds(180)) {
-                next_snapshot = g_state.snapshot;
-                decay_snapshot = true;
             } else {
                 continue;
             }
@@ -100,14 +123,14 @@ void WorkerMain(std::stop_token stop_token)
             AnalyzeAudioResponseMonoBlock(block.data(), kFftSize, &next_snapshot);
             next_snapshot.generation += 1u;
             next_snapshot.sample_rate = kAnalysisSampleRate;
-        } else if (decay_snapshot) {
-            DecayAudioResponseSnapshot(&next_snapshot);
         }
 
-        std::lock_guard<std::mutex> lock(g_state.mutex);
-        next_snapshot.last_submit_sample_rate = g_state.snapshot.last_submit_sample_rate;
-        next_snapshot.accepted_frame_count = g_state.snapshot.accepted_frame_count;
-        g_state.snapshot = next_snapshot;
+        if (analyze_block) {
+            std::lock_guard<std::mutex> lock(g_state.mutex);
+            next_snapshot.last_submit_sample_rate = g_state.snapshot.last_submit_sample_rate;
+            next_snapshot.accepted_frame_count = g_state.snapshot.accepted_frame_count;
+            g_state.snapshot = next_snapshot;
+        }
     }
 }
 
@@ -130,6 +153,11 @@ bool SubmitValidatedMonoFrames(
     std::lock_guard<std::mutex> lock(g_state.mutex);
     EnsureWorkerStartedLocked();
 
+    const auto submit_time = std::chrono::steady_clock::now();
+    if (InputStreamIsStale(submit_time)) {
+        g_state.fifo.clear();
+    }
+
     const float* insert_begin = pcm_frames;
     size_t insert_count = frame_count;
     if (frame_count > kMaxRetainedMonoFrames) {
@@ -146,7 +174,7 @@ bool SubmitValidatedMonoFrames(
     }
 
     g_state.fifo.insert(g_state.fifo.end(), insert_begin, insert_begin + insert_count);
-    g_state.last_submit_time = std::chrono::steady_clock::now();
+    g_state.last_submit_time = submit_time;
     g_state.snapshot.last_submit_sample_rate = sample_rate;
     g_state.snapshot.accepted_frame_count += accepted_frame_count;
     g_state.condition.notify_one();
@@ -221,5 +249,62 @@ void ResetAudioResponseServiceForTesting()
         worker.join();
     }
 }
+
+#ifdef WESCENE_BUILD_TESTS
+void StopAudioResponseWorkerAndMarkInputStaleForTesting()
+{
+    std::jthread worker;
+    {
+        std::lock_guard<std::mutex> lock(g_state.mutex);
+        worker = std::move(g_state.worker);
+        g_state.worker_started = false;
+        if (g_state.last_submit_time != std::chrono::steady_clock::time_point {}) {
+            g_state.last_submit_time = std::chrono::steady_clock::now() - kSnapshotStaleAfter - std::chrono::milliseconds(1);
+        }
+    }
+
+    if (worker.joinable()) {
+        worker.request_stop();
+        g_state.condition.notify_all();
+        worker.join();
+    }
+}
+
+void SubmitStaleMonoAudioFramesToWorkerForTesting(
+    uint32_t sample_rate,
+    uint32_t accepted_frame_count,
+    const float* pcm_frames,
+    size_t frame_count)
+{
+    std::jthread worker;
+    {
+        std::lock_guard<std::mutex> lock(g_state.mutex);
+        worker = std::move(g_state.worker);
+        g_state.worker_started = false;
+    }
+
+    if (worker.joinable()) {
+        worker.request_stop();
+        g_state.condition.notify_all();
+        worker.join();
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_state.mutex);
+        g_state.fifo.insert(g_state.fifo.end(), pcm_frames, pcm_frames + frame_count);
+        g_state.last_submit_time = std::chrono::steady_clock::now() - kSnapshotStaleAfter - std::chrono::milliseconds(1);
+        g_state.snapshot.last_submit_sample_rate = sample_rate;
+        g_state.snapshot.accepted_frame_count += accepted_frame_count;
+        EnsureWorkerStartedLocked();
+        g_state.condition.notify_one();
+    }
+}
+
+size_t AudioResponseRetainedFrameCountForTesting()
+{
+    std::lock_guard<std::mutex> lock(g_state.mutex);
+    return g_state.fifo.size();
+}
+#endif
 
 } // namespace wallpaper::audio
