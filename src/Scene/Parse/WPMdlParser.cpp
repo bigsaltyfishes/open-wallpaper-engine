@@ -1107,8 +1107,13 @@ bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
 
     int32_t mdl_flag = f.ReadInt32();
     if (mdl_flag == 9) {
-        LOG_ERROR("puppet '%s' is not complete, ignore", str_path.c_str());
-        return false;
+        if (mdl.mdlv < 21 || ! HasRemaining(f, 8)) {
+            LOG_ERROR("puppet '%s' is not complete, ignore", str_path.c_str());
+            return false;
+        }
+        LOG_INFO("puppet '%s' has incomplete flag but contains mesh payload, parsing mesh only",
+                 str_path.c_str());
+        mdl_flag = 0;
     };
     mdl.mdl_header.mdl_flag = static_cast<uint32_t>(mdl_flag);
     f.ReadInt32(); // unk, 1

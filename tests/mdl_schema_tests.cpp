@@ -360,6 +360,17 @@ std::vector<uint8_t> BuildMdlv23MaskedMeshOnlyFixture() {
     return b.Take();
 }
 
+std::vector<uint8_t> BuildMdlv23IncompleteFlagMeshOnlyFixture() {
+    Bytes b;
+    b.Stamp("MDL", 23);
+    b.I32(9);
+    b.U32(1);
+    b.U32(1);
+    WriteMesh(b, "mat/head.json", 10);
+    b.U32(0);
+    return b.Take();
+}
+
 std::vector<uint8_t> BuildMdlv23MaskedMeshWithInvalidPartIdsFixture() {
     Bytes b;
     b.Stamp("MDL", 23);
@@ -1778,6 +1789,22 @@ TEST(MdlSchema, LogsIncompleteMdlFlagAsError) {
 
     EXPECT_FALSE(WPMdlParser::Parse("sample.mdl", vfs, mdl));
     EXPECT_TRUE(logs.Contains(LOGLEVEL_ERROR, "is not complete"));
+}
+
+TEST(MdlSchema, ParsesMdlv23IncompleteFlagMeshOnlyPuppet) {
+    fs::VFS vfs;
+    MountMdlFixture(vfs, BuildMdlv23IncompleteFlagMeshOnlyFixture());
+    WPMdl mdl;
+    ScopedLogCapture logs;
+
+    ASSERT_TRUE(WPMdlParser::Parse("sample.mdl", vfs, mdl));
+    ASSERT_EQ(mdl.meshes.size(), 1u);
+    EXPECT_EQ(mdl.meshes[0].flag, kSkinUvFlag);
+    EXPECT_EQ(mdl.mat_json_file, "mat/head.json");
+    EXPECT_EQ(mdl.vertexs.size(), 3u);
+    EXPECT_EQ(mdl.indices.size(), 1u);
+    EXPECT_EQ(mdl.puppet, nullptr);
+    EXPECT_TRUE(logs.Contains(LOGLEVEL_INFO, "incomplete flag"));
 }
 
 TEST(MdlSchema, LogsUnsupportedPartsExtrasAsError) {
