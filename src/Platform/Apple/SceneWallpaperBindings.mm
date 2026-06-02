@@ -125,10 +125,35 @@ const char* property_name(std::string_view value)
     name.assign(value);
     return name.c_str();
 }
+
+struct FirstFrameCallbackRegistration {
+    owe_first_frame_callback      callback { nullptr };
+    void*                         user_data { nullptr };
+    owe_first_frame_callback_drop drop_user_data { nullptr };
+
+    FirstFrameCallbackRegistration(
+        owe_first_frame_callback callback,
+        void* user_data,
+        owe_first_frame_callback_drop drop_user_data):
+        callback(callback), user_data(user_data), drop_user_data(drop_user_data)
+    {
+    }
+
+    ~FirstFrameCallbackRegistration()
+    {
+        if (drop_user_data != nullptr) drop_user_data(user_data);
+    }
+
+    void operator()() const
+    {
+        if (callback != nullptr) callback(user_data);
+    }
+};
 } // namespace
 
 struct owe_scene_wallpaper {
     wallpaper::SceneWallpaper scene;
+    std::shared_ptr<FirstFrameCallbackRegistration> first_frame_callback;
 };
 
 extern "C" void owe_set_log_callback(owe_log_callback callback)
@@ -288,6 +313,25 @@ extern "C" int owe_scene_wallpaper_set_paused(owe_scene_wallpaper* scene, bool p
     if (!valid_scene(scene)) return finish_with_error("scene must not be null");
 
     scene->scene.setPaused(paused);
+    return 0;
+}
+
+extern "C" int owe_scene_wallpaper_set_first_frame_callback(
+    owe_scene_wallpaper* scene,
+    owe_first_frame_callback callback,
+    void* user_data,
+    owe_first_frame_callback_drop drop_user_data)
+{
+    clear_last_error();
+    if (!valid_scene(scene)) return finish_with_error("scene must not be null");
+
+    scene->first_frame_callback = std::make_shared<FirstFrameCallbackRegistration>(
+        callback,
+        user_data,
+        drop_user_data);
+    auto forwarder = std::make_shared<wallpaper::FirstFrameCallback>(
+        [registration = scene->first_frame_callback]() { (*registration)(); });
+    scene->scene.setPropertyObject(wallpaper::PROPERTY_FIRST_FRAME_CALLBACK, forwarder);
     return 0;
 }
 

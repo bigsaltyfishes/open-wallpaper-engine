@@ -20,6 +20,8 @@ extern "C" {
 typedef struct owe_scene_wallpaper owe_scene_wallpaper;
 
 typedef void (*owe_log_callback)(int level, const char* file, int line, const char* message);
+typedef void (*owe_first_frame_callback)(void* user_data);
+typedef void (*owe_first_frame_callback_drop)(void* user_data);
 
 void owe_set_log_callback(owe_log_callback callback);
 
@@ -79,6 +81,12 @@ int owe_scene_wallpaper_set_target_fps(owe_scene_wallpaper* scene, uint32_t fps)
 
 /* Direct SceneWallpaper::setPaused forwarding for live playback control. */
 int owe_scene_wallpaper_set_paused(owe_scene_wallpaper* scene, bool paused);
+
+/* Direct first-frame notification forwarding from SceneWallpaper. */
+int owe_scene_wallpaper_set_first_frame_callback(owe_scene_wallpaper* scene,
+                                                 owe_first_frame_callback callback,
+                                                 void* user_data,
+                                                 owe_first_frame_callback_drop drop_user_data);
 
 /* Direct mouse/pointer forwarding to SceneWallpaper. Coordinates are normalized canvas space. */
 int owe_scene_wallpaper_mouse_input(owe_scene_wallpaper* scene, double x, double y);
