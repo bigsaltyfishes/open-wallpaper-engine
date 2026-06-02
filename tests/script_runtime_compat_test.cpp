@@ -433,6 +433,91 @@ function update() {
     EXPECT_EQ(runtime->scriptErrorCount(), 0u);
 }
 
+TEST(ScriptRuntimeCompat, PropertyScriptCreateLayerWaitsForMaterialBindings) {
+    Scene scene;
+    auto  runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {
+         .canvas_width  = 1920,
+         .canvas_height = 1080,
+         .project_properties = {
+             { "bar_count", RuntimeScalarValue::Float(4.0f) },
+             { "visualizer_visible", RuntimeScalarValue::Bool(true) },
+         },
+    });
+    ASSERT_NE(runtime, nullptr);
+    runtime->AttachScene(&scene);
+
+    auto source_node = std::make_shared<SceneNode>(
+        Eigen::Vector3f::Zero(), Eigen::Vector3f::Ones(), Eigen::Vector3f::Zero(), "source");
+    auto source_mesh = std::make_shared<SceneMesh>();
+    source_mesh->AddMaterial(SceneMaterial {});
+    source_node->AddMesh(source_mesh);
+    scene.sceneGraph->AppendChild(source_node);
+    runtime->RegisterNode("source", source_node.get());
+    runtime->RegisterLayerTemplate("models/workshop/2652516218/bar.json",
+                                   source_node,
+                                   Eigen::Vector2f(20.0f, 120.0f));
+
+    auto visualizer_node = std::make_shared<SceneNode>(
+        Eigen::Vector3f::Zero(), Eigen::Vector3f::Ones(), Eigen::Vector3f::Zero(), "visualizer");
+    scene.sceneGraph->AppendChild(visualizer_node);
+    runtime->RegisterNode("visualizer", visualizer_node.get());
+    runtime->RegisterLayerTemplate("models/workshop/2652516218/visualizer.json",
+                                   visualizer_node,
+                                   Eigen::Vector2f(200.0f, 200.0f));
+
+    auto visibility = ResolveBoolSetting(
+        *runtime,
+        nlohmann::json {
+            {
+                "script",
+                R"JS(
+export var scriptProperties = createScriptProperties()
+  .addSlider({ name: 'count', value: 4 })
+  .finish();
+export function update(value) {
+  for (var i = 0; i < scriptProperties.count; ++i) {
+    var bar = thisScene.createLayer('models/bar.json');
+    bar.angles = new Vec3(0, 0, i * 90);
+  }
+  return value;
+}
+)JS",
+            },
+            {
+                "scriptproperties",
+                {
+                    { "count", { { "user", "bar_count" }, { "value", 4.0f } } },
+                },
+            },
+            { "user", "visualizer_visible" },
+            { "value", true },
+        },
+        "visualizer");
+    runtime->RegisterNodeVisibility("visualizer", visualizer_node.get(), std::move(visibility));
+
+    ASSERT_EQ(scene.sceneGraph->GetChildren().size(), 2u);
+
+    DynamicValue tint(Eigen::Vector3f(0.25f, 0.5f, 0.75f));
+    runtime->RegisterMaterialConstant(
+        source_mesh->Material(), "g_Tint", std::make_unique<DynamicValue>(tint));
+
+    runtime->Tick(1.0 / 60.0);
+
+    ASSERT_EQ(scene.sceneGraph->GetChildren().size(), 6u);
+    for (const auto& child : scene.sceneGraph->GetChildren()) {
+        if (child.get() == source_node.get() || child.get() == visualizer_node.get()) continue;
+        ASSERT_NE(child->Mesh(), nullptr);
+        ASSERT_NE(child->Mesh()->Material(), nullptr);
+        const auto constant = child->Mesh()->Material()->customShader.constValues.find("g_Tint");
+        ASSERT_NE(constant, child->Mesh()->Material()->customShader.constValues.end());
+        ASSERT_EQ(constant->second.size(), 3u);
+        EXPECT_FLOAT_EQ(constant->second[0], 0.25f);
+        EXPECT_FLOAT_EQ(constant->second[1], 0.5f);
+        EXPECT_FLOAT_EQ(constant->second[2], 0.75f);
+    }
+    EXPECT_EQ(runtime->scriptErrorCount(), 0u);
+}
+
 TEST(ScriptRuntimeCompat, MaterialConstantUserBindingUpdatesThroughRuntimeProperties) {
     auto runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {
         .project_properties = {
