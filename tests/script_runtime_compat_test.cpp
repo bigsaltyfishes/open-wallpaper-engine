@@ -382,6 +382,47 @@ export function update(value) {
     EXPECT_FLOAT_EQ(result.getFloat(), 9333.0f);
 }
 
+TEST(ScriptRuntimeCompat, HostVectorUpdatesDoNotCallMutableGlobalVectorConstructors) {
+    auto runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {});
+    ASSERT_NE(runtime, nullptr);
+
+    ScriptHostContext host {};
+    host.canvas_size                = Eigen::Vector2f(100.0f, 50.0f);
+    host.cursor_normalized_position = Eigen::Vector2f(0.1f, 0.2f);
+    host.cursor_world_position      = Eigen::Vector3f(10.0f, 20.0f, 0.0f);
+    DynamicValue tint(Eigen::Vector4f(0.5f, 0.25f, 0.125f, 0.75f));
+
+    auto program = runtime->scriptEngine().CreatePropertyScriptProgram(
+        runtime.get(),
+        R"JS(
+var savedVec2 = Vec2;
+var savedVec3 = Vec3;
+var savedVec4 = Vec4;
+Vec2 = function(x, y) { return new Vec2(x, y); };
+Vec3 = function(x, y, z) { return new Vec3(x, y, z); };
+Vec4 = function(x, y, z, w) { return new Vec4(x, y, z, w); };
+
+export function update(value) {
+  var constructed = new savedVec3(1, 2, 3);
+  return input.cursorPosition.x + input.cursorWorldPosition.y + engine.canvasSize.x +
+         scriptProperties.tint.w + constructed.z;
+}
+)JS",
+        "",
+        { { "tint", &tint } },
+        DynamicValue(0.0f),
+        host);
+    ASSERT_NE(program, nullptr);
+
+    host.canvas_size                = Eigen::Vector2f(200.0f, 100.0f);
+    host.cursor_normalized_position = Eigen::Vector2f(0.25f, 0.75f);
+    host.cursor_world_position      = Eigen::Vector3f(25.0f, 75.0f, 0.0f);
+    const auto result = program->Evaluate(host, DynamicValue(0.0f));
+    ASSERT_NE(result, nullptr);
+    EXPECT_FLOAT_EQ(result->getFloat(), 279.0f);
+    EXPECT_EQ(runtime->scriptErrorCount(), 0u);
+}
+
 TEST(ScriptRuntimeCompat, CreateLayerClonesTemplateAndFansOutMaterialBindings) {
     Scene scene;
     auto  runtime = MakeRuntimeWithScene(scene);
